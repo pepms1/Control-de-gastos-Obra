@@ -22,13 +22,20 @@ async function req(path, opts = {}) {
 export const api = {
   seed: () => req("/seed", { method: "POST" }),
   categories: () => req("/categories"),
+  createCategory: (name) =>
+    req("/categories", { method: "POST", body: JSON.stringify({ name }) }),
+
   vendors: () => req("/vendors"),
+  createVendor: (payload) =>
+    req("/vendors", { method: "POST", body: JSON.stringify(payload) }),
+
   transactions: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return req("/transactions" + (qs ? `?${qs}` : ""));
   },
   createTransaction: (payload) =>
     req("/transactions", { method: "POST", body: JSON.stringify(payload) }),
+
   spendByCategory: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return req("/stats/spend-by-category" + (qs ? `?${qs}` : ""));
