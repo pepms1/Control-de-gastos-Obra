@@ -25,7 +25,7 @@ function Nav({ tab, setTab, role, username, onLogout }) {
 
   return (
     <div className="nav">
-      <div style={{ fontWeight: 800 }}>Control de Obra</div>
+      <div style={{ fontWeight: 800 }}>Control de Gastos Calderon de la Barca</div>
 
       {items
         .filter(([, , show]) => show)
@@ -236,6 +236,8 @@ function Dashboard({ isAdmin }) {
             )}
           </div>
 
+          <PieChart rows={stats.rows} />
+
           {stats.rows.map((r) => (
             <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
               <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -256,6 +258,48 @@ function Dashboard({ isAdmin }) {
     </div>
   );
 }
+
+function PieChart({ rows }) {
+  const slices = rows
+    .map((row, index) => {
+      const percent = Number(row.percent) || 0;
+      return {
+        ...row,
+        percent,
+        color: PIE_COLORS[index % PIE_COLORS.length],
+      };
+    })
+    .filter((row) => row.percent > 0);
+
+  if (!slices.length) return null;
+
+  let current = 0;
+  const gradient = slices
+    .map((slice) => {
+      const start = current;
+      const end = current + slice.percent;
+      current = end;
+      return `${slice.color} ${start}% ${Math.min(100, end)}%`;
+    })
+    .join(', ');
+
+  return (
+    <div className="pie-card">
+      <div className="pie-chart" style={{ background: `conic-gradient(${gradient})` }} aria-label="Gráfica de pastel por categoría" />
+      <div className="pie-legend">
+        {slices.map((slice) => (
+          <div key={slice.category_id} className="pie-legend-item">
+            <span className="pie-dot" style={{ background: slice.color }} />
+            <span>{slice.category_name}</span>
+            <strong>{slice.percent.toFixed(2)}%</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const PIE_COLORS = ['#166534', '#22c55e', '#15803d', '#4ade80', '#65a30d', '#84cc16', '#16a34a'];
 
 /* ================= TXN FORM ================= */
 function TxnForm({ kind, cats, vendors, onDone }) {
