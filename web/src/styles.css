@@ -22,3 +22,6 @@ th, td{padding:10px 8px; border-bottom:1px solid #eef1f6; text-align:left;}
 .bar{height:10px; border-radius:999px; background:#eef1f6; overflow:hidden;}
 .bar > div{height:100%; background:#1d4ed8;}
 .small{font-size:12px; color:#6b7280;}
+
+.modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:999;}
+.modal{width:min(520px,90vw); background:#fff; border-radius:16px; padding:16px; border:1px solid #e6e8ef;}

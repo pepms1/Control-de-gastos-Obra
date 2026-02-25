@@ -1,15 +1,18 @@
-from fastapi import FastAPI, HTTPException, Response
-from fastapi.middleware.cors import CORSMiddleware
-from pymongo import MongoClient
-from bson import ObjectId
-from datetime import date, datetime
+from datetime import datetime, timedelta, timezone
 import os
+
+from bson import ObjectId
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from pymongo import MongoClient
 
 app = FastAPI(title="Control de Obra API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # en producción puedes restringir a tu dominio Vercel
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -20,8 +23,14 @@ if not MONGO_URL:
     raise RuntimeError("MONGO_URL env var is required")
 
 DB_NAME = os.getenv("DB_NAME", "obra")
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
+
 client = MongoClient(MONGO_URL)
 db = client[DB_NAME]
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 
 # ---------- helpers ----------
 def oid(s: str) -> ObjectId:
@@ -30,40 +39,143 @@ def oid(s: str) -> ObjectId:
     except Exception:
         raise HTTPException(status_code=400, detail=f"Invalid id: {s}")
 
+
 def serialize(doc):
     doc = dict(doc)
     doc["id"] = str(doc.pop("_id"))
     return doc
+
+
+def role_from_token(authorization: str | None = Header(default=None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    token = authorization.split(" ", 1)[1].strip()
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    role = payload.get("role")
+    if role not in ("ADMIN", "VIEWER"):
+        raise HTTPException(status_code=401, detail="Invalid role in token")
+    return {"username": payload.get("sub"), "role": role}
+
+
+def require_admin(user=Depends(role_from_token)):
+    if user["role"] != "ADMIN":
+        raise HTTPException(status_code=403, detail="ADMIN role required")
+    return user
+
+
+def require_authenticated(user=Depends(role_from_token)):
+    return user
+
+
+def ensure_default_users():
+    users = db.users
+
+    default_admin_user = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
+    default_admin_pass = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
+    default_viewer_user = os.getenv("DEFAULT_VIEWER_USERNAME", "viewer")
+    default_viewer_pass = os.getenv("DEFAULT_VIEWER_PASSWORD", "viewer123")
+
+    defaults = [
+        (default_admin_user, default_admin_pass, "ADMIN"),
+        (default_viewer_user, default_viewer_pass, "VIEWER"),
+    ]
+
+    for username, plain_password, role in defaults:
+        existing = users.find_one({"username": username})
+        if existing:
+            continue
+        users.insert_one(
+            {
+                "username": username,
+                "password_hash": pwd_context.hash(plain_password),
+                "role": role,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+
+def create_token(username: str, role: str):
+    exp = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
+    payload = {"sub": username, "role": role, "exp": exp}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+ensure_default_users()
 
 # ---------- health ----------
 @app.get("/")
 def root():
     return {"status": "API running"}
 
+
 @app.head("/")
 def root_head():
     return Response(status_code=200)
+
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
+
 @app.head("/health")
 def health_head():
     return Response(status_code=200)
 
+
+# ---------- auth ----------
+@app.post("/auth/login")
+def login(payload: dict):
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="username and password are required")
+
+    user = db.users.find_one({"username": username})
+    if not user or not pwd_context.verify(password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    role = user.get("role", "VIEWER")
+    token = create_token(username, role)
+    return {"access_token": token, "token_type": "bearer", "role": role, "username": username}
+
+
+@app.get("/auth/me")
+def me(user=Depends(require_authenticated)):
+    return user
+
+
 # ---------- seed categories ----------
 DEFAULT_CATEGORIES = [
-    "Albañilería", "Cimentación / Estructura", "Plomería / Hidrosanitario", "Eléctrico",
-    "Tablaroca / Plafones", "Cancelería / Vidrio", "Carpintería", "Herrería",
-    "Impermeabilización", "Pisos / Azulejos", "Yesos / Aplanados", "Pintura",
-    "Acabados / Detalles", "Materiales (Generales)", "Renta de maquinaria",
-    "Fletes / Acarreos", "Permisos / Gestoría", "Mano de obra (General)",
-    "Seguridad / Limpieza", "Imprevistos",
+    "Albañilería",
+    "Cimentación / Estructura",
+    "Plomería / Hidrosanitario",
+    "Eléctrico",
+    "Tablaroca / Plafones",
+    "Cancelería / Vidrio",
+    "Carpintería",
+    "Herrería",
+    "Impermeabilización",
+    "Pisos / Azulejos",
+    "Yesos / Aplanados",
+    "Pintura",
+    "Acabados / Detalles",
+    "Materiales (Generales)",
+    "Renta de maquinaria",
+    "Fletes / Acarreos",
+    "Permisos / Gestoría",
+    "Mano de obra (General)",
+    "Seguridad / Limpieza",
+    "Imprevistos",
 ]
 
+
 @app.post("/seed")
-def seed():
+def seed(_: dict = Depends(require_admin)):
     cats = db.categories
     existing = {c["name"] for c in cats.find({}, {"name": 1})}
     to_insert = [{"name": n, "active": True} for n in DEFAULT_CATEGORIES if n not in existing]
@@ -71,14 +183,16 @@ def seed():
         cats.insert_many(to_insert)
     return {"created_categories": len(to_insert)}
 
+
 # ---------- categories ----------
 @app.get("/categories")
-def list_categories(active_only: bool = True):
+def list_categories(active_only: bool = True, _: dict = Depends(require_authenticated)):
     q = {"active": True} if active_only else {}
     return [serialize(c) for c in db.categories.find(q).sort("name", 1)]
 
+
 @app.post("/categories")
-def create_category(payload: dict):
+def create_category(payload: dict, _: dict = Depends(require_admin)):
     name = (payload.get("name") or "").strip()
     if len(name) < 2:
         raise HTTPException(status_code=400, detail="name is required")
@@ -87,16 +201,52 @@ def create_category(payload: dict):
     _id = db.categories.insert_one({"name": name, "active": True}).inserted_id
     return serialize(db.categories.find_one({"_id": _id}))
 
+
+@app.patch("/categories/{category_id}")
+def update_category(category_id: str, payload: dict, _: dict = Depends(require_admin)):
+    cat = db.categories.find_one({"_id": oid(category_id)})
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    updates = {}
+    if "name" in payload:
+        name = (payload.get("name") or "").strip()
+        if len(name) < 2:
+            raise HTTPException(status_code=400, detail="name is required")
+        dup = db.categories.find_one({"name": name, "_id": {"$ne": oid(category_id)}})
+        if dup:
+            raise HTTPException(status_code=409, detail="Category already exists")
+        updates["name"] = name
+    if "active" in payload:
+        updates["active"] = bool(payload.get("active"))
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    db.categories.update_one({"_id": oid(category_id)}, {"$set": updates})
+    return serialize(db.categories.find_one({"_id": oid(category_id)}))
+
+
+@app.delete("/categories/{category_id}")
+def delete_category(category_id: str, _: dict = Depends(require_admin)):
+    result = db.categories.delete_one({"_id": oid(category_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Category not found")
+    db.vendors.update_many({}, {"$pull": {"category_ids": category_id}})
+    db.transactions.update_many({"category_id": category_id}, {"$set": {"category_id": None}})
+    return {"ok": True}
+
+
 # ---------- vendors ----------
 @app.get("/vendors")
-def list_vendors(active_only: bool = True, category_id: str | None = None):
+def list_vendors(active_only: bool = True, category_id: str | None = None, _: dict = Depends(require_authenticated)):
     q = {"active": True} if active_only else {}
     if category_id:
         q["category_ids"] = category_id
     return [serialize(v) for v in db.vendors.find(q).sort("name", 1)]
 
+
 @app.post("/vendors")
-def create_vendor(payload: dict):
+def create_vendor(payload: dict, _: dict = Depends(require_admin)):
     name = (payload.get("name") or "").strip()
     if len(name) < 2:
         raise HTTPException(status_code=400, detail="name is required")
@@ -104,7 +254,6 @@ def create_vendor(payload: dict):
         raise HTTPException(status_code=409, detail="Vendor already exists")
 
     category_ids = payload.get("category_ids") or []
-    # validate categories exist
     for cid in category_ids:
         if not db.categories.find_one({"_id": oid(cid), "active": True}):
             raise HTTPException(status_code=400, detail=f"Invalid category_id: {cid}")
@@ -120,8 +269,55 @@ def create_vendor(payload: dict):
     _id = db.vendors.insert_one(doc).inserted_id
     return serialize(db.vendors.find_one({"_id": _id}))
 
+
+@app.patch("/vendors/{vendor_id}")
+def update_vendor(vendor_id: str, payload: dict, _: dict = Depends(require_admin)):
+    vendor = db.vendors.find_one({"_id": oid(vendor_id)})
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+
+    updates = {}
+    if "name" in payload:
+        name = (payload.get("name") or "").strip()
+        if len(name) < 2:
+            raise HTTPException(status_code=400, detail="name is required")
+        dup = db.vendors.find_one({"name": name, "_id": {"$ne": oid(vendor_id)}})
+        if dup:
+            raise HTTPException(status_code=409, detail="Vendor already exists")
+        updates["name"] = name
+
+    for field in ("phone", "email", "notes"):
+        if field in payload:
+            updates[field] = payload.get(field)
+
+    if "category_ids" in payload:
+        category_ids = payload.get("category_ids") or []
+        for cid in category_ids:
+            if not db.categories.find_one({"_id": oid(cid), "active": True}):
+                raise HTTPException(status_code=400, detail=f"Invalid category_id: {cid}")
+        updates["category_ids"] = category_ids
+
+    if "active" in payload:
+        updates["active"] = bool(payload.get("active"))
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    db.vendors.update_one({"_id": oid(vendor_id)}, {"$set": updates})
+    return serialize(db.vendors.find_one({"_id": oid(vendor_id)}))
+
+
+@app.delete("/vendors/{vendor_id}")
+def delete_vendor(vendor_id: str, _: dict = Depends(require_admin)):
+    result = db.vendors.delete_one({"_id": oid(vendor_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    db.transactions.update_many({"vendor_id": vendor_id}, {"$set": {"vendor_id": None}})
+    return {"ok": True}
+
+
 @app.post("/vendors/{vendor_id}/categories")
-def set_vendor_categories(vendor_id: str, category_ids: list[str]):
+def set_vendor_categories(vendor_id: str, category_ids: list[str], _: dict = Depends(require_admin)):
     if not db.vendors.find_one({"_id": oid(vendor_id)}):
         raise HTTPException(status_code=404, detail="Vendor not found")
     for cid in category_ids:
@@ -130,20 +326,19 @@ def set_vendor_categories(vendor_id: str, category_ids: list[str]):
     db.vendors.update_one({"_id": oid(vendor_id)}, {"$set": {"category_ids": category_ids}})
     return serialize(db.vendors.find_one({"_id": oid(vendor_id)}))
 
+
 # ---------- transactions ----------
 @app.post("/transactions")
-def create_transaction(payload: dict):
+def create_transaction(payload: dict, _: dict = Depends(require_admin)):
     ttype = payload.get("type")
     if ttype not in ("INCOME", "EXPENSE"):
         raise HTTPException(status_code=400, detail="type must be INCOME or EXPENSE")
 
-    # date: accept YYYY-MM-DD string
     d = payload.get("date")
     if not d:
         raise HTTPException(status_code=400, detail="date is required")
     if isinstance(d, str):
         try:
-            # store as ISO string for easy range filters
             datetime.strptime(d, "%Y-%m-%d")
         except Exception:
             raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
@@ -181,6 +376,73 @@ def create_transaction(payload: dict):
     _id = db.transactions.insert_one(doc).inserted_id
     return serialize(db.transactions.find_one({"_id": _id}))
 
+
+@app.patch("/transactions/{transaction_id}")
+def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(require_admin)):
+    tx = db.transactions.find_one({"_id": oid(transaction_id)})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    updates = {}
+    if "date" in payload:
+        d = payload.get("date")
+        try:
+            datetime.strptime(d, "%Y-%m-%d")
+        except Exception:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+        updates["date"] = d
+
+    if "amount" in payload:
+        try:
+            amount = float(payload.get("amount"))
+        except Exception:
+            raise HTTPException(status_code=400, detail="amount is required")
+        if amount <= 0:
+            raise HTTPException(status_code=400, detail="amount must be > 0")
+        updates["amount"] = amount
+
+    if "type" in payload:
+        ttype = payload.get("type")
+        if ttype not in ("INCOME", "EXPENSE"):
+            raise HTTPException(status_code=400, detail="type must be INCOME or EXPENSE")
+        updates["type"] = ttype
+
+    if "category_id" in payload:
+        cid = payload.get("category_id")
+        if cid and not db.categories.find_one({"_id": oid(cid), "active": True}):
+            raise HTTPException(status_code=400, detail="Invalid category_id")
+        updates["category_id"] = cid
+
+    if "vendor_id" in payload:
+        vid = payload.get("vendor_id")
+        if vid and not db.vendors.find_one({"_id": oid(vid), "active": True}):
+            raise HTTPException(status_code=400, detail="Invalid vendor_id")
+        updates["vendor_id"] = vid
+
+    for field in ("description", "reference"):
+        if field in payload:
+            updates[field] = payload.get(field)
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    merged = dict(tx)
+    merged.update(updates)
+    if merged.get("type") == "EXPENSE" and (not merged.get("category_id") or not merged.get("vendor_id")):
+        raise HTTPException(status_code=400, detail="EXPENSE requires category_id and vendor_id")
+
+    db.transactions.update_one({"_id": oid(transaction_id)}, {"$set": updates})
+    return serialize(db.transactions.find_one({"_id": oid(transaction_id)}))
+
+
+@app.delete("/transactions/{transaction_id}")
+def delete_transaction(transaction_id: str, _: dict = Depends(require_admin)):
+    result = db.transactions.delete_one({"_id": oid(transaction_id)})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return {"ok": True}
+
+
 @app.get("/transactions")
 def list_transactions(
     type: str | None = None,
@@ -188,7 +450,8 @@ def list_transactions(
     vendor_id: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
-    limit: int = 200
+    limit: int = 200,
+    _: dict = Depends(require_authenticated),
 ):
     q = {}
     if type:
@@ -207,8 +470,14 @@ def list_transactions(
     cur = db.transactions.find(q).sort([("date", -1), ("created_at", -1)]).limit(min(limit, 500))
     return [serialize(t) for t in cur]
 
+
 @app.get("/stats/spend-by-category")
-def spend_by_category(date_from: str | None = None, date_to: str | None = None, vendor_id: str | None = None):
+def spend_by_category(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    vendor_id: str | None = None,
+    _: dict = Depends(require_authenticated),
+):
     match = {"type": "EXPENSE"}
     if vendor_id:
         match["vendor_id"] = vendor_id
@@ -227,7 +496,6 @@ def spend_by_category(date_from: str | None = None, date_to: str | None = None, 
     rows = list(db.transactions.aggregate(pipeline))
     total = sum(float(r["amount"]) for r in rows) if rows else 0.0
 
-    # map category names
     cat_ids = [oid(r["_id"]) for r in rows if r.get("_id")]
     cats = {}
     if cat_ids:
@@ -238,10 +506,12 @@ def spend_by_category(date_from: str | None = None, date_to: str | None = None, 
     for r in rows:
         cid = r["_id"]
         amt = float(r["amount"])
-        out.append({
-            "category_id": cid,
-            "category_name": cats.get(cid, "(Sin categoría)"),
-            "amount": round(amt, 2),
-            "percent": round((amt / total * 100.0), 2) if total > 0 else 0.0
-        })
+        out.append(
+            {
+                "category_id": cid,
+                "category_name": cats.get(cid, "(Sin categoría)"),
+                "amount": round(amt, 2),
+                "percent": round((amt / total * 100.0), 2) if total > 0 else 0.0,
+            }
+        )
     return {"total_expenses": round(total, 2), "rows": out}
