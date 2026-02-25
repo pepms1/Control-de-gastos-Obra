@@ -24,6 +24,12 @@ db = client[DB_NAME]
 def root():
     return {"status": "API running"}
 
+from fastapi import Response
+
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
+
 @app.get("/docs-test")
 def docs_test():
     return {"message": "If you see this, backend works."}
