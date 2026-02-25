@@ -19,24 +19,28 @@ function Nav({ tab, setTab, role, username, onLogout }) {
       {items
         .filter(([, , show]) => show)
         .map(([k, label]) => (
-          <a
+          <button
             key={k}
-            href="#"
+            type="button"
             className={tab === k ? 'active' : ''}
-            onClick={(e) => {
-              e.preventDefault();
-              setTab(k);
+            onClick={() => setTab(k)}
+            style={{
+              background: 'transparent',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              textAlign: 'left'
             }}
           >
             {label}
-          </a>
+          </button>
         ))}
 
       <div style={{ marginLeft: 'auto' }} className="small">
         {username} ({role})
       </div>
 
-      <button className="secondary" onClick={onLogout}>
+      <button className="secondary" type="button" onClick={onLogout}>
         Salir
       </button>
     </div>
@@ -58,14 +62,8 @@ function Login({ onLogin }) {
 
     try {
       const data = await api.login(username.trim(), password);
-
-      // Guarda token/role/username en localStorage
       saveSession(data);
-
-      // IMPORTANTÍSIMO:
-      // actualiza estado usando lo guardado (incluye token)
       onLogin(getSession());
-
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -116,23 +114,19 @@ export default function App() {
   const isAdmin = session.role === 'ADMIN';
 
   async function refreshCatalog() {
-    const [c, v] = await Promise.all([
-      api.categories(),
-      api.vendors(),
-    ]);
-    setCats(c);
-    setVendors(v);
+    const [c, v] = await Promise.all([api.categories(), api.vendors()]);
+    setCats(Array.isArray(c) ? c : []);
+    setVendors(Array.isArray(v) ? v : []);
   }
 
   useEffect(() => {
     if (!session.token) return;
 
-    // 🔥 FIX: NO machacar el token cuando llamamos /auth/me
     api.me()
       .then((me) =>
-        setSession((s) => ({
-          ...s,
-          ...me, // solo actualiza role/username
+        setSession((prev) => ({
+          ...prev,
+          ...me,
         }))
       )
       .catch(() => {
@@ -163,54 +157,14 @@ export default function App() {
         onLogout={logout}
       />
 
-      <div className="container grid" style={{ gap: 14 }}>
+      <div className="container" style={{ paddingBottom: 40 }}>
         {toast && <div className="card">{toast}</div>}
 
         {tab === 'dashboard' && <Dashboard isAdmin={isAdmin} />}
-
-        {tab === 'add-expense' && isAdmin && (
-          <TxnForm
-            kind="EXPENSE"
-            cats={cats}
-            vendors={vendors}
-            onDone={(m) => {
-              setToast(m);
-              setTab('transactions');
-            }}
-          />
-        )}
-
-        {tab === 'add-income' && isAdmin && (
-          <TxnForm
-            kind="INCOME"
-            cats={cats}
-            vendors={vendors}
-            onDone={(m) => {
-              setToast(m);
-              setTab('transactions');
-            }}
-          />
-        )}
-
-        {tab === 'transactions' && (
-          <Transactions
-            isAdmin={isAdmin}
-            cats={cats}
-            vendors={vendors}
-          />
-        )}
-
-        {tab === 'catalog' && (
-          <Catalog
-            isAdmin={isAdmin}
-            cats={cats}
-            vendors={vendors}
-            onChanged={async () => {
-              await refreshCatalog();
-              setToast('Catálogo actualizado');
-            }}
-          />
-        )}
+        {tab === 'add-expense' && isAdmin && <TxnForm kind="EXPENSE" cats={cats} vendors={vendors} onDone={(m) => { setToast(m); setTab('transactions'); }} />}
+        {tab === 'add-income' && isAdmin && <TxnForm kind="INCOME" cats={cats} vendors={vendors} onDone={(m) => { setToast(m); setTab('transactions'); }} />}
+        {tab === 'transactions' && <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} />}
+        {tab === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={async () => { await refreshCatalog(); setToast('Catálogo actualizado'); }} />}
       </div>
     </>
   );
@@ -254,39 +208,27 @@ function Dashboard({ isAdmin }) {
       ) : stats?.error ? (
         <div style={{ padding: '12px 0' }}>Error: {stats.error}</div>
       ) : (
-        <div style={{ marginTop: 12 }} className="grid">
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <div className="badge">
-              Total egresos: $
-              {Number(stats?.total_expenses || 0).toFixed(2)}
-            </div>
-
-            {isAdmin && (
-              <button
-                className="secondary"
-                onClick={() =>
-                  api.seed()
-                    .then(() => location.reload())
-                    .catch(() => {})
-                }
-              >
-                Seed categorías
-              </button>
-            )}
+        <div style={{ marginTop: 12 }}>
+          <div className="badge">
+            Total egresos: $
+            {Number(stats?.total_expenses || 0).toFixed(2)}
           </div>
+
+          {isAdmin && (
+            <button
+              className="secondary"
+              type="button"
+              onClick={() =>
+                api.seed()
+                  .then(() => location.reload())
+                  .catch(() => {})
+              }
+            >
+              Seed categorías
+            </button>
+          )}
         </div>
       )}
     </div>
   );
 }
-
-/* ================= (RESTO SIN CAMBIOS) ================= */
-
-/* Mantén tus componentes:
-   - TxnForm
-   - Transactions
-   - Catalog
-   - EditModal
-
-   EXACTAMENTE como los tienes.
-*/
