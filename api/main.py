@@ -46,6 +46,12 @@ def serialize(doc):
     return doc
 
 
+def serialize_user(user):
+    user_doc = serialize(user)
+    user_doc.pop("password_hash", None)
+    return user_doc
+
+
 def role_from_token(authorization: str | None = Header(default=None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing Bearer token")
@@ -55,10 +61,18 @@ def role_from_token(authorization: str | None = Header(default=None)):
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    role = payload.get("role")
+    username = payload.get("sub")
+    if not username:
+        raise HTTPException(status_code=401, detail="Invalid token payload")
+
+    user = db.users.find_one({"username": username})
+    if not user or not user.get("active", True):
+        raise HTTPException(status_code=401, detail="User inactive or not found")
+
+    role = user.get("role")
     if role not in ("ADMIN", "VIEWER"):
-        raise HTTPException(status_code=401, detail="Invalid role in token")
-    return {"username": payload.get("sub"), "role": role}
+        raise HTTPException(status_code=401, detail="Invalid role")
+    return {"username": user["username"], "role": role, "active": user.get("active", True)}
 
 
 def require_admin(user=Depends(role_from_token)):
@@ -73,6 +87,7 @@ def require_authenticated(user=Depends(role_from_token)):
 
 def ensure_default_users():
     users = db.users
+    users.create_index("username", unique=True)
 
     default_admin_user = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
     default_admin_pass = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
@@ -93,9 +108,12 @@ def ensure_default_users():
                 "username": username,
                 "password_hash": pwd_context.hash(plain_password),
                 "role": role,
+                "active": True,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
         )
+
+    users.update_many({"active": {"$exists": False}}, {"$set": {"active": True}})
 
 
 def create_token(username: str, role: str):
@@ -138,6 +156,8 @@ def login(payload: dict):
     user = db.users.find_one({"username": username})
     if not user or not pwd_context.verify(password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user.get("active", True):
+        raise HTTPException(status_code=403, detail="User is inactive")
 
     role = user.get("role", "VIEWER")
     token = create_token(username, role)
@@ -147,6 +167,39 @@ def login(payload: dict):
 @app.get("/auth/me")
 def me(user=Depends(require_authenticated)):
     return user
+
+
+@app.post("/users")
+def create_user(payload: dict, _: dict = Depends(require_admin)):
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    role = (payload.get("role") or "").strip().upper()
+    active = bool(payload.get("active", True))
+
+    if len(username) < 3:
+        raise HTTPException(status_code=400, detail="username must have at least 3 characters")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="password must have at least 6 characters")
+    if role not in ("ADMIN", "VIEWER"):
+        raise HTTPException(status_code=400, detail="role must be ADMIN or VIEWER")
+    if db.users.find_one({"username": username}):
+        raise HTTPException(status_code=409, detail="User already exists")
+
+    doc = {
+        "username": username,
+        "password_hash": pwd_context.hash(password),
+        "role": role,
+        "active": active,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _id = db.users.insert_one(doc).inserted_id
+    return serialize_user(db.users.find_one({"_id": _id}))
+
+
+@app.get("/users")
+def list_users(_: dict = Depends(require_admin)):
+    users = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
+    return [serialize(u) for u in users]
 
 
 # ---------- seed categories ----------
