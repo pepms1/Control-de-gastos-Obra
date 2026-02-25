@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession } from '../api.js';
 
 /* ================= NAV ================= */
-
 function Nav({ tab, setTab, role, username, onLogout }) {
   const items = [
     ['dashboard', 'Dashboard', true],
@@ -11,6 +10,18 @@ function Nav({ tab, setTab, role, username, onLogout }) {
     ['transactions', 'Movimientos', true],
     ['catalog', 'Catálogo', true],
   ];
+
+  const linkStyle = (active) => ({
+    background: 'transparent',
+    border: 'none',
+    padding: 0,
+    cursor: 'pointer',
+    textAlign: 'left',
+    font: 'inherit',
+    color: 'inherit',
+    opacity: active ? 1 : 0.85,
+    fontWeight: active ? 800 : 600,
+  });
 
   return (
     <div className="nav">
@@ -24,13 +35,7 @@ function Nav({ tab, setTab, role, username, onLogout }) {
             type="button"
             className={tab === k ? 'active' : ''}
             onClick={() => setTab(k)}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              padding: 0,
-              cursor: 'pointer',
-              textAlign: 'left'
-            }}
+            style={linkStyle(tab === k)}
           >
             {label}
           </button>
@@ -48,7 +53,6 @@ function Nav({ tab, setTab, role, username, onLogout }) {
 }
 
 /* ================= LOGIN ================= */
-
 function Login({ onLogin }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -59,7 +63,6 @@ function Login({ onLogin }) {
     e.preventDefault();
     setErr('');
     setSaving(true);
-
     try {
       const data = await api.login(username.trim(), password);
       saveSession(data);
@@ -75,27 +78,17 @@ function Login({ onLogin }) {
     <div className="container" style={{ maxWidth: 420, marginTop: 80 }}>
       <div className="card">
         <h2 style={{ marginTop: 0 }}>Iniciar sesión</h2>
-
         <form onSubmit={submit} className="grid">
           <div>
             <label>Usuario</label>
             <input value={username} onChange={(e) => setUsername(e.target.value)} />
           </div>
-
           <div>
             <label>Contraseña</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
-
           {err && <div style={{ color: '#b91c1c' }}>{err}</div>}
-
-          <button disabled={saving}>
-            {saving ? 'Ingresando...' : 'Entrar'}
-          </button>
+          <button disabled={saving}>{saving ? 'Ingresando...' : 'Entrar'}</button>
         </form>
       </div>
     </div>
@@ -103,7 +96,6 @@ function Login({ onLogin }) {
 }
 
 /* ================= APP ================= */
-
 export default function App() {
   const [tab, setTab] = useState('dashboard');
   const [cats, setCats] = useState([]);
@@ -126,7 +118,7 @@ export default function App() {
       .then((me) =>
         setSession((prev) => ({
           ...prev,
-          ...me,
+          ...me, // conserva token
         }))
       )
       .catch(() => {
@@ -143,35 +135,60 @@ export default function App() {
     setTab('dashboard');
   }
 
-  if (!session.token) {
-    return <Login onLogin={setSession} />;
-  }
+  if (!session.token) return <Login onLogin={setSession} />;
 
   return (
     <>
-      <Nav
-        tab={tab}
-        setTab={setTab}
-        role={session.role}
-        username={session.username}
-        onLogout={logout}
-      />
+      <Nav tab={tab} setTab={setTab} role={session.role} username={session.username} onLogout={logout} />
 
-      <div className="container" style={{ paddingBottom: 40 }}>
+      <div className="container grid" style={{ gap: 14 }}>
         {toast && <div className="card">{toast}</div>}
 
         {tab === 'dashboard' && <Dashboard isAdmin={isAdmin} />}
-        {tab === 'add-expense' && isAdmin && <TxnForm kind="EXPENSE" cats={cats} vendors={vendors} onDone={(m) => { setToast(m); setTab('transactions'); }} />}
-        {tab === 'add-income' && isAdmin && <TxnForm kind="INCOME" cats={cats} vendors={vendors} onDone={(m) => { setToast(m); setTab('transactions'); }} />}
+
+        {tab === 'add-expense' && isAdmin && (
+          <TxnForm
+            kind="EXPENSE"
+            cats={cats}
+            vendors={vendors}
+            onDone={(m) => {
+              setToast(m);
+              setTab('transactions');
+            }}
+          />
+        )}
+
+        {tab === 'add-income' && isAdmin && (
+          <TxnForm
+            kind="INCOME"
+            cats={cats}
+            vendors={vendors}
+            onDone={(m) => {
+              setToast(m);
+              setTab('transactions');
+            }}
+          />
+        )}
+
         {tab === 'transactions' && <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} />}
-        {tab === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={async () => { await refreshCatalog(); setToast('Catálogo actualizado'); }} />}
+
+        {tab === 'catalog' && (
+          <Catalog
+            isAdmin={isAdmin}
+            cats={cats}
+            vendors={vendors}
+            onChanged={async () => {
+              await refreshCatalog();
+              setToast('Catálogo actualizado');
+            }}
+          />
+        )}
       </div>
     </>
   );
 }
 
 /* ================= DASHBOARD ================= */
-
 function Dashboard({ isAdmin }) {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -202,32 +219,435 @@ function Dashboard({ isAdmin }) {
   return (
     <div className="card">
       <h2 style={{ margin: '0 0 8px' }}>Gasto por categoría</h2>
+      <div className="small">Porcentaje = gasto de la categoría / total de egresos</div>
 
       {loading ? (
         <div style={{ padding: '12px 0' }}>Cargando...</div>
       ) : stats?.error ? (
         <div style={{ padding: '12px 0' }}>Error: {stats.error}</div>
-      ) : (
-        <div style={{ marginTop: 12 }}>
-          <div className="badge">
-            Total egresos: $
-            {Number(stats?.total_expenses || 0).toFixed(2)}
+      ) : stats?.rows?.length ? (
+        <div style={{ marginTop: 12 }} className="grid">
+          <div className="row" style={{ justifyContent: 'space-between' }}>
+            <div className="badge">Total egresos: ${Number(stats.total_expenses || 0).toFixed(2)}</div>
+            {isAdmin && (
+              <button className="secondary" onClick={() => api.seed().then(() => location.reload()).catch(() => {})}>
+                Seed categorías
+              </button>
+            )}
           </div>
 
-          {isAdmin && (
-            <button
-              className="secondary"
-              type="button"
-              onClick={() =>
-                api.seed()
-                  .then(() => location.reload())
-                  .catch(() => {})
-              }
-            >
-              Seed categorías
-            </button>
-          )}
+          {stats.rows.map((r) => (
+            <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <div style={{ fontWeight: 700 }}>{r.category_name}</div>
+                <div>
+                  ${Number(r.amount).toFixed(2)} <span className="small">({r.percent}%)</span>
+                </div>
+              </div>
+              <div className="bar">
+                <div style={{ width: Math.min(100, r.percent) + '%' }} />
+              </div>
+            </div>
+          ))}
         </div>
+      ) : (
+        <div style={{ padding: '12px 0' }}>No hay egresos aún. Registra uno para ver el dashboard.</div>
+      )}
+    </div>
+  );
+}
+
+/* ================= TXN FORM ================= */
+function TxnForm({ kind, cats, vendors, onDone }) {
+  const [amount, setAmount] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [categoryId, setCategoryId] = useState('');
+  const [vendorId, setVendorId] = useState('');
+  const [description, setDescription] = useState('');
+  const [reference, setReference] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (cats.length && !categoryId) setCategoryId(cats[0].id);
+    if (vendors.length && !vendorId) setVendorId(vendors[0].id);
+  }, [cats, vendors]);
+
+  async function submit(e) {
+    e.preventDefault();
+    setErr('');
+    const a = Number(amount);
+    if (!a || a <= 0) return setErr('Monto inválido');
+
+    if (kind === 'EXPENSE' && (!categoryId || !vendorId)) return setErr('Selecciona categoría y proveedor');
+
+    setSaving(true);
+    try {
+      await api.createTransaction({
+        type: kind,
+        date,
+        amount: a,
+        category_id: kind === 'EXPENSE' ? categoryId : null,
+        vendor_id: kind === 'EXPENSE' ? vendorId : null,
+        description,
+        reference,
+      });
+      onDone(kind === 'EXPENSE' ? 'Egreso guardado' : 'Ingreso guardado');
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2 style={{ margin: '0 0 8px' }}>{kind === 'EXPENSE' ? 'Nuevo egreso' : 'Nuevo ingreso'}</h2>
+
+      <form onSubmit={submit} className="grid grid2">
+        <div>
+          <label>Monto</label>
+          <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" inputMode="decimal" />
+        </div>
+        <div>
+          <label>Fecha</label>
+          <input value={date} onChange={(e) => setDate(e.target.value)} placeholder="YYYY-MM-DD" />
+        </div>
+
+        {kind === 'EXPENSE' && (
+          <>
+            <div>
+              <label>Categoría</label>
+              <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+                {cats.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label>Proveedor</label>
+              <select value={vendorId} onChange={(e) => setVendorId(e.target.value)}>
+                {vendors.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </>
+        )}
+
+        <div>
+          <label>Descripción</label>
+          <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Opcional" />
+        </div>
+        <div>
+          <label>Referencia</label>
+          <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Factura/nota (opcional)" />
+        </div>
+
+        {err && <div style={{ gridColumn: '1/-1', color: '#b91c1c' }}>{err}</div>}
+
+        <div style={{ gridColumn: '1/-1' }}>
+          <button disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button>
+        </div>
+      </form>
+
+      <div className="small" style={{ marginTop: 10 }}>
+        Nota: si no ves categorías/proveedores, ve a “Catálogo” o presiona “Seed categorías” en Dashboard.
+      </div>
+    </div>
+  );
+}
+
+/* ================= MODAL ================= */
+function EditModal({ title, children, onClose, onSave }) {
+  return (
+    <div className="modal-backdrop">
+      <div className="modal">
+        <h3>{title}</h3>
+        {children}
+        <div className="row" style={{ justifyContent: 'flex-end', marginTop: 10 }}>
+          <button className="secondary" type="button" onClick={onClose}>
+            Cancelar
+          </button>
+          <button type="button" onClick={onSave}>
+            Guardar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= TRANSACTIONS ================= */
+function Transactions({ isAdmin, cats, vendors }) {
+  const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
+  const venMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
+
+  const [rows, setRows] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [filter, setFilter] = useState('ALL');
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+
+  async function load() {
+    setLoading(true);
+    setErr('');
+    try {
+      const t = await api.transactions();
+      setRows(Array.isArray(t) ? t : []);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const shown = rows.filter((r) => (filter === 'ALL' ? true : r.type === filter));
+
+  async function saveEdit() {
+    await api.updateTransaction(editing.id, editing);
+    setEditing(null);
+    load();
+  }
+
+  async function remove(id) {
+    if (confirm('¿Eliminar movimiento?')) {
+      await api.deleteTransaction(id);
+      load();
+    }
+  }
+
+  return (
+    <div className="card">
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        <h2 style={{ margin: 0 }}>Movimientos</h2>
+        <div className="row">
+          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+            <option value="ALL">Todos</option>
+            <option value="INCOME">Ingresos</option>
+            <option value="EXPENSE">Egresos</option>
+          </select>
+          <button className="secondary" onClick={load}>
+            Refrescar
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div style={{ padding: '12px 0' }}>Cargando...</div>
+      ) : err ? (
+        <div style={{ padding: '12px 0' }}>Error: {err}</div>
+      ) : shown.length ? (
+        <div style={{ overflowX: 'auto', marginTop: 10 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Tipo</th>
+                <th>Descripción</th>
+                <th>Categoría</th>
+                <th>Proveedor</th>
+                <th>Monto</th>
+                {isAdmin && <th>Acciones</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.date}</td>
+                  <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
+                  <td>{r.description || ''}</td>
+                  <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
+                  <td>{r.vendor_id ? venMap[r.vendor_id] || '' : ''}</td>
+                  <td style={{ fontWeight: 800 }}>
+                    {r.type === 'EXPENSE' ? '-' : '+'}${Number(r.amount).toFixed(2)}
+                  </td>
+                  {isAdmin && (
+                    <td>
+                      <button className="secondary" onClick={() => setEditing({ ...r })}>
+                        Editar
+                      </button>{' '}
+                      <button className="secondary" onClick={() => remove(r.id)}>
+                        Eliminar
+                      </button>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div style={{ padding: '12px 0' }}>No hay movimientos.</div>
+      )}
+
+      {editing && (
+        <EditModal title="Editar movimiento" onClose={() => setEditing(null)} onSave={saveEdit}>
+          <div className="grid">
+            <label>Fecha</label>
+            <input value={editing.date || ''} onChange={(e) => setEditing({ ...editing, date: e.target.value })} />
+            <label>Monto</label>
+            <input value={editing.amount || ''} onChange={(e) => setEditing({ ...editing, amount: e.target.value })} />
+            <label>Descripción</label>
+            <input
+              value={editing.description || ''}
+              onChange={(e) => setEditing({ ...editing, description: e.target.value })}
+            />
+          </div>
+        </EditModal>
+      )}
+    </div>
+  );
+}
+
+/* ================= CATALOG ================= */
+function Catalog({ isAdmin, cats, vendors, onChanged }) {
+  const [catName, setCatName] = useState('');
+  const [vendorName, setVendorName] = useState('');
+  const [catEdit, setCatEdit] = useState(null);
+  const [vendorEdit, setVendorEdit] = useState(null);
+  const [err, setErr] = useState('');
+
+  async function addCat(e) {
+    e.preventDefault();
+    setErr('');
+    if (catName.trim().length < 2) return setErr('Nombre de categoría inválido');
+    await api.createCategory(catName.trim());
+    setCatName('');
+    onChanged();
+  }
+
+  async function addVendor(e) {
+    e.preventDefault();
+    setErr('');
+    if (vendorName.trim().length < 2) return setErr('Nombre de proveedor inválido');
+    await api.createVendor({ name: vendorName.trim(), category_ids: [] });
+    setVendorName('');
+    onChanged();
+  }
+
+  return (
+    <div className="grid grid2">
+      <div className="card">
+        <h2 style={{ margin: '0 0 8px' }}>Categorías</h2>
+
+        {isAdmin && (
+          <form onSubmit={addCat} className="row">
+            <div style={{ flex: 1 }}>
+              <label>Nueva categoría</label>
+              <input value={catName} onChange={(e) => setCatName(e.target.value)} placeholder="Ej. Acabados" />
+            </div>
+            <div style={{ marginTop: 18 }}>
+              <button>Agregar</button>
+            </div>
+          </form>
+        )}
+
+        <div style={{ marginTop: 12 }} className="grid">
+          {cats.map((c) => (
+            <div key={c.id} className="row" style={{ justifyContent: 'space-between' }}>
+              <span className="badge">{c.name}</span>
+              {isAdmin && (
+                <span>
+                  <button className="secondary" onClick={() => setCatEdit({ ...c })}>
+                    Editar
+                  </button>{' '}
+                  <button
+                    className="secondary"
+                    onClick={async () => {
+                      await api.deleteCategory(c.id);
+                      onChanged();
+                    }}
+                  >
+                    Eliminar
+                  </button>
+                </span>
+              )}
+            </div>
+          ))}
+          {!cats.length && <div className="small">No hay categorías. Puedes presionar “Seed categorías” en Dashboard.</div>}
+        </div>
+      </div>
+
+      <div className="card">
+        <h2 style={{ margin: '0 0 8px' }}>Proveedores</h2>
+
+        {isAdmin && (
+          <form onSubmit={addVendor} className="row">
+            <div style={{ flex: 1 }}>
+              <label>Nuevo proveedor</label>
+              <input value={vendorName} onChange={(e) => setVendorName(e.target.value)} placeholder="Ej. Ferretería X" />
+            </div>
+            <div style={{ marginTop: 18 }}>
+              <button>Agregar</button>
+            </div>
+          </form>
+        )}
+
+        <div style={{ marginTop: 12 }} className="grid">
+          {vendors.map((v) => (
+            <div key={v.id} className="row" style={{ justifyContent: 'space-between' }}>
+              <span className="badge">{v.name}</span>
+              {isAdmin && (
+                <span>
+                  <button className="secondary" onClick={() => setVendorEdit({ ...v })}>
+                    Editar
+                  </button>{' '}
+                  <button
+                    className="secondary"
+                    onClick={async () => {
+                      await api.deleteVendor(v.id);
+                      onChanged();
+                    }}
+                  >
+                    Eliminar
+                  </button>
+                </span>
+              )}
+            </div>
+          ))}
+          {!vendors.length && <div className="small">No hay proveedores aún.</div>}
+        </div>
+
+        {err && <div style={{ marginTop: 10, color: '#b91c1c' }}>{err}</div>}
+      </div>
+
+      {catEdit && (
+        <EditModal
+          title="Editar categoría"
+          onClose={() => setCatEdit(null)}
+          onSave={async () => {
+            await api.updateCategory(catEdit.id, { name: catEdit.name });
+            setCatEdit(null);
+            onChanged();
+          }}
+        >
+          <label>Nombre</label>
+          <input value={catEdit.name || ''} onChange={(e) => setCatEdit({ ...catEdit, name: e.target.value })} />
+        </EditModal>
+      )}
+
+      {vendorEdit && (
+        <EditModal
+          title="Editar proveedor"
+          onClose={() => setVendorEdit(null)}
+          onSave={async () => {
+            await api.updateVendor(vendorEdit.id, { name: vendorEdit.name });
+            setVendorEdit(null);
+            onChanged();
+          }}
+        >
+          <label>Nombre</label>
+          <input value={vendorEdit.name || ''} onChange={(e) => setVendorEdit({ ...vendorEdit, name: e.target.value })} />
+        </EditModal>
       )}
     </div>
   );
