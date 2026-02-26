@@ -113,7 +113,7 @@ function Login({ onLogin }) {
             <label>Contraseña</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
-          {err && <div style={{ color: '#374151' }}>{err}</div>}
+          {err && <div style={{ color: '#334155' }}>{err}</div>}
           <button disabled={saving}>{saving ? 'Ingresando...' : 'Entrar'}</button>
         </form>
       </div>
@@ -421,7 +421,7 @@ function PieChart({ rows }) {
   );
 }
 
-const PIE_COLORS = ['#166534', '#22c55e', '#15803d', '#4ade80', '#65a30d', '#84cc16', '#16a34a'];
+const PIE_COLORS = ['#12305f', '#1f4d96', '#3b629b', '#5f7ea8', '#7f97b8', '#9fafc7', '#c4cfdf'];
 const ADD_NEW_VENDOR_VALUE = '__add_new_vendor__';
 
 /* ================= TXN FORM ================= */
@@ -537,7 +537,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
           <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Factura/nota (opcional)" />
         </div>
 
-        {err && <div style={{ gridColumn: '1/-1', color: '#b91c1c' }}>{err}</div>}
+        {err && <div style={{ gridColumn: '1/-1', color: '#334155' }}>{err}</div>}
 
         <div style={{ gridColumn: '1/-1' }}>
           <button disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button>
