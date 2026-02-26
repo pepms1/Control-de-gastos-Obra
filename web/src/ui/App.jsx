@@ -536,6 +536,7 @@ function Transactions({ isAdmin, cats, vendors }) {
               <tr>
                 <th>Fecha</th>
                 <th>Tipo</th>
+                <th>Origen</th>
                 <th>Descripción</th>
                 <th>Categoría</th>
                 <th>Proveedor</th>
@@ -548,7 +549,8 @@ function Transactions({ isAdmin, cats, vendors }) {
                 <tr key={r.id}>
                   <td>{r.date}</td>
                   <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
-                  <td>{r.description || ''}</td>
+                  <td>{r.source === 'sap' ? <span className="badge">SAP</span> : ''}</td>
+                  <td>{r.description || r.concept || ''}</td>
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.vendor_id ? venMap[r.vendor_id] || '' : ''}</td>
                   <td style={{ fontWeight: 800 }}>
@@ -556,12 +558,18 @@ function Transactions({ isAdmin, cats, vendors }) {
                   </td>
                   {isAdmin && (
                     <td>
-                      <button className="secondary" onClick={() => setEditing({ ...r })}>
-                        Editar
-                      </button>{' '}
-                      <button className="secondary" onClick={() => remove(r.id)}>
-                        Eliminar
-                      </button>
+                      {r.source === 'sap' ? (
+                        <span className="small">Importado</span>
+                      ) : (
+                        <>
+                          <button className="secondary" onClick={() => setEditing({ ...r })}>
+                            Editar
+                          </button>{' '}
+                          <button className="secondary" onClick={() => remove(r.id)}>
+                            Eliminar
+                          </button>
+                        </>
+                      )}
                     </td>
                   )}
                 </tr>
