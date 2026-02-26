@@ -214,13 +214,40 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "MontoAplicado",
     ]
 
+    def normalize_header(header_value):
+        if header_value is None:
+            return ""
+        return str(header_value).replace("\ufeff", "").strip()
+
     if file_name.lower().endswith(".csv"):
         decoded = file_bytes.decode("utf-8-sig")
-        reader = csv.DictReader(decoded.splitlines())
-        headers = reader.fieldnames or []
+        reader = csv.reader(decoded.splitlines())
+        rows = list(reader)
+        if not rows:
+            return []
+
+        headers = [normalize_header(h) for h in rows[0]]
         if headers != expected_headers:
             raise HTTPException(status_code=400, detail=f"Invalid headers. Expected: {expected_headers}")
-        return list(reader)
+
+        parsed = []
+        for values in rows[1:]:
+            row_values = values
+            if len(values) > len(expected_headers):
+                repaired_values = values[:6] + [",".join(values[6:-3])] + values[-3:]
+                row_values = repaired_values
+
+            row_dict = {}
+            for idx, h in enumerate(expected_headers):
+                row_dict[h] = row_values[idx] if idx < len(row_values) else None
+
+            if len(values) != len(expected_headers):
+                row_dict["__csvRepairApplied"] = len(values) > len(expected_headers)
+                row_dict["__csvOriginalFieldCount"] = len(values)
+
+            parsed.append(row_dict)
+
+        return parsed
 
     if file_name.lower().endswith(".xlsx"):
         wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
@@ -228,7 +255,7 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
             return []
-        headers = [str(h).strip() if h is not None else "" for h in rows[0]]
+        headers = [normalize_header(h) for h in rows[0]]
         if headers != expected_headers:
             raise HTTPException(status_code=400, detail=f"Invalid headers. Expected: {expected_headers}")
 
@@ -422,6 +449,14 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
 
     for idx, row in enumerate(rows, start=2):
         try:
+            if row.get("__csvRepairApplied") and len(errors_sample) < 50:
+                errors_sample.append(
+                    {
+                        "row": idx,
+                        "warning": f"CSV row repaired from {row.get('__csvOriginalFieldCount')} columns to 10",
+                    }
+                )
+
             payment_num = str(row.get("PagoNum") or "").strip()
             card_code = str(row.get("CardCode") or "").strip()
             beneficiary = str(row.get("Beneficiario") or "").strip()
