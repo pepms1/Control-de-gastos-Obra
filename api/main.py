@@ -1259,9 +1259,25 @@ def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(req
     merged = dict(tx)
     merged.update(updates)
     if merged.get("type") == "EXPENSE" and (not merged.get("category_id") or not merged.get("vendor_id")):
-        raise HTTPException(status_code=400, detail="EXPENSE requires category_id and vendor_id")
+        if tx.get("source") != "sap":
+            raise HTTPException(status_code=400, detail="EXPENSE requires category_id and vendor_id")
 
     db.transactions.update_one({"_id": oid(transaction_id)}, {"$set": updates})
+
+    category_id = updates.get("category_id")
+    if category_id:
+        supplier_id = tx.get("supplierId")
+        if supplier_id:
+            db.transactions.update_many(
+                {"supplierId": supplier_id, "type": "EXPENSE"},
+                {"$set": {"category_id": category_id, "categoryId": category_id}},
+            )
+        elif tx.get("vendor_id"):
+            db.transactions.update_many(
+                {"vendor_id": tx.get("vendor_id"), "type": "EXPENSE"},
+                {"$set": {"category_id": category_id}},
+            )
+
     return serialize(db.transactions.find_one({"_id": oid(transaction_id)}))
 
 
