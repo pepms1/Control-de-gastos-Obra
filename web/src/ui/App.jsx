@@ -721,6 +721,22 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
 
   const shownIds = shown.map((r) => r.id);
   const allShownSelected = shownIds.length > 0 && shownIds.every((id) => selectedRows.includes(id));
+  const shownTotals = useMemo(() => {
+    return shown.reduce(
+      (acc, row) => {
+        const amount = Number(row.amount) || 0;
+        if (row.type === 'EXPENSE') {
+          acc.expenses += amount;
+          acc.net -= amount;
+        } else {
+          acc.income += amount;
+          acc.net += amount;
+        }
+        return acc;
+      },
+      { income: 0, expenses: 0, net: 0 }
+    );
+  }, [shown]);
 
   return (
     <div className="card">
@@ -854,6 +870,16 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 </tr>
               ))}
             </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={isAdmin ? 6 : 6} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (filtro actual):</td>
+                <td style={{ fontWeight: 800 }}>
+                  +${formatMoney(shownTotals.income)} / -${formatMoney(shownTotals.expenses)}
+                </td>
+                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {shownTotals.net >= 0 ? '+' : '-'}${formatMoney(Math.abs(shownTotals.net))}</td>}
+                {isAdmin && <td />}
+              </tr>
+            </tfoot>
           </table>
         </div>
       ) : (
