@@ -22,10 +22,10 @@ function parseMoneyInput(value) {
 function Nav({ tab, setTab, role, username, onLogout }) {
   const items = [
     ['dashboard', 'Dashboard', true],
-    ['import-sap', 'Importar datos SAP', role === 'ADMIN'],
     ['transactions', 'Movimientos', true],
     ['search', 'Buscar', true],
     ['catalog', 'Catálogo', true],
+    ['import-sap', 'Importar datos SAP', role === 'ADMIN'],
   ];
 
   const linkStyle = (active) => ({
