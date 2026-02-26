@@ -587,6 +587,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   const [newCategoryName, setNewCategoryName] = useState('');
   const [editErr, setEditErr] = useState('');
   const [savingCategory, setSavingCategory] = useState(false);
+  const [selectedRows, setSelectedRows] = useState([]);
+  const [bulkCategoryId, setBulkCategoryId] = useState('');
+  const [bulkSaving, setBulkSaving] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -604,6 +607,10 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    setSelectedRows([]);
+  }, [filter, categoryFilter, supplierFilter, sortBy, rows]);
 
   const supplierOptions = useMemo(() => {
     const byId = new Map();
@@ -678,6 +685,48 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     }
   }
 
+  function toggleSelected(id) {
+    setSelectedRows((prev) => (prev.includes(id) ? prev.filter((rowId) => rowId !== id) : [...prev, id]));
+  }
+
+  function toggleSelectAllShown() {
+    const shownIds = shown.map((r) => r.id);
+    const allSelected = shownIds.length > 0 && shownIds.every((id) => selectedRows.includes(id));
+    setSelectedRows((prev) => {
+      if (allSelected) return prev.filter((id) => !shownIds.includes(id));
+      const merged = new Set([...prev, ...shownIds]);
+      return Array.from(merged);
+    });
+  }
+
+  async function applyBulkCategory() {
+    if (!selectedRows.length) return;
+    setBulkSaving(true);
+    setErr('');
+    try {
+      const selected = rows.filter((r) => selectedRows.includes(r.id));
+      await Promise.all(
+        selected.map((r) =>
+          api.updateTransaction(r.id, {
+            date: r.date,
+            amount: parseMoneyInput(r.amount),
+            description: r.description,
+            category_id: bulkCategoryId || null,
+          })
+        )
+      );
+      setSelectedRows([]);
+      await load();
+    } catch (e) {
+      setErr(e.message || 'No se pudo actualizar la categoría en lote.');
+    } finally {
+      setBulkSaving(false);
+    }
+  }
+
+  const shownIds = shown.map((r) => r.id);
+  const allShownSelected = shownIds.length > 0 && shownIds.every((id) => selectedRows.includes(id));
+
   return (
     <div className="card">
       <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -708,6 +757,28 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
         </div>
       </div>
 
+      {isAdmin && (
+        <div className="row" style={{ marginTop: 10, justifyContent: 'space-between' }}>
+          <div className="small">Seleccionados: {selectedRows.length}</div>
+          <div className="row">
+            <select value={bulkCategoryId} onChange={(e) => setBulkCategoryId(e.target.value)}>
+              <option value="">Sin categoría</option>
+              {cats.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <button
+              className="secondary"
+              type="button"
+              onClick={applyBulkCategory}
+              disabled={!selectedRows.length || bulkSaving}
+            >
+              {bulkSaving ? 'Aplicando...' : 'Cambiar categoría (selección múltiple)'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {loading ? (
         <div style={{ padding: '12px 0' }}>Cargando...</div>
       ) : err ? (
@@ -725,9 +796,20 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <th>Proveedor</th>
                 <th>Monto</th>
                 {isAdmin && <th>Acciones</th>}
+                {isAdmin && <th>Seleccionar</th>}
               </tr>
             </thead>
             <tbody>
+              {isAdmin && (
+                <tr>
+                  <td colSpan={9} style={{ textAlign: 'right' }}>
+                    <label className="row" style={{ justifyContent: 'flex-end' }}>
+                      <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
+                      Seleccionar todos (filtro actual)
+                    </label>
+                  </td>
+                </tr>
+              )}
               {shown.map((r) => (
                 <tr key={r.id}>
                   <td>{r.date}</td>
@@ -755,6 +837,16 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                           <button className="secondary" onClick={() => remove(r.id)}>Eliminar</button>
                         </>
                       )}
+                    </td>
+                  )}
+                  {isAdmin && (
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedRows.includes(r.id)}
+                        onChange={() => toggleSelected(r.id)}
+                        aria-label={`Seleccionar movimiento ${r.id}`}
+                      />
                     </td>
                   )}
                 </tr>
