@@ -273,7 +273,8 @@ function Dashboard({ isAdmin }) {
           : 'Totales agrupados por proveedor (SAP).'}
       </div>
 
-      {loading ? (
+      
+{loading ? (
         <div style={{ padding: '12px 0' }}>Cargando...</div>
       ) : stats?.error ? (
         <div style={{ padding: '12px 0' }}>Error: {stats.error}</div>
@@ -561,6 +562,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   const [rows, setRows] = useState([]);
+  const [serverTotals, setServerTotals] = useState(null);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
@@ -580,8 +582,14 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     setLoading(true);
     setErr('');
     try {
-      const t = await api.transactions();
-      setRows(Array.isArray(t) ? t : []);
+      const response = await api.transactions({ withTotals: '1' });
+      if (Array.isArray(response)) {
+        setRows(response);
+        setServerTotals(null);
+      } else {
+        setRows(Array.isArray(response?.items) ? response.items : []);
+        setServerTotals(response?.totals || null);
+      }
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -726,7 +734,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
       (acc, row) => {
         const amount = Number(row.amount) || 0;
         if (row.type === 'EXPENSE') {
+          const montoSinIva = Number(row.montoSinIva ?? row.amount) || 0;
           acc.expenses += amount;
+          acc.expensesWithoutTax += montoSinIva;
           acc.net -= amount;
         } else {
           acc.income += amount;
@@ -734,7 +744,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
         }
         return acc;
       },
-      { income: 0, expenses: 0, net: 0 }
+      { income: 0, expenses: 0, expensesWithoutTax: 0, net: 0 }
     );
   }, [shown]);
 
@@ -797,6 +807,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
         </div>
       )}
 
+      <div className="row" style={{ gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
+        <div className="badge">Total egresos sin IVA: ${formatMoney(serverTotals?.egresos?.sinIva ?? shownTotals.expensesWithoutTax)}</div>
+        <div className="badge">Total egresos bruto: ${formatMoney(serverTotals?.egresos?.bruto ?? shownTotals.expenses)}</div>
+      </div>
+
       {loading ? (
         <div style={{ padding: '12px 0' }}>Cargando...</div>
       ) : err ? (
@@ -813,6 +828,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <th>Categoría</th>
                 <th>Proveedor</th>
                 <th>Monto</th>
+                <th>Monto sin IVA</th>
                 {isAdmin && <th>Acciones</th>}
                 {isAdmin && <th>Seleccionar</th>}
               </tr>
@@ -820,7 +836,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             <tbody>
               {isAdmin && (
                 <tr>
-                  <td colSpan={9} style={{ textAlign: 'right' }}>
+                  <td colSpan={isAdmin ? 10 : 8} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (filtro actual)
@@ -837,6 +853,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
+                  <td style={{ fontWeight: 700 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.montoSinIva ?? r.amount)}</td>
                   {isAdmin && (
                     <td>
                       <button
@@ -872,10 +889,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={isAdmin ? 6 : 6} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (filtro actual):</td>
+                <td colSpan={6} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (filtro actual):</td>
                 <td style={{ fontWeight: 800 }}>
                   +${formatMoney(shownTotals.income)} / -${formatMoney(shownTotals.expenses)}
                 </td>
+                <td style={{ fontWeight: 800 }}>-${formatMoney(shownTotals.expensesWithoutTax)}</td>
                 {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {shownTotals.net >= 0 ? '+' : '-'}${formatMoney(Math.abs(shownTotals.net))}</td>}
                 {isAdmin && <td />}
               </tr>

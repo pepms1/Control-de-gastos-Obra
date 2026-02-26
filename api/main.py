@@ -231,6 +231,67 @@ def parse_decimal(value):
         raise ValueError(f"Invalid number: {value}") from exc
 
 
+def parse_optional_decimal(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return parse_decimal(value)
+
+
+def compute_monto_sin_iva(tx: dict):
+    amount = round(float(tx.get("amount") or 0), 2)
+    tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else None
+    if tax is None:
+        return amount
+
+    subtotal = tax.get("subtotal")
+    if subtotal is not None:
+        try:
+            return round(float(subtotal), 2)
+        except (TypeError, ValueError):
+            pass
+
+    iva = tax.get("iva")
+    if iva is not None:
+        try:
+            return round(amount - float(iva), 2)
+        except (TypeError, ValueError):
+            pass
+
+    return amount
+
+
+def build_transactions_query(
+    type_value: str | None = None,
+    category_id: str | None = None,
+    vendor_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    project_id: str | None = None,
+    origen: str | None = None,
+):
+    q = {}
+    if type_value:
+        q["type"] = type_value
+    if category_id:
+        q["category_id"] = category_id
+    if vendor_id:
+        q["vendor_id"] = vendor_id
+    if project_id:
+        q["projectId"] = project_id
+    if origen:
+        q["source"] = origen
+    if date_from or date_to:
+        q["date"] = {}
+        if date_from:
+            q["date"]["$gte"] = date_from
+        if date_to:
+            q["date"]["$lte"] = date_to
+    return q
+
+
 def parse_sap_file(file_name: str, file_bytes: bytes):
     expected_headers = [
         "PagoNum",
@@ -256,6 +317,7 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "fechafactura",
         "montoaplicado",
     ]
+    optional_tax_headers = ["subtotal", "iva", "retenciones", "totalfactura"]
     canonical_to_expected = dict(zip(canonical_headers, expected_headers))
     header_aliases = {
         "docnum": "pagonum",
@@ -267,6 +329,7 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "facturaproveedor": "facturaproveedornum",
         "nrofactura": "facturaproveedornum",
         "numfactura": "facturaproveedornum",
+        "impuesto": "iva",
     }
 
     def normalize_header(header_value):
@@ -283,7 +346,7 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
             canonical = header_aliases.get(normalized, normalized)
             if normalized == "fecha" and not has_fechafactura:
                 canonical = "fechapago"
-            if canonical in canonical_headers and canonical not in header_index:
+            if canonical in (canonical_headers + optional_tax_headers) and canonical not in header_index:
                 header_index[canonical] = idx
 
         missing = [h for h in canonical_headers if h not in header_index]
@@ -395,6 +458,9 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
                 expected = canonical_to_expected[canonical]
                 source_idx = header_index[canonical]
                 row_dict[expected] = row_values[source_idx] if source_idx < len(row_values) else None
+            for tax_key in optional_tax_headers:
+                source_idx = header_index.get(tax_key)
+                row_dict[tax_key] = row_values[source_idx] if source_idx is not None and source_idx < len(row_values) else None
 
             if should_try_repair:
                 row_dict["__csvRepairApplied"] = len(values) > len(rows[0])
@@ -419,6 +485,9 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
                 expected = canonical_to_expected[canonical]
                 source_idx = header_index[canonical]
                 row_dict[expected] = values[source_idx] if source_idx < len(values) else None
+            for tax_key in optional_tax_headers:
+                source_idx = header_index.get(tax_key)
+                row_dict[tax_key] = values[source_idx] if source_idx is not None and source_idx < len(values) else None
             parsed.append(row_dict)
         return parsed
 
@@ -674,6 +743,11 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
             total_payment = parse_decimal(row.get("TotalPago"))
             applied_amount = parse_decimal(row.get("MontoAplicado"))
 
+            subtotal = parse_optional_decimal(row.get("subtotal"))
+            iva = parse_optional_decimal(row.get("iva"))
+            retenciones = parse_optional_decimal(row.get("retenciones"))
+            total_factura = parse_optional_decimal(row.get("totalfactura"))
+
             if card_code not in existing_cardcodes and card_code not in created_cardcodes:
                 suppliers_created += 1
                 created_cardcodes.add(card_code)
@@ -707,6 +781,12 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
                     "totalPayment": total_payment,
                     "concept": concept,
                     "beneficiary": beneficiary,
+                    "tax": {
+                        "subtotal": subtotal,
+                        "iva": iva,
+                        "retenciones": retenciones,
+                        "totalFactura": total_factura,
+                    } if any(value is not None for value in (subtotal, iva, retenciones, total_factura)) else None,
                 }
             )
             rows_ok += 1
@@ -807,6 +887,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
                 "category_id": None,
                 "vendor_id": None,
                 "source": "sap",
+                "tax": record.get("tax"),
                 "sap": {
                     "pagoNum": record["paymentNum"],
                     "facturaNum": record["invoiceNum"],
@@ -1355,28 +1436,30 @@ def delete_transaction(transaction_id: str, _: dict = Depends(require_admin)):
 
 
 @app.get("/transactions")
+@app.get("/api/movimientos")
 def list_transactions(
     type: str | None = None,
+    tipo: str | None = None,
     category_id: str | None = None,
     vendor_id: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    projectId: str | None = None,
+    origen: str | None = None,
+    withTotals: int = 0,
     limit: int = 200,
     _: dict = Depends(require_authenticated),
 ):
-    q = {}
-    if type:
-        q["type"] = type
-    if category_id:
-        q["category_id"] = category_id
-    if vendor_id:
-        q["vendor_id"] = vendor_id
-    if date_from or date_to:
-        q["date"] = {}
-        if date_from:
-            q["date"]["$gte"] = date_from
-        if date_to:
-            q["date"]["$lte"] = date_to
+    effective_type = type or tipo
+    q = build_transactions_query(
+        type_value=effective_type,
+        category_id=category_id,
+        vendor_id=vendor_id,
+        date_from=date_from,
+        date_to=date_to,
+        project_id=projectId,
+        origen=origen,
+    )
 
     txs = list(db.transactions.find(q).sort([("date", -1), ("created_at", -1)]).limit(min(limit, 500)))
 
@@ -1394,7 +1477,37 @@ def list_transactions(
         for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1, "cardCode": 1}):
             suppliers_by_id[str(supplier["_id"])] = supplier
 
-    return [serialize_transaction_with_supplier(tx, suppliers_by_id) for tx in txs]
+    items = []
+    totals = {
+        "egresos": {"bruto": 0.0, "sinIva": 0.0},
+        "ingresos": {"bruto": 0.0},
+        "netoSinIva": 0.0,
+    }
+
+    for tx in txs:
+        monto_sin_iva = compute_monto_sin_iva(tx)
+        tx_doc = serialize_transaction_with_supplier(tx, suppliers_by_id)
+        tx_doc["montoSinIva"] = monto_sin_iva
+        items.append(tx_doc)
+
+        amount = round(float(tx.get("amount") or 0), 2)
+        if tx.get("type") == "EXPENSE":
+            totals["egresos"]["bruto"] += amount
+            totals["egresos"]["sinIva"] += monto_sin_iva
+            totals["netoSinIva"] -= monto_sin_iva
+        else:
+            totals["ingresos"]["bruto"] += amount
+            totals["netoSinIva"] += amount
+
+    totals["egresos"]["bruto"] = round(totals["egresos"]["bruto"], 2)
+    totals["egresos"]["sinIva"] = round(totals["egresos"]["sinIva"], 2)
+    totals["ingresos"]["bruto"] = round(totals["ingresos"]["bruto"], 2)
+    totals["netoSinIva"] = round(totals["netoSinIva"], 2)
+
+    if withTotals == 1:
+        return {"items": items, "totals": totals}
+
+    return items
 
 
 @app.get("/stats/spend-by-category")
