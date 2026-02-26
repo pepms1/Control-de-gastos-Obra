@@ -1,0 +1,8 @@
+<svg width="520" height="430" viewBox="0 0 520 430" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="520" height="430" fill="#f3f4f6"/>
+  <path d="M20 130H258V348L20 275V130Z" fill="#022B75"/>
+  <path d="M260 20L500 95V275H260V20Z" fill="#9F9FA5"/>
+  <text x="24" y="106" font-family="Arial, Helvetica, sans-serif" font-size="58" letter-spacing="24" fill="#001A4D">GRUPO</text>
+  <text x="26" y="280" font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="190" font-weight="900" fill="white">md</text>
+  <text x="280" y="280" font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="190" font-weight="900" fill="#002E85">i</text>
+</svg>
