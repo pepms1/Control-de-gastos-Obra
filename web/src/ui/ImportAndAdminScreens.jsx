@@ -7,7 +7,7 @@ function valueToArray(value) {
   return [value];
 }
 
-function ImportSapScreen() {
+export function ImportSapScreen() {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [summary, setSummary] = useState(null);

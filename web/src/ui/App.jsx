@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession } from '../api.js';
+import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 
 const moneyFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
@@ -21,8 +22,7 @@ function parseMoneyInput(value) {
 function Nav({ tab, setTab, role, username, onLogout }) {
   const items = [
     ['dashboard', 'Dashboard', true],
-    ['add-expense', 'Nuevo egreso', role === 'ADMIN'],
-    ['add-income', 'Nuevo ingreso', role === 'ADMIN'],
+    ['import-sap', 'Importar datos SAP', role === 'ADMIN'],
     ['transactions', 'Movimientos', true],
     ['search', 'Buscar', true],
     ['catalog', 'Catálogo', true],
@@ -178,29 +178,7 @@ export default function App() {
 
         {tab === 'dashboard' && <Dashboard isAdmin={isAdmin} />}
 
-        {tab === 'add-expense' && isAdmin && (
-          <TxnForm
-            kind="EXPENSE"
-            cats={cats}
-            vendors={vendors}
-            onDone={(m) => {
-              setToast(m);
-              setTab('transactions');
-            }}
-          />
-        )}
-
-        {tab === 'add-income' && isAdmin && (
-          <TxnForm
-            kind="INCOME"
-            cats={cats}
-            vendors={vendors}
-            onDone={(m) => {
-              setToast(m);
-              setTab('transactions');
-            }}
-          />
-        )}
+        {tab === 'import-sap' && isAdmin && <ImportSapScreen />}
 
         {tab === 'transactions' && (
           <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} onCatalogChanged={refreshCatalog} />
