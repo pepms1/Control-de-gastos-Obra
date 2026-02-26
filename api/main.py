@@ -874,6 +874,41 @@ def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int =
     return run_sap_import(file_name, file_bytes, project, force, source="sap-payments-cron")
 
 
+@app.get("/api/expenses/summary-by-supplier")
+def summary_expenses_by_supplier(
+    project: str = "CALDERON DE LA BARCA",
+    _: dict = Depends(require_authenticated),
+):
+    project_name = (project or "").strip() or "CALDERON DE LA BARCA"
+    project_doc = db.projects.find_one({"name": project_name})
+    if not project_doc:
+        return []
+
+    project_id = str(project_doc["_id"])
+    pipeline = [
+        {"$match": {"type": "EXPENSE", "projectId": project_id}},
+        {"$group": {"_id": "$supplierId", "totalAmount": {"$sum": "$amount"}, "count": {"$sum": 1}}},
+    ]
+    rows = list(db.transactions.aggregate(pipeline))
+
+    supplier_ids = [oid(row["_id"]) for row in rows if row.get("_id")]
+    supplier_names = {}
+    if supplier_ids:
+        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1}):
+            supplier_names[str(supplier["_id"])] = supplier.get("name") or "(Sin proveedor)"
+
+    output = [
+        {
+            "supplierId": row.get("_id"),
+            "supplierName": supplier_names.get(row.get("_id"), "(Sin proveedor)"),
+            "totalAmount": round(float(row.get("totalAmount") or 0), 2),
+            "count": int(row.get("count") or 0),
+        }
+        for row in rows
+    ]
+
+    output.sort(key=lambda item: (item["supplierName"] or "").lower())
+    return output
 @app.post("/api/admin/backfill/suppliers-to-vendors")
 def backfill_suppliers_to_vendors(project: str = "CALDERON DE LA BARCA", _: dict = Depends(require_admin)):
     project_id = get_or_create_project_id(project)

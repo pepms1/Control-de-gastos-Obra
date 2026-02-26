@@ -208,6 +208,7 @@ export default function App() {
 function Dashboard({ isAdmin }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
+  const [supplierSummaryError, setSupplierSummaryError] = useState('');
   const [viewMode, setViewMode] = useState('category');
   const [loading, setLoading] = useState(true);
 
@@ -215,6 +216,25 @@ function Dashboard({ isAdmin }) {
     let ok = true;
     setLoading(true);
 
+    Promise.allSettled([api.spendByCategory(), api.expensesSummaryBySupplier()]).then(([categoryResult, supplierResult]) => {
+      if (!ok) return;
+
+      if (categoryResult.status === 'fulfilled') {
+        setStats(categoryResult.value);
+      } else {
+        setStats({ error: categoryResult.reason?.message || 'No se pudo cargar el dashboard.' });
+      }
+
+      if (supplierResult.status === 'fulfilled') {
+        setSupplierSummary(Array.isArray(supplierResult.value) ? supplierResult.value : []);
+        setSupplierSummaryError('');
+      } else {
+        setSupplierSummary([]);
+        setSupplierSummaryError(supplierResult.reason?.message || 'No se pudo cargar la vista por proveedor.');
+      }
+
+      setLoading(false);
+    });
     Promise.all([api.spendByCategory(), api.expensesSummaryBySupplier()])
       .then(([categoryStats, supplierStats]) => {
         if (ok) {
@@ -286,6 +306,36 @@ function Dashboard({ isAdmin }) {
             </div>
           ))}
         </div>
+      ) : viewMode === 'supplier' ? (
+        supplierSummaryError ? (
+          <div style={{ padding: '12px 0' }}>Error: {supplierSummaryError}</div>
+        ) : supplierSummary.length ? (
+          <div style={{ marginTop: 12 }} className="grid">
+            <div className="badge">Total egresos SAP: ${formatMoney(supplierTotal)}</div>
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Proveedor</th>
+                    <th>Movimientos</th>
+                    <th>Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {supplierSummary.map((row) => (
+                    <tr key={row.supplierId || row.supplierName}>
+                      <td>{row.supplierName || '(Sin proveedor)'}</td>
+                      <td>{row.count}</td>
+                      <td>${formatMoney(row.totalAmount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: '12px 0' }}>No hay egresos SAP agrupados por proveedor para mostrar.</div>
+        )
       ) : viewMode === 'supplier' && supplierSummary.length ? (
         <div style={{ marginTop: 12 }} className="grid">
           <div className="badge">Total egresos SAP: ${formatMoney(supplierTotal)}</div>
