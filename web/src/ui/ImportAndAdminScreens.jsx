@@ -1,0 +1,261 @@
+import React, { useEffect, useState } from 'react';
+import { api } from '../api.js';
+
+function valueToArray(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  return [value];
+}
+
+function ImportSapScreen() {
+  const [file, setFile] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [summary, setSummary] = useState(null);
+  const [errors, setErrors] = useState([]);
+  const [message, setMessage] = useState('');
+
+  async function onSubmit(e) {
+    e.preventDefault();
+    if (!file) {
+      setMessage('Selecciona un archivo para importar.');
+      return;
+    }
+
+    setLoading(true);
+    setMessage('');
+    setSummary(null);
+    setErrors([]);
+
+    try {
+      const response = await api.importSapPayments(file);
+      setSummary(response?.summary || response || null);
+      setErrors(valueToArray(response?.errors));
+      setMessage('Importación finalizada.');
+    } catch (err) {
+      setMessage(err.message || 'No se pudo importar el archivo.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="container grid">
+      <div className="card">
+        <h2 style={{ marginTop: 0 }}>Importar pagos SAP</h2>
+        <form className="grid" onSubmit={onSubmit}>
+          <div>
+            <label>Archivo</label>
+            <input type="file" accept=".csv,.xlsx,.xls,.txt" onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          </div>
+          <button type="submit" disabled={loading}>
+            {loading ? 'Importando...' : 'Subir e importar'}
+          </button>
+        </form>
+        {message && <p className="small" style={{ marginBottom: 0 }}>{message}</p>}
+      </div>
+
+      {summary && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Summary</h3>
+          <pre style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}>{JSON.stringify(summary, null, 2)}</pre>
+        </div>
+      )}
+
+      {errors.length > 0 && (
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Errores</h3>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {errors.map((error, idx) => (
+              <li key={`${idx}-${String(error)}`}>{typeof error === 'string' ? error : JSON.stringify(error)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UnclassifiedSuppliersScreen() {
+  const [suppliers, setSuppliers] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [selected, setSelected] = useState({});
+  const [savingId, setSavingId] = useState(null);
+  const [error, setError] = useState('');
+
+  async function load() {
+    setError('');
+    try {
+      const [supplierData, categoryData] = await Promise.all([api.unclassifiedSuppliers(), api.supplierCategories()]);
+      setSuppliers(Array.isArray(supplierData) ? supplierData : []);
+      setCategories(Array.isArray(categoryData) ? categoryData : []);
+    } catch (err) {
+      setError(err.message || 'No se pudieron cargar proveedores sin clasificar.');
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function saveCategory(supplierId) {
+    const categoryId = selected[supplierId];
+    if (!categoryId) return;
+
+    setSavingId(supplierId);
+    setError('');
+    try {
+      await api.updateSupplierCategory(supplierId, Number(categoryId));
+      await load();
+    } catch (err) {
+      setError(err.message || 'No se pudo guardar la categoría.');
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  return (
+    <div className="container grid">
+      <div className="card">
+        <h2 style={{ marginTop: 0 }}>Proveedores sin clasificar</h2>
+        {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Proveedor</th>
+              <th>Categoría</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {suppliers.map((supplier) => (
+              <tr key={supplier.id}>
+                <td>{supplier.id}</td>
+                <td>{supplier.name || supplier.nombre || 'Sin nombre'}</td>
+                <td>
+                  <select
+                    value={selected[supplier.id] || ''}
+                    onChange={(e) => setSelected((prev) => ({ ...prev, [supplier.id]: e.target.value }))}
+                  >
+                    <option value="">Selecciona...</option>
+                    {categories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name || category.nombre}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    onClick={() => saveCategory(supplier.id)}
+                    disabled={savingId === supplier.id || !selected[supplier.id]}
+                  >
+                    {savingId === supplier.id ? 'Guardando...' : 'Guardar'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {suppliers.length === 0 && (
+              <tr>
+                <td colSpan={4} className="small">
+                  No hay proveedores sin clasificar.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SupplierCategoriesScreen() {
+  const [categories, setCategories] = useState([]);
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function load() {
+    setError('');
+    try {
+      const data = await api.supplierCategories();
+      setCategories(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setError(err.message || 'No se pudieron cargar categorías.');
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function createCategory(e) {
+    e.preventDefault();
+    if (!name.trim()) return;
+
+    setSaving(true);
+    setError('');
+    try {
+      await api.createSupplierCategory(name.trim());
+      setName('');
+      await load();
+    } catch (err) {
+      setError(err.message || 'No se pudo crear la categoría.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="container grid grid2">
+      <div className="card">
+        <h2 style={{ marginTop: 0 }}>Crear categoría</h2>
+        <form className="grid" onSubmit={createCategory}>
+          <div>
+            <label>Nombre</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej: Hormigón" />
+          </div>
+          <button type="submit" disabled={saving}>
+            {saving ? 'Guardando...' : 'Crear categoría'}
+          </button>
+        </form>
+        {error && <p style={{ color: '#b91c1c', marginBottom: 0 }}>{error}</p>}
+      </div>
+
+      <div className="card">
+        <h2 style={{ marginTop: 0 }}>Categorías</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Nombre</th>
+            </tr>
+          </thead>
+          <tbody>
+            {categories.map((category) => (
+              <tr key={category.id}>
+                <td>{category.id}</td>
+                <td>{category.name || category.nombre}</td>
+              </tr>
+            ))}
+            {categories.length === 0 && (
+              <tr>
+                <td colSpan={2} className="small">
+                  No hay categorías cargadas.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+export function renderRoute(pathname) {
+  if (pathname === '/imports/sap') return <ImportSapScreen />;
+  if (pathname === '/admin/suppliers/unclassified') return <UnclassifiedSuppliersScreen />;
+  if (pathname === '/admin/categories') return <SupplierCategoriesScreen />;
+  return null;
+}
