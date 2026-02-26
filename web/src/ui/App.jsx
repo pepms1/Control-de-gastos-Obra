@@ -186,7 +186,7 @@ export default function App() {
           />
         )}
 
-        {tab === 'transactions' && <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} />}
+        {tab === 'transactions' && <Transactions isAdmin={isAdmin} cats={cats} />}
 
         {tab === 'catalog' && (
           <Catalog
@@ -235,6 +235,21 @@ function Dashboard({ isAdmin }) {
 
       setLoading(false);
     });
+    Promise.all([api.spendByCategory(), api.expensesSummaryBySupplier()])
+      .then(([categoryStats, supplierStats]) => {
+        if (ok) {
+          setStats(categoryStats);
+          setSupplierSummary(Array.isArray(supplierStats) ? supplierStats : []);
+          setLoading(false);
+        }
+      })
+      .catch((e) => {
+        if (ok) {
+          setStats({ error: e.message });
+          setSupplierSummary([]);
+          setLoading(false);
+        }
+      });
 
     return () => {
       ok = false;
@@ -321,6 +336,30 @@ function Dashboard({ isAdmin }) {
         ) : (
           <div style={{ padding: '12px 0' }}>No hay egresos SAP agrupados por proveedor para mostrar.</div>
         )
+      ) : viewMode === 'supplier' && supplierSummary.length ? (
+        <div style={{ marginTop: 12 }} className="grid">
+          <div className="badge">Total egresos SAP: ${formatMoney(supplierTotal)}</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Proveedor</th>
+                  <th>Movimientos</th>
+                  <th>Subtotal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {supplierSummary.map((row) => (
+                  <tr key={row.supplierId || row.supplierName}>
+                    <td>{row.supplierName || '(Sin proveedor)'}</td>
+                    <td>{row.count}</td>
+                    <td>${formatMoney(row.totalAmount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       ) : (
         <div style={{ padding: '12px 0' }}>No hay egresos aún. Registra uno para ver el dashboard.</div>
       )}
@@ -519,9 +558,8 @@ function EditModal({ title, children, onClose, onSave }) {
 }
 
 /* ================= TRANSACTIONS ================= */
-function Transactions({ isAdmin, cats, vendors }) {
+function Transactions({ isAdmin, cats }) {
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
-  const venMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   const [rows, setRows] = useState([]);
   const [editing, setEditing] = useState(null);
@@ -625,7 +663,7 @@ function Transactions({ isAdmin, cats, vendors }) {
                   <td>{r.source === 'sap' ? <span className="badge">SAP</span> : ''}</td>
                   <td>{r.description || r.concept || ''}</td>
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
-                  <td>{r.vendor_id ? venMap[r.vendor_id] || '' : ''}</td>
+                  <td>{r.proveedorNombre || r.supplierName || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>
                     {r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}
                   </td>
