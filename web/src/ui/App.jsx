@@ -316,6 +316,7 @@ function PieChart({ rows }) {
 }
 
 const PIE_COLORS = ['#166534', '#22c55e', '#15803d', '#4ade80', '#65a30d', '#84cc16', '#16a34a'];
+const ADD_NEW_VENDOR_VALUE = '__add_new_vendor__';
 
 /* ================= TXN FORM ================= */
 function TxnForm({ kind, cats, vendors, onDone }) {
@@ -323,6 +324,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [categoryId, setCategoryId] = useState('');
   const [vendorId, setVendorId] = useState('');
+  const [newVendorName, setNewVendorName] = useState('');
   const [description, setDescription] = useState('');
   const [reference, setReference] = useState('');
   const [saving, setSaving] = useState(false);
@@ -331,6 +333,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
   useEffect(() => {
     if (cats.length && !categoryId) setCategoryId(cats[0].id);
     if (vendors.length && !vendorId) setVendorId(vendors[0].id);
+    if (!vendors.length) setVendorId(ADD_NEW_VENDOR_VALUE);
   }, [cats, vendors]);
 
   async function submit(e) {
@@ -341,14 +344,25 @@ function TxnForm({ kind, cats, vendors, onDone }) {
 
     if (kind === 'EXPENSE' && (!categoryId || !vendorId)) return setErr('Selecciona categoría y proveedor');
 
+    const creatingNewVendor = kind === 'EXPENSE' && vendorId === ADD_NEW_VENDOR_VALUE;
+    if (creatingNewVendor && newVendorName.trim().length < 2) {
+      return setErr('Escribe un nombre de proveedor válido');
+    }
+
     setSaving(true);
     try {
+      let finalVendorId = vendorId;
+      if (creatingNewVendor) {
+        const createdVendor = await api.createVendor({ name: newVendorName.trim(), category_ids: [] });
+        finalVendorId = createdVendor?.id;
+      }
+
       await api.createTransaction({
         type: kind,
         date,
         amount: a,
         category_id: kind === 'EXPENSE' ? categoryId : null,
-        vendor_id: kind === 'EXPENSE' ? vendorId : null,
+        vendor_id: kind === 'EXPENSE' ? finalVendorId : null,
         description,
         reference,
       });
@@ -394,7 +408,16 @@ function TxnForm({ kind, cats, vendors, onDone }) {
                     {v.name}
                   </option>
                 ))}
+                <option value={ADD_NEW_VENDOR_VALUE}>Agregar nuevo...</option>
               </select>
+              {vendorId === ADD_NEW_VENDOR_VALUE && (
+                <input
+                  style={{ marginTop: 8 }}
+                  value={newVendorName}
+                  onChange={(e) => setNewVendorName(e.target.value)}
+                  placeholder="Nombre del proveedor"
+                />
+              )}
             </div>
           </>
         )}
