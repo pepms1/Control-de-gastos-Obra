@@ -27,6 +27,12 @@ th, td{padding:10px 8px; border-bottom:1px solid #dbeafe; text-align:left;}
 .bar > div{height:100%; background:#2563eb;}
 .small{font-size:12px; color:#475569;}
 
+.login-container{max-width:420px; margin-top:50px;}
+.login-brand{display:grid; justify-items:center; text-align:center; gap:8px; margin-bottom:12px;}
+.login-brand-image{width:min(250px,100%); border-radius:10px; border:1px solid #dbeafe; background:#fff;}
+.login-brand h1{margin:0; font-size:28px; letter-spacing:.08em; text-transform:uppercase; color:#0f172a;}
+.login-brand p{margin:0; font-size:14px; letter-spacing:.16em; text-transform:uppercase; color:#475569;}
+
 .pie-card{display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:8px 0;}
 .pie-chart{width:170px; height:170px; border-radius:50%; border:8px solid #eff6ff; box-shadow:inset 0 0 0 1px rgba(29,78,216,.18);}
 .pie-legend{display:grid; gap:8px; min-width:220px; flex:1;}

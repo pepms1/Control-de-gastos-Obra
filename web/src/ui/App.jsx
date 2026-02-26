@@ -96,8 +96,13 @@ function Login({ onLogin }) {
   }
 
   return (
-    <div className="container" style={{ maxWidth: 420, marginTop: 80 }}>
+    <div className="container login-container">
       <div className="card">
+        <div className="login-brand">
+          <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="login-brand-image" />
+          <h1>Grupo MDI</h1>
+          <p>control de obra</p>
+        </div>
         <h2 style={{ marginTop: 0 }}>Iniciar sesión</h2>
         <form onSubmit={submit} className="grid">
           <div>
