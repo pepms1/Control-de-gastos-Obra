@@ -1327,7 +1327,10 @@ def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(req
     db.transactions.update_one({"_id": oid(transaction_id)}, {"$set": updates})
 
     category_id = updates.get("category_id")
-    if category_id:
+    existing_category_id = tx.get("category_id") or tx.get("categoryId")
+    should_apply_category_to_related = bool(category_id and not existing_category_id)
+
+    if should_apply_category_to_related:
         supplier_id = tx.get("supplierId")
         if supplier_id:
             db.transactions.update_many(
