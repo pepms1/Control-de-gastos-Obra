@@ -154,7 +154,14 @@ def ensure_indexes():
     db.paymentLines.create_index([("paymentId", 1), ("apInvoiceId", 1), ("appliedAmount", 1)], unique=True)
     db.importRuns.create_index("sha256", unique=True)
     db.transactions.create_index(
-        [("projectId", 1), ("sap.pagoNum", 1), ("sap.facturaNum", 1), ("sap.montoAplicado", 1)],
+        [
+            ("projectId", 1),
+            ("source", 1),
+            ("sourceDb", 1),
+            ("sap.pagoNum", 1),
+            ("sap.facturaNum", 1),
+            ("sap.montoAplicado", 1),
+        ],
         unique=True,
         partialFilterExpression={"source": "sap"},
     )
@@ -674,7 +681,16 @@ def get_or_create_project_id(project: str):
     return str(project_doc["_id"])
 
 
-def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, source: str = "sap-payments"):
+def run_sap_import(
+    file_name: str,
+    file_bytes: bytes,
+    project: str,
+    force: int,
+    source: str = "sap-payments",
+    mode: str = "upsert",
+    confirm_rebuild: int = 0,
+    allow_rebuild: bool = False,
+):
     file_hash = sha256(file_bytes).hexdigest()
 
     existing_run = db.importRuns.find_one({"sha256": file_hash})
@@ -685,6 +701,20 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
 
     now = datetime.now(timezone.utc).isoformat()
     project_id = get_or_create_project_id(project)
+    import_mode = (mode or "upsert").strip().lower()
+
+    if import_mode not in ("upsert", "rebuild"):
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'upsert' or 'rebuild'.")
+
+    if import_mode == "rebuild":
+        if not allow_rebuild:
+            raise HTTPException(status_code=403, detail="Rebuild mode requires ADMIN role.")
+        if confirm_rebuild != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Rebuild mode requires explicit confirmation (?confirm_rebuild=1).",
+            )
+        db.transactions.delete_many({"projectId": project_id, "source": "sap"})
 
     import_run_doc = {
         "sha256": file_hash,
@@ -909,10 +939,11 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
                 UpdateOne(
                     {
                         "projectId": project_id,
+                        "source": "sap",
+                        "sourceDb": "IVA" if record.get("tax") else "SAP",
                         "sap.pagoNum": record["paymentNum"],
                         "sap.facturaNum": record["invoiceNum"],
                         "sap.montoAplicado": record["appliedAmount"],
-                        "source": "sap",
                     },
                     {"$set": sap_doc, "$setOnInsert": {"created_at": datetime.now(timezone.utc).isoformat()}},
                     upsert=True,
@@ -965,14 +996,25 @@ async def import_sap_payments(
     file: UploadFile = File(...),
     project: str = "CALDERON DE LA BARCA",
     force: int = 0,
-    _: dict = Depends(require_admin),
+    mode: str = "upsert",
+    confirm_rebuild: int = 0,
+    admin_user: dict = Depends(require_admin),
 ):
     file_bytes = await file.read()
-    return run_sap_import(file.filename or "", file_bytes, project, force, source="sap-payments")
+    return run_sap_import(
+        file.filename or "",
+        file_bytes,
+        project,
+        force,
+        source="sap-payments",
+        mode=mode,
+        confirm_rebuild=confirm_rebuild,
+        allow_rebuild=admin_user["role"] == "ADMIN",
+    )
 
 
 @app.post("/api/cron/import/sap-payments")
-def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int = 0):
+def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int = 0, mode: str = "upsert"):
     sap_import_url = (os.getenv("SAP_IMPORT_URL") or "").strip()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1024,7 +1066,7 @@ def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int =
             detail={"status": "failed_download", "importRunId": str(import_run_id), "error": str(exc)},
         ) from exc
 
-    return run_sap_import(file_name, file_bytes, project, force, source="sap-payments-cron")
+    return run_sap_import(file_name, file_bytes, project, force, source="sap-payments-cron", mode=mode)
 
 
 @app.get("/api/expenses/summary-by-supplier")
