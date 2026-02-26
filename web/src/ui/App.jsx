@@ -568,7 +568,12 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [supplierFilter, setSupplierFilter] = useState('ALL');
   const [searchFilter, setSearchFilter] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [sortBy, setSortBy] = useState('date_desc');
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [limit] = useState(50);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -578,18 +583,26 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   const [bulkCategoryId, setBulkCategoryId] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
 
-  async function load() {
+  async function load(targetPage = page) {
     setLoading(true);
     setErr('');
     try {
-      const response = await api.transactions({ withTotals: '1' });
-      if (Array.isArray(response)) {
-        setRows(response);
-        setServerTotals(null);
-      } else {
-        setRows(Array.isArray(response?.items) ? response.items : []);
-        setServerTotals(response?.totals || null);
-      }
+      const response = await api.transactions({
+        withTotals: '1',
+        page: String(targetPage),
+        limit: String(limit),
+        type: filter === 'ALL' ? '' : filter,
+        category_id: categoryFilter === 'ALL' ? '' : categoryFilter,
+        supplierId: supplierFilter === 'ALL' ? '' : supplierFilter,
+        q: searchFilter.trim(),
+        from: dateFrom,
+        to: dateTo,
+      });
+
+      setRows(Array.isArray(response?.items) ? response.items : []);
+      setServerTotals(response?.totals || null);
+      setTotalCount(Number(response?.totalCount) || 0);
+      setPage(Number(response?.page) || targetPage);
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -598,14 +611,12 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   }
 
   useEffect(() => {
-    load();
-  }, []);
+    load(1);
+  }, [filter, categoryFilter, supplierFilter, searchFilter, dateFrom, dateTo]);
 
   useEffect(() => {
     setSelectedRows([]);
-  }, [filter, categoryFilter, supplierFilter, searchFilter, sortBy, rows]);
-
-  const normalizedSearch = searchFilter.trim().toLowerCase();
+  }, [rows, sortBy]);
 
   const supplierOptions = useMemo(() => {
     const byId = new Map();
@@ -616,35 +627,20 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     return Array.from(byId.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
   }, [rows, vendorMap]);
 
-  const shown = [...rows]
-    .filter((r) => (filter === 'ALL' ? true : r.type === filter))
-    .filter((r) => (categoryFilter === 'ALL' ? true : r.category_id === categoryFilter))
-    .filter((r) => {
-      if (supplierFilter === 'ALL') return true;
-      return (r.supplierId || r.vendor_id || '') === supplierFilter;
-    })
-    .filter((r) => {
-      if (!normalizedSearch) return true;
-      const supplierName = (r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '').toLowerCase();
-      const concept = (r.description || r.concept || '').toLowerCase();
-      const categoryName = (r.category_id ? catMap[r.category_id] || '' : '').toLowerCase();
-      const typeLabel = (r.type === 'EXPENSE' ? 'egreso' : 'ingreso').toLowerCase();
-      return [supplierName, concept, categoryName, typeLabel, r.date || ''].some((value) => value.includes(normalizedSearch));
-    })
-    .sort((a, b) => {
-      if (sortBy === 'supplier_asc') {
-        const aSupplier = (a.proveedorNombre || a.supplierName || vendorMap[a.vendor_id] || a.proveedor?.name || '').toLowerCase();
-        const bSupplier = (b.proveedorNombre || b.supplierName || vendorMap[b.vendor_id] || b.proveedor?.name || '').toLowerCase();
-        if (aSupplier !== bSupplier) return aSupplier.localeCompare(bSupplier, 'es');
-      }
+  const shown = [...rows].sort((a, b) => {
+    if (sortBy === 'supplier_asc') {
+      const aSupplier = (a.proveedorNombre || a.supplierName || vendorMap[a.vendor_id] || a.proveedor?.name || '').toLowerCase();
+      const bSupplier = (b.proveedorNombre || b.supplierName || vendorMap[b.vendor_id] || b.proveedor?.name || '').toLowerCase();
+      if (aSupplier !== bSupplier) return aSupplier.localeCompare(bSupplier, 'es');
+    }
 
-      if (a.date === b.date) {
-        const aCreatedAt = a.created_at || '';
-        const bCreatedAt = b.created_at || '';
-        return bCreatedAt.localeCompare(aCreatedAt);
-      }
-      return b.date.localeCompare(a.date);
-    });
+    if (a.date === b.date) {
+      const aCreatedAt = a.created_at || '';
+      const bCreatedAt = b.created_at || '';
+      return bCreatedAt.localeCompare(aCreatedAt);
+    }
+    return b.date.localeCompare(a.date);
+  });
 
   async function saveEdit() {
     setEditErr('');
@@ -657,7 +653,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     await api.updateTransaction(editing.id, payload);
     setEditing(null);
     setNewCategoryName('');
-    load();
+    load(page);
   }
 
   async function createCategoryFromEdit() {
@@ -684,7 +680,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   async function remove(id) {
     if (confirm('¿Eliminar movimiento?')) {
       await api.deleteTransaction(id);
-      load();
+      load(page);
     }
   }
 
@@ -702,42 +698,33 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     });
   }
 
+  const allShownSelected = shown.length > 0 && shown.every((r) => selectedRows.includes(r.id));
+
   async function applyBulkCategory() {
     if (!selectedRows.length) return;
     setBulkSaving(true);
-    setErr('');
     try {
-      const selected = rows.filter((r) => selectedRows.includes(r.id));
-      await Promise.all(
-        selected.map((r) =>
-          api.updateTransaction(r.id, {
-            date: r.date,
-            amount: parseMoneyInput(r.amount),
-            description: r.description,
-            category_id: bulkCategoryId || null,
-          })
-        )
-      );
+      await Promise.all(selectedRows.map((id) => api.updateTransaction(id, { category_id: bulkCategoryId || null })));
       setSelectedRows([]);
-      await load();
-    } catch (e) {
-      setErr(e.message || 'No se pudo actualizar la categoría en lote.');
+      load(page);
     } finally {
       setBulkSaving(false);
     }
   }
 
-  const shownIds = shown.map((r) => r.id);
-  const allShownSelected = shownIds.length > 0 && shownIds.every((id) => selectedRows.includes(id));
   const shownTotals = useMemo(() => {
     return shown.reduce(
+      (acc, r) => {
+        const amount = Number(r.amount || 0);
+        const amountWithoutTax = Number(r.montoSinIva ?? r.amount ?? 0);
+        if (r.type === 'EXPENSE') {
       (acc, row) => {
         const amount = Number(row.amount) || 0;
         if (row.type === 'EXPENSE') {
           const montoSinIva = Number(row.montoSinIva ?? 0) || 0;
           acc.expenses += amount;
-          acc.expensesWithoutTax += montoSinIva;
-          acc.net -= amount;
+          acc.expensesWithoutTax += amountWithoutTax;
+          acc.net -= amountWithoutTax;
         } else {
           acc.income += amount;
           acc.net += amount;
@@ -748,6 +735,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     );
   }, [shown]);
 
+  const rangeStart = totalCount === 0 ? 0 : (page - 1) * limit + 1;
+  const rangeEnd = Math.min(page * limit, totalCount);
+
   return (
     <div className="card">
       <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -757,21 +747,26 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             type="search"
             placeholder="Buscar en movimientos"
             value={searchFilter}
-            onChange={(e) => setSearchFilter(e.target.value)}
+            onChange={(e) => {
+              setPage(1);
+              setSearchFilter(e.target.value);
+            }}
             style={{ minWidth: 220 }}
           />
-          <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <input type="date" value={dateFrom} onChange={(e) => { setPage(1); setDateFrom(e.target.value); }} />
+          <input type="date" value={dateTo} onChange={(e) => { setPage(1); setDateTo(e.target.value); }} />
+          <select value={filter} onChange={(e) => { setPage(1); setFilter(e.target.value); }}>
             <option value="ALL">Todos</option>
             <option value="INCOME">Ingresos</option>
             <option value="EXPENSE">Egresos</option>
           </select>
-          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+          <select value={categoryFilter} onChange={(e) => { setPage(1); setCategoryFilter(e.target.value); }}>
             <option value="ALL">Todas las categorías</option>
             {cats.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
           </select>
-          <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+          <select value={supplierFilter} onChange={(e) => { setPage(1); setSupplierFilter(e.target.value); }}>
             <option value="ALL">Todos los proveedores</option>
             {supplierOptions.map(([id, name]) => (
               <option key={id} value={id}>{name}</option>
@@ -781,9 +776,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             <option value="date_desc">Fecha (más reciente)</option>
             <option value="supplier_asc">Proveedor (A-Z)</option>
           </select>
-          <button className="secondary" onClick={load}>Refrescar</button>
+          <button className="secondary" onClick={() => load(page)}>Refrescar</button>
         </div>
       </div>
+
+      <div className="small" style={{ marginTop: 8 }}>Mostrando {rangeStart}–{rangeEnd} de {totalCount}</div>
 
       {isAdmin && (
         <div className="row" style={{ marginTop: 10, justifyContent: 'space-between' }}>
@@ -840,7 +837,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td colSpan={isAdmin ? 11 : 9} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
-                      Seleccionar todos (filtro actual)
+                      Seleccionar todos (página actual)
                     </label>
                   </td>
                 </tr>
@@ -891,7 +888,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={6} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (filtro actual):</td>
+                <td colSpan={6} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (página actual):</td>
                 <td style={{ fontWeight: 800 }}>
                   +${formatMoney(shownTotals.income)} / -${formatMoney(shownTotals.expenses)}
                 </td>
@@ -906,6 +903,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
       ) : (
         <div style={{ padding: '12px 0' }}>No hay movimientos.</div>
       )}
+
+      <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+        <button className="secondary" onClick={() => load(page - 1)} disabled={page <= 1 || loading}>Anterior</button>
+        <button className="secondary" onClick={() => load(page + 1)} disabled={rangeEnd >= totalCount || loading}>Siguiente</button>
+      </div>
 
       {editing && (
         <EditModal title="Editar movimiento" onClose={() => setEditing(null)} onSave={saveEdit}>
@@ -945,20 +947,17 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
 function SearchTransactions({ cats, vendors }) {
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   useEffect(() => {
-    api.transactions().then((data) => setRows(Array.isArray(data) ? data : [])).catch(() => setRows([]));
-  }, []);
-
-  const needle = query.trim().toLowerCase();
-  const shown = rows.filter((r) => {
-    if (!needle) return true;
-    const supplier = (r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '').toLowerCase();
-    const concept = (r.description || r.concept || '').toLowerCase();
-    return supplier.includes(needle) || concept.includes(needle);
-  });
+    setLoading(true);
+    api.transactions({ q: query.trim(), page: '1', limit: '100' })
+      .then((data) => setRows(Array.isArray(data?.items) ? data.items : []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [query]);
 
   return (
     <div className="card">
@@ -969,7 +968,7 @@ function SearchTransactions({ cats, vendors }) {
         onChange={(e) => setQuery(e.target.value)}
         style={{ maxWidth: 420 }}
       />
-      <div className="small" style={{ marginTop: 8 }}>{shown.length} resultados</div>
+      <div className="small" style={{ marginTop: 8 }}>{loading ? 'Buscando...' : `${rows.length} resultados (primeros 100)`}</div>
       <div style={{ overflowX: 'auto', marginTop: 10 }}>
         <table>
           <thead>
@@ -978,7 +977,7 @@ function SearchTransactions({ cats, vendors }) {
             </tr>
           </thead>
           <tbody>
-            {shown.map((r) => (
+            {rows.map((r) => (
               <tr key={r.id}>
                 <td>{r.date}</td>
                 <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
@@ -987,7 +986,7 @@ function SearchTransactions({ cats, vendors }) {
                 <td>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
               </tr>
             ))}
-            {!shown.length && (
+            {!rows.length && !loading && (
               <tr><td colSpan={5} className="small">Sin resultados</td></tr>
             )}
           </tbody>
