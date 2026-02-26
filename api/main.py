@@ -1,11 +1,16 @@
-from fastapi import FastAPI, HTTPException, Response, Depends
+from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File
 from fastapi import Header
 from fastapi.middleware.cors import CORSMiddleware
-from pymongo import MongoClient
+from pymongo import MongoClient, UpdateOne
 from bson import ObjectId
 from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from hashlib import sha256
+from decimal import Decimal, InvalidOperation
+from io import BytesIO
+import csv
+import openpyxl
 import os
 
 app = FastAPI(title="Control de Obra API")
@@ -116,13 +121,100 @@ def ensure_default_users():
     users.update_many({"active": {"$exists": False}}, {"$set": {"active": True}})
 
 
+def ensure_indexes():
+    db.users.create_index("username", unique=True)
+    db.suppliers.create_index("cardCode", unique=True)
+    db.supplierCategories.create_index("name", unique=True)
+    db.projects.create_index("name", unique=True)
+    db.payments.create_index([("projectId", 1), ("sapPaymentNum", 1)], unique=True)
+    db.apInvoices.create_index([("projectId", 1), ("sapInvoiceNum", 1)], unique=True)
+    db.paymentLines.create_index([("paymentId", 1), ("apInvoiceId", 1), ("appliedAmount", 1)], unique=True)
+    db.importRuns.create_index("sha256", unique=True)
+
+
 def create_token(username: str, role: str):
     exp = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
     payload = {"sub": username, "role": role, "exp": exp}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+ensure_indexes()
 ensure_default_users()
+
+
+def parse_excel_date(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(cleaned, fmt).date().isoformat()
+            except Exception:
+                continue
+    raise ValueError(f"Invalid date value: {value}")
+
+
+def parse_decimal(value):
+    if value is None:
+        raise ValueError("Amount is required")
+    if isinstance(value, (int, float, Decimal)):
+        return round(float(value), 2)
+    text = str(value).strip()
+    if not text:
+        raise ValueError("Amount is required")
+    normalized = text.replace(",", "")
+    try:
+        return round(float(Decimal(normalized)), 2)
+    except InvalidOperation as exc:
+        raise ValueError(f"Invalid number: {value}") from exc
+
+
+def parse_sap_file(file_name: str, file_bytes: bytes):
+    expected_headers = [
+        "PagoNum",
+        "FechaPago",
+        "CardCode",
+        "Beneficiario",
+        "Moneda",
+        "TotalPago",
+        "ConceptoPago",
+        "FacturaProveedorNum",
+        "FechaFactura",
+        "MontoAplicado",
+    ]
+
+    if file_name.lower().endswith(".csv"):
+        decoded = file_bytes.decode("utf-8-sig")
+        reader = csv.DictReader(decoded.splitlines())
+        headers = reader.fieldnames or []
+        if headers != expected_headers:
+            raise HTTPException(status_code=400, detail=f"Invalid headers. Expected: {expected_headers}")
+        return list(reader)
+
+    if file_name.lower().endswith(".xlsx"):
+        wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return []
+        headers = [str(h).strip() if h is not None else "" for h in rows[0]]
+        if headers != expected_headers:
+            raise HTTPException(status_code=400, detail=f"Invalid headers. Expected: {expected_headers}")
+
+        parsed = []
+        for values in rows[1:]:
+            row_dict = {}
+            for idx, h in enumerate(expected_headers):
+                row_dict[h] = values[idx] if idx < len(values) else None
+            parsed.append(row_dict)
+        return parsed
+
+    raise HTTPException(status_code=400, detail="Only CSV and XLSX files are supported")
 
 # ---------- health ----------
 @app.get("/")
@@ -200,6 +292,268 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
 def list_users(_: dict = Depends(require_admin)):
     users = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
     return [serialize(u) for u in users]
+
+
+@app.get("/api/supplier-categories")
+def list_supplier_categories(_: dict = Depends(require_authenticated)):
+    return [serialize(c) for c in db.supplierCategories.find({}).sort("name", 1)]
+
+
+@app.post("/api/supplier-categories")
+def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
+    name = (payload.get("name") or "").strip()
+    if len(name) < 2:
+        raise HTTPException(status_code=400, detail="name is required")
+    if db.supplierCategories.find_one({"name": name}):
+        raise HTTPException(status_code=409, detail="Supplier category already exists")
+    _id = db.supplierCategories.insert_one({"name": name}).inserted_id
+    return serialize(db.supplierCategories.find_one({"_id": _id}))
+
+
+@app.get("/api/suppliers")
+def list_suppliers(uncategorized: int = 0, _: dict = Depends(require_authenticated)):
+    query = {}
+    if uncategorized == 1:
+        query = {"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]}
+    return [serialize(s) for s in db.suppliers.find(query).sort("name", 1)]
+
+
+@app.patch("/api/suppliers/{supplier_id}")
+def update_supplier(supplier_id: str, payload: dict, _: dict = Depends(require_admin)):
+    supplier = db.suppliers.find_one({"_id": oid(supplier_id)})
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    category_id = payload.get("categoryId")
+    if category_id is not None:
+        if not db.supplierCategories.find_one({"_id": oid(category_id)}):
+            raise HTTPException(status_code=400, detail="Invalid categoryId")
+        db.suppliers.update_one({"_id": oid(supplier_id)}, {"$set": {"categoryId": category_id}})
+    else:
+        db.suppliers.update_one({"_id": oid(supplier_id)}, {"$set": {"categoryId": None}})
+
+    return serialize(db.suppliers.find_one({"_id": oid(supplier_id)}))
+
+
+@app.post("/api/import/sap-payments")
+async def import_sap_payments(
+    file: UploadFile = File(...),
+    project: str = "CALDERON DE LA BARCA",
+    force: int = 0,
+    _: dict = Depends(require_admin),
+):
+    file_bytes = await file.read()
+    file_hash = sha256(file_bytes).hexdigest()
+
+    existing_run = db.importRuns.find_one({"sha256": file_hash})
+    if existing_run and force != 1:
+        return {"already_imported": True, "importRunId": str(existing_run["_id"]) }
+
+    now = datetime.now(timezone.utc).isoformat()
+    project_doc = db.projects.find_one_and_update(
+        {"name": project.strip() or "CALDERON DE LA BARCA"},
+        {"$setOnInsert": {"name": project.strip() or "CALDERON DE LA BARCA"}},
+        upsert=True,
+    )
+    if not project_doc:
+        project_doc = db.projects.find_one({"name": project.strip() or "CALDERON DE LA BARCA"})
+    project_id = str(project_doc["_id"])
+
+    import_run_doc = {
+        "sha256": file_hash,
+        "fileName": file.filename,
+        "source": "sap-payments",
+        "projectId": project_id,
+        "rowsTotal": 0,
+        "rowsOk": 0,
+        "rowsSkipped": 0,
+        "rowsError": 0,
+        "status": "processing",
+        "startedAt": now,
+        "finishedAt": None,
+        "errorsSample": [],
+    }
+
+    if existing_run and force == 1:
+        db.importRuns.update_one({"_id": existing_run["_id"]}, {"$set": import_run_doc})
+        import_run_id = existing_run["_id"]
+    else:
+        import_run_id = db.importRuns.insert_one(import_run_doc).inserted_id
+
+    rows = parse_sap_file(file.filename or "", file_bytes)
+
+    suppliers_created = 0
+    payments_upserted = 0
+    invoices_upserted = 0
+    lines_inserted = 0
+    duplicates_skipped = 0
+    rows_ok = 0
+    rows_error = 0
+    errors_sample = []
+
+    suppliers_ops = []
+    line_records = []
+    existing_cardcodes = {s["cardCode"] for s in db.suppliers.find({}, {"cardCode": 1})}
+    created_cardcodes = set()
+
+    for idx, row in enumerate(rows, start=2):
+        try:
+            payment_num = str(row.get("PagoNum") or "").strip()
+            card_code = str(row.get("CardCode") or "").strip()
+            beneficiary = str(row.get("Beneficiario") or "").strip()
+            currency = str(row.get("Moneda") or "").strip()
+            concept = str(row.get("ConceptoPago") or "").strip()
+            invoice_num = str(row.get("FacturaProveedorNum") or "").strip()
+
+            if not payment_num or not card_code or not invoice_num:
+                raise ValueError("PagoNum, CardCode y FacturaProveedorNum son obligatorios")
+
+            payment_date = parse_excel_date(row.get("FechaPago"))
+            invoice_date = parse_excel_date(row.get("FechaFactura"))
+            total_payment = parse_decimal(row.get("TotalPago"))
+            applied_amount = parse_decimal(row.get("MontoAplicado"))
+
+            if card_code not in existing_cardcodes and card_code not in created_cardcodes:
+                suppliers_created += 1
+                created_cardcodes.add(card_code)
+
+            suppliers_ops.append(
+                UpdateOne(
+                    {"cardCode": card_code},
+                    {
+                        "$setOnInsert": {"cardCode": card_code, "categoryId": None},
+                        "$set": {"name": beneficiary or card_code},
+                    },
+                    upsert=True,
+                )
+            )
+
+            payment_key = f"{payment_num}|{card_code}|{payment_date}|{currency}|{total_payment}|{concept}"
+            invoice_key = f"{invoice_num}|{card_code}|{invoice_date}"
+            line_records.append(
+                {
+                    "rowNumber": idx,
+                    "paymentNum": payment_num,
+                    "invoiceNum": invoice_num,
+                    "cardCode": card_code,
+                    "paymentKey": payment_key,
+                    "invoiceKey": invoice_key,
+                    "appliedAmount": applied_amount,
+                    "paymentDate": payment_date,
+                    "invoiceDate": invoice_date,
+                    "currency": currency,
+                    "totalPayment": total_payment,
+                    "concept": concept,
+                    "beneficiary": beneficiary,
+                }
+            )
+            rows_ok += 1
+        except Exception as exc:
+            rows_error += 1
+            if len(errors_sample) < 50:
+                errors_sample.append({"row": idx, "error": str(exc)})
+
+    if suppliers_ops:
+        db.suppliers.bulk_write(suppliers_ops, ordered=False)
+
+    suppliers_map = {s["cardCode"]: str(s["_id"]) for s in db.suppliers.find({}, {"cardCode": 1})}
+
+    payments_unique = {}
+    invoices_unique = {}
+    for record in line_records:
+        supplier_id = suppliers_map.get(record["cardCode"])
+        if not supplier_id:
+            continue
+        payments_unique[(record["paymentNum"], record["cardCode"])] = UpdateOne(
+            {"projectId": project_id, "sapPaymentNum": record["paymentNum"]},
+            {
+                "$set": {
+                    "paymentDate": record["paymentDate"],
+                    "supplierId": supplier_id,
+                    "currency": record["currency"],
+                    "totalPayment": record["totalPayment"],
+                    "concept": record["concept"],
+                }
+            },
+            upsert=True,
+        )
+        invoices_unique[(record["invoiceNum"], record["cardCode"])] = UpdateOne(
+            {"projectId": project_id, "sapInvoiceNum": record["invoiceNum"]},
+            {
+                "$set": {
+                    "invoiceDate": record["invoiceDate"],
+                    "supplierId": supplier_id,
+                }
+            },
+            upsert=True,
+        )
+
+    if payments_unique:
+        result = db.payments.bulk_write(list(payments_unique.values()), ordered=False)
+        payments_upserted = (result.upserted_count or 0) + (result.modified_count or 0)
+    if invoices_unique:
+        result = db.apInvoices.bulk_write(list(invoices_unique.values()), ordered=False)
+        invoices_upserted = (result.upserted_count or 0) + (result.modified_count or 0)
+
+    payments_map = {
+        p["sapPaymentNum"]: str(p["_id"])
+        for p in db.payments.find({"projectId": project_id}, {"sapPaymentNum": 1})
+    }
+    invoices_map = {
+        i["sapInvoiceNum"]: str(i["_id"])
+        for i in db.apInvoices.find({"projectId": project_id}, {"sapInvoiceNum": 1})
+    }
+
+    lines_ops = []
+    for record in line_records:
+        payment_id = payments_map.get(record["paymentNum"])
+        invoice_id = invoices_map.get(record["invoiceNum"])
+        if not payment_id or not invoice_id:
+            rows_error += 1
+            if len(errors_sample) < 50:
+                errors_sample.append({"row": record["rowNumber"], "error": "Payment or invoice missing for line"})
+            continue
+
+        lines_ops.append(
+            UpdateOne(
+                {"paymentId": payment_id, "apInvoiceId": invoice_id, "appliedAmount": record["appliedAmount"]},
+                {"$setOnInsert": {"paymentId": payment_id, "apInvoiceId": invoice_id, "appliedAmount": record["appliedAmount"]}},
+                upsert=True,
+            )
+        )
+
+    if lines_ops:
+        result = db.paymentLines.bulk_write(lines_ops, ordered=False)
+        lines_inserted = result.upserted_count or 0
+        duplicates_skipped = len(lines_ops) - lines_inserted
+
+    rows_total = len(rows)
+    db.importRuns.update_one(
+        {"_id": import_run_id},
+        {
+            "$set": {
+                "rowsTotal": rows_total,
+                "rowsOk": rows_ok,
+                "rowsSkipped": duplicates_skipped,
+                "rowsError": rows_error,
+                "status": "completed" if rows_error == 0 else "completed_with_errors",
+                "finishedAt": datetime.now(timezone.utc).isoformat(),
+                "errorsSample": errors_sample[:50],
+            }
+        },
+    )
+
+    return {
+        "already_imported": False,
+        "rowsTotal": rows_total,
+        "rowsOk": rows_ok,
+        "suppliersCreated": suppliers_created,
+        "paymentsUpserted": payments_upserted,
+        "invoicesUpserted": invoices_upserted,
+        "linesInserted": lines_inserted,
+        "duplicatesSkipped": duplicates_skipped,
+        "errorsSample": errors_sample[:50],
+    }
 
 
 # ---------- seed categories ----------
