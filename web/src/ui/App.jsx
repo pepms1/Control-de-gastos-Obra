@@ -96,8 +96,13 @@ function Login({ onLogin }) {
   }
 
   return (
-    <div className="container" style={{ maxWidth: 420, marginTop: 80 }}>
+    <div className="container login-container">
       <div className="card">
+        <div className="login-brand">
+          <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="login-brand-image" />
+          <h1>Grupo MDI</h1>
+          <p>control de obra</p>
+        </div>
         <h2 style={{ marginTop: 0 }}>Iniciar sesión</h2>
         <form onSubmit={submit} className="grid">
           <div>
@@ -108,7 +113,7 @@ function Login({ onLogin }) {
             <label>Contraseña</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
-          {err && <div style={{ color: '#b91c1c' }}>{err}</div>}
+          {err && <div style={{ color: '#374151' }}>{err}</div>}
           <button disabled={saving}>{saving ? 'Ingresando...' : 'Entrar'}</button>
         </form>
       </div>
