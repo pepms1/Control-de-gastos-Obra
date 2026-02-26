@@ -198,7 +198,13 @@ def parse_decimal(value):
     text = str(value).strip()
     if not text:
         raise ValueError("Amount is required")
-    normalized = text.replace(",", "")
+    if re.fullmatch(r"[A-Za-z]{3}", text):
+        raise ValueError(f"Invalid number: {value}")
+
+    normalized = text.replace("$", "").replace(" ", "").replace(",", "")
+    if normalized.startswith("(") and normalized.endswith(")"):
+        normalized = f"-{normalized[1:-1]}"
+
     try:
         return round(float(Decimal(normalized)), 2)
     except InvalidOperation as exc:
@@ -224,6 +230,69 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
             return ""
         return str(header_value).replace("\ufeff", "").strip()
 
+    currency_codes = {"MXP", "MXN", "USD", "EUR", "CAD", "GBP"}
+
+    def looks_like_integer(value):
+        return bool(re.fullmatch(r"\d+", str(value or "").strip()))
+
+    def looks_like_date(value):
+        try:
+            return normalizeDate(value) is not None
+        except ValueError:
+            return False
+
+    def repair_csv_row(values):
+        if len(values) < 7:
+            raise ValueError("Unrepairable CSV row")
+
+        repaired = [None] * len(expected_headers)
+        repaired[0] = values[0]
+        repaired[1] = values[1] if len(values) > 1 else None
+        repaired[2] = values[2] if len(values) > 2 else None
+
+        currency_idx = None
+        for idx in range(3, len(values)):
+            token = str(values[idx] or "").strip().upper()
+            if token in currency_codes:
+                currency_idx = idx
+                break
+
+        if currency_idx is None or currency_idx <= 3:
+            raise ValueError("Unrepairable CSV row")
+
+        repaired[3] = ",".join(values[3:currency_idx]).strip()
+        repaired[4] = values[currency_idx]
+
+        total_idx = currency_idx + 1
+        if total_idx >= len(values):
+            raise ValueError("Unrepairable CSV row")
+
+        parse_decimal(values[total_idx])
+        repaired[5] = values[total_idx]
+
+        factura_idx = None
+        for idx in range(len(values) - 3, total_idx, -1):
+            if looks_like_integer(values[idx]) and looks_like_date(values[idx + 1]):
+                try:
+                    parse_decimal(values[-1])
+                except ValueError as exc:
+                    raise ValueError("Unrepairable CSV row") from exc
+                factura_idx = idx
+                break
+
+        if factura_idx is None:
+            raise ValueError("Unrepairable CSV row")
+
+        repaired[6] = ",".join(values[total_idx + 1:factura_idx]).strip()
+        repaired[7] = values[factura_idx]
+        repaired[8] = values[factura_idx + 1]
+        repaired[9] = values[-1]
+
+        if any(repaired[idx] is None for idx in (4, 7, 8, 9)):
+            raise ValueError("Unrepairable CSV row")
+
+        return repaired
+
     if file_name.lower().endswith(".csv"):
         decoded = file_bytes.decode("utf-8-sig")
         reader = csv.reader(decoded.splitlines())
@@ -238,9 +307,8 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         parsed = []
         for values in rows[1:]:
             row_values = values
-            if len(values) > len(expected_headers):
-                repaired_values = values[:6] + [",".join(values[6:-3])] + values[-3:]
-                row_values = repaired_values
+            if len(values) != len(expected_headers):
+                row_values = repair_csv_row(values)
 
             row_dict = {}
             for idx, h in enumerate(expected_headers):
