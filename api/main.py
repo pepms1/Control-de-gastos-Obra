@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File
+from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File, Query
 from fastapi import Header
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, UpdateOne
@@ -165,6 +165,12 @@ def ensure_indexes():
         unique=True,
         partialFilterExpression={"source": "sap"},
     )
+    db.transactions.create_index([("projectId", 1), ("date", -1)])
+    db.transactions.create_index(
+        [("description", "text"), ("concept", "text"), ("supplierName", "text")],
+        name="transactions_text_search",
+        default_language="spanish",
+    )
 
 
 def create_token(username: str, role: str):
@@ -280,10 +286,14 @@ def build_transactions_query(
     type_value: str | None = None,
     category_id: str | None = None,
     vendor_id: str | None = None,
+    supplier_id: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     project_id: str | None = None,
     origen: str | None = None,
+    source: str | None = None,
+    source_db: str | None = None,
+    search_query: str | None = None,
 ):
     q = {}
     if type_value:
@@ -292,16 +302,31 @@ def build_transactions_query(
         q["category_id"] = category_id
     if vendor_id:
         q["vendor_id"] = vendor_id
+    if supplier_id:
+        q["supplierId"] = supplier_id
     if project_id:
         q["projectId"] = project_id
     if origen:
         q["source"] = origen
+    if source:
+        q["source"] = source
+    if source_db:
+        q["sourceDb"] = source_db
     if date_from or date_to:
         q["date"] = {}
         if date_from:
             q["date"]["$gte"] = date_from
         if date_to:
             q["date"]["$lte"] = date_to
+
+    cleaned_search = (search_query or "").strip()
+    if cleaned_search:
+        escaped_search = re.escape(cleaned_search)
+        q["$or"] = [
+            {"description": {"$regex": escaped_search, "$options": "i"}},
+            {"concept": {"$regex": escaped_search, "$options": "i"}},
+            {"supplierName": {"$regex": escaped_search, "$options": "i"}},
+        ]
     return q
 
 
@@ -1494,26 +1519,48 @@ def list_transactions(
     tipo: str | None = None,
     category_id: str | None = None,
     vendor_id: str | None = None,
+    supplierId: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    from_date: str | None = Query(default=None, alias="from"),
+    to_date: str | None = Query(default=None, alias="to"),
     projectId: str | None = None,
     origen: str | None = None,
+    source: str | None = None,
+    sourceDb: str | None = None,
+    q: str | None = None,
     withTotals: int = 0,
-    limit: int = 200,
+    page: int = 1,
+    limit: int = 50,
     _: dict = Depends(require_authenticated),
 ):
+    normalized_page = max(page, 1)
+    normalized_limit = min(max(limit, 1), 500)
+    skip = (normalized_page - 1) * normalized_limit
+    effective_date_from = from_date or date_from
+    effective_date_to = to_date or date_to
     effective_type = type or tipo
-    q = build_transactions_query(
+    match_query = build_transactions_query(
         type_value=effective_type,
         category_id=category_id,
         vendor_id=vendor_id,
-        date_from=date_from,
-        date_to=date_to,
+        supplier_id=supplierId,
+        date_from=effective_date_from,
+        date_to=effective_date_to,
         project_id=projectId,
         origen=origen,
+        source=source,
+        source_db=sourceDb,
+        search_query=q,
     )
+    total_count = db.transactions.count_documents(match_query)
 
-    txs = list(db.transactions.find(q).sort([("date", -1), ("created_at", -1)]).limit(min(limit, 500)))
+    txs = list(
+        db.transactions.find(match_query)
+        .sort([("date", -1), ("_id", -1)])
+        .skip(skip)
+        .limit(normalized_limit)
+    )
 
     supplier_ids = []
     for tx in txs:
@@ -1558,10 +1605,17 @@ def list_transactions(
     totals["ingresos"]["bruto"] = round(totals["ingresos"]["bruto"], 2)
     totals["netoSinIva"] = round(totals["netoSinIva"], 2)
 
-    if withTotals == 1:
-        return {"items": items, "totals": totals}
+    response = {
+        "items": items,
+        "page": normalized_page,
+        "limit": normalized_limit,
+        "totalCount": total_count,
+    }
 
-    return items
+    if withTotals == 1:
+        response["totals"] = totals
+
+    return response
 
 
 @app.get("/stats/spend-by-category")
