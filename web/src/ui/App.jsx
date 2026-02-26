@@ -186,7 +186,7 @@ export default function App() {
           />
         )}
 
-        {tab === 'transactions' && <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} />}
+        {tab === 'transactions' && <Transactions isAdmin={isAdmin} cats={cats} />}
 
         {tab === 'catalog' && (
           <Catalog
@@ -508,9 +508,8 @@ function EditModal({ title, children, onClose, onSave }) {
 }
 
 /* ================= TRANSACTIONS ================= */
-function Transactions({ isAdmin, cats, vendors }) {
+function Transactions({ isAdmin, cats }) {
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
-  const venMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   const [rows, setRows] = useState([]);
   const [editing, setEditing] = useState(null);
@@ -614,7 +613,7 @@ function Transactions({ isAdmin, cats, vendors }) {
                   <td>{r.source === 'sap' ? <span className="badge">SAP</span> : ''}</td>
                   <td>{r.description || r.concept || ''}</td>
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
-                  <td>{r.vendor_id ? venMap[r.vendor_id] || '' : ''}</td>
+                  <td>{r.proveedorNombre || r.supplierName || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>
                     {r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}
                   </td>
