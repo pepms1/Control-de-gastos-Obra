@@ -24,6 +24,7 @@ function Nav({ tab, setTab, role, username, onLogout }) {
     ['add-expense', 'Nuevo egreso', role === 'ADMIN'],
     ['add-income', 'Nuevo ingreso', role === 'ADMIN'],
     ['transactions', 'Movimientos', true],
+    ['search', 'Buscar', true],
     ['catalog', 'Catálogo', true],
   ];
 
@@ -186,7 +187,9 @@ export default function App() {
           />
         )}
 
-        {tab === 'transactions' && <Transactions isAdmin={isAdmin} cats={cats} />}
+        {tab === 'transactions' && <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} />}
+
+        {tab === 'search' && <SearchTransactions cats={cats} vendors={vendors} />}
 
         {tab === 'catalog' && (
           <Catalog
@@ -508,12 +511,15 @@ function EditModal({ title, children, onClose, onSave }) {
 }
 
 /* ================= TRANSACTIONS ================= */
-function Transactions({ isAdmin, cats }) {
+function Transactions({ isAdmin, cats, vendors }) {
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
+  const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   const [rows, setRows] = useState([]);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('ALL');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [supplierFilter, setSupplierFilter] = useState('ALL');
   const [sortBy, setSortBy] = useState('date_desc');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -535,12 +541,26 @@ function Transactions({ isAdmin, cats }) {
     load();
   }, []);
 
+  const supplierOptions = useMemo(() => {
+    const byId = new Map();
+    rows.forEach((r) => {
+      if (r.supplierId) byId.set(r.supplierId, r.proveedorNombre || r.supplierName || r.proveedor?.name || 'Proveedor SAP');
+      if (r.vendor_id) byId.set(r.vendor_id, vendorMap[r.vendor_id] || 'Proveedor');
+    });
+    return Array.from(byId.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
+  }, [rows, vendorMap]);
+
   const shown = [...rows]
     .filter((r) => (filter === 'ALL' ? true : r.type === filter))
+    .filter((r) => (categoryFilter === 'ALL' ? true : r.category_id === categoryFilter))
+    .filter((r) => {
+      if (supplierFilter === 'ALL') return true;
+      return (r.supplierId || r.vendor_id || '') === supplierFilter;
+    })
     .sort((a, b) => {
       if (sortBy === 'supplier_asc') {
-        const aSupplier = (venMap[a.vendor_id] || '').toLowerCase();
-        const bSupplier = (venMap[b.vendor_id] || '').toLowerCase();
+        const aSupplier = (a.proveedorNombre || a.supplierName || vendorMap[a.vendor_id] || a.proveedor?.name || '').toLowerCase();
+        const bSupplier = (b.proveedorNombre || b.supplierName || vendorMap[b.vendor_id] || b.proveedor?.name || '').toLowerCase();
         if (aSupplier !== bSupplier) return aSupplier.localeCompare(bSupplier, 'es');
       }
 
@@ -553,7 +573,12 @@ function Transactions({ isAdmin, cats }) {
     });
 
   async function saveEdit() {
-    const payload = { ...editing, amount: parseMoneyInput(editing.amount) };
+    const payload = {
+      date: editing.date,
+      amount: parseMoneyInput(editing.amount),
+      description: editing.description,
+      category_id: editing.category_id || null,
+    };
     await api.updateTransaction(editing.id, payload);
     setEditing(null);
     load();
@@ -576,13 +601,23 @@ function Transactions({ isAdmin, cats }) {
             <option value="INCOME">Ingresos</option>
             <option value="EXPENSE">Egresos</option>
           </select>
+          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+            <option value="ALL">Todas las categorías</option>
+            {cats.map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </select>
+          <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+            <option value="ALL">Todos los proveedores</option>
+            {supplierOptions.map(([id, name]) => (
+              <option key={id} value={id}>{name}</option>
+            ))}
+          </select>
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
             <option value="date_desc">Fecha (más reciente)</option>
             <option value="supplier_asc">Proveedor (A-Z)</option>
           </select>
-          <button className="secondary" onClick={load}>
-            Refrescar
-          </button>
+          <button className="secondary" onClick={load}>Refrescar</button>
         </div>
       </div>
 
@@ -613,22 +648,17 @@ function Transactions({ isAdmin, cats }) {
                   <td>{r.source === 'sap' ? <span className="badge">SAP</span> : ''}</td>
                   <td>{r.description || r.concept || ''}</td>
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
-                  <td>{r.proveedorNombre || r.supplierName || r.proveedor?.name || '—'}</td>
-                  <td style={{ fontWeight: 800 }}>
-                    {r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}
-                  </td>
+                  <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
+                  <td style={{ fontWeight: 800 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
                   {isAdmin && (
                     <td>
-                      {r.source === 'sap' ? (
-                        <span className="small">Importado</span>
-                      ) : (
+                      <button className="secondary" onClick={() => setEditing({ ...r })}>
+                        {r.source === 'sap' ? 'Categorizar' : 'Editar'}
+                      </button>
+                      {r.source !== 'sap' && (
                         <>
-                          <button className="secondary" onClick={() => setEditing({ ...r })}>
-                            Editar
-                          </button>{' '}
-                          <button className="secondary" onClick={() => remove(r.id)}>
-                            Eliminar
-                          </button>
+                          {' '}
+                          <button className="secondary" onClick={() => remove(r.id)}>Eliminar</button>
                         </>
                       )}
                     </td>
@@ -650,13 +680,72 @@ function Transactions({ isAdmin, cats }) {
             <label>Monto</label>
             <input value={editing.amount || ''} onChange={(e) => setEditing({ ...editing, amount: e.target.value })} />
             <label>Descripción</label>
-            <input
-              value={editing.description || ''}
-              onChange={(e) => setEditing({ ...editing, description: e.target.value })}
-            />
+            <input value={editing.description || ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
+            <label>Categoría</label>
+            <select value={editing.category_id || ''} onChange={(e) => setEditing({ ...editing, category_id: e.target.value || null })}>
+              <option value="">Sin categoría</option>
+              {cats.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
           </div>
         </EditModal>
       )}
+    </div>
+  );
+}
+
+function SearchTransactions({ cats, vendors }) {
+  const [rows, setRows] = useState([]);
+  const [query, setQuery] = useState('');
+  const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
+  const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
+
+  useEffect(() => {
+    api.transactions().then((data) => setRows(Array.isArray(data) ? data : [])).catch(() => setRows([]));
+  }, []);
+
+  const needle = query.trim().toLowerCase();
+  const shown = rows.filter((r) => {
+    if (!needle) return true;
+    const supplier = (r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '').toLowerCase();
+    const concept = (r.description || r.concept || '').toLowerCase();
+    return supplier.includes(needle) || concept.includes(needle);
+  });
+
+  return (
+    <div className="card">
+      <h2 style={{ marginTop: 0 }}>Buscar movimientos</h2>
+      <input
+        placeholder="Buscar por proveedor o concepto"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        style={{ maxWidth: 420 }}
+      />
+      <div className="small" style={{ marginTop: 8 }}>{shown.length} resultados</div>
+      <div style={{ overflowX: 'auto', marginTop: 10 }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Monto</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((r) => (
+              <tr key={r.id}>
+                <td>{r.date}</td>
+                <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
+                <td>{r.description || r.concept || ''}</td>
+                <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
+                <td>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
+              </tr>
+            ))}
+            {!shown.length && (
+              <tr><td colSpan={5} className="small">Sin resultados</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
