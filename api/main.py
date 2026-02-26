@@ -244,11 +244,61 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "FechaFactura",
         "MontoAplicado",
     ]
+    canonical_headers = [
+        "pagonum",
+        "fechapago",
+        "cardcode",
+        "beneficiario",
+        "moneda",
+        "totalpago",
+        "conceptopago",
+        "facturaproveedornum",
+        "fechafactura",
+        "montoaplicado",
+    ]
+    canonical_to_expected = dict(zip(canonical_headers, expected_headers))
+    header_aliases = {
+        "docnum": "pagonum",
+        "cardname": "beneficiario",
+        "doccurr": "moneda",
+        "doctotal": "totalpago",
+        "comments": "conceptopago",
+        "facturanum": "facturaproveedornum",
+        "facturaproveedor": "facturaproveedornum",
+        "nrofactura": "facturaproveedornum",
+        "numfactura": "facturaproveedornum",
+    }
 
     def normalize_header(header_value):
         if header_value is None:
             return ""
-        return str(header_value).replace("\ufeff", "").strip()
+        return re.sub(r"[^a-z0-9]", "", str(header_value).replace("\ufeff", "").strip().lower())
+
+    def build_header_index(raw_headers):
+        found_headers_normalized = [normalize_header(h) for h in raw_headers]
+        has_fechafactura = any(h == "fechafactura" for h in found_headers_normalized)
+
+        header_index = {}
+        for idx, normalized in enumerate(found_headers_normalized):
+            canonical = header_aliases.get(normalized, normalized)
+            if normalized == "fecha" and not has_fechafactura:
+                canonical = "fechapago"
+            if canonical in canonical_headers and canonical not in header_index:
+                header_index[canonical] = idx
+
+        missing = [h for h in canonical_headers if h not in header_index]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Invalid headers",
+                    "missing": missing,
+                    "foundHeadersNormalized": found_headers_normalized,
+                    "foundHeadersRaw": ["" if h is None else str(h) for h in raw_headers],
+                },
+            )
+
+        return header_index
 
     currency_codes = {"MXP", "MXN", "USD", "EUR", "CAD", "GBP"}
 
@@ -320,22 +370,34 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         if not rows:
             return []
 
-        headers = [normalize_header(h) for h in rows[0]]
-        if headers != expected_headers:
-            raise HTTPException(status_code=400, detail=f"Invalid headers. Expected: {expected_headers}")
+        header_index = build_header_index(rows[0])
 
         parsed = []
+        required_column_count = max(header_index.values()) + 1
+        standard_layout = all(header_index[h] == idx for idx, h in enumerate(canonical_headers))
         for values in rows[1:]:
             row_values = values
-            if len(values) != len(expected_headers):
+            should_try_repair = (
+                standard_layout
+                and len(rows[0]) == len(expected_headers)
+                and len(values) != len(rows[0])
+            )
+            if should_try_repair:
                 row_values = repair_csv_row(values)
+            elif len(values) < required_column_count:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid row length. Expected at least {required_column_count} columns, found {len(values)}",
+                )
 
             row_dict = {}
-            for idx, h in enumerate(expected_headers):
-                row_dict[h] = row_values[idx] if idx < len(row_values) else None
+            for canonical in canonical_headers:
+                expected = canonical_to_expected[canonical]
+                source_idx = header_index[canonical]
+                row_dict[expected] = row_values[source_idx] if source_idx < len(row_values) else None
 
-            if len(values) != len(expected_headers):
-                row_dict["__csvRepairApplied"] = len(values) > len(expected_headers)
+            if should_try_repair:
+                row_dict["__csvRepairApplied"] = len(values) > len(rows[0])
                 row_dict["__csvOriginalFieldCount"] = len(values)
 
             parsed.append(row_dict)
@@ -348,15 +410,15 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         rows = list(ws.iter_rows(values_only=True))
         if not rows:
             return []
-        headers = [normalize_header(h) for h in rows[0]]
-        if headers != expected_headers:
-            raise HTTPException(status_code=400, detail=f"Invalid headers. Expected: {expected_headers}")
+        header_index = build_header_index(rows[0])
 
         parsed = []
         for values in rows[1:]:
             row_dict = {}
-            for idx, h in enumerate(expected_headers):
-                row_dict[h] = values[idx] if idx < len(values) else None
+            for canonical in canonical_headers:
+                expected = canonical_to_expected[canonical]
+                source_idx = header_index[canonical]
+                row_dict[expected] = values[source_idx] if source_idx < len(values) else None
             parsed.append(row_dict)
         return parsed
 
