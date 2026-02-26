@@ -1,33 +1,33 @@
 :root{font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color:#0f172a;}
-body{margin:0; background:#f1f8f4;}
+body{margin:0; background:#eff6ff;}
 a{color:inherit}
 .container{max-width:1100px; margin:0 auto; padding:16px;}
-.nav{display:flex; gap:12px; align-items:center; padding:12px 16px; background:#f8fffa; border-bottom:1px solid #d9eadf; position:sticky; top:0;}
+.nav{display:flex; gap:12px; align-items:center; padding:12px 16px; background:#f8fbff; border-bottom:1px solid #dbeafe; position:sticky; top:0;}
 .nav a{padding:8px 10px; border-radius:10px; text-decoration:none;}
-.nav a.active, .nav button.active{background:#dcfce7; color:#166534; font-weight:600; padding:8px 10px; border-radius:10px;}
-.card{background:#ffffff; border:1px solid #d9eadf; border-radius:16px; padding:14px; box-shadow:0 1px 2px rgba(22,101,52,.08);}
+.nav a.active, .nav button.active{background:#dbeafe; color:#1d4ed8; font-weight:600; padding:8px 10px; border-radius:10px;}
+.card{background:#ffffff; border:1px solid #dbeafe; border-radius:16px; padding:14px; box-shadow:0 1px 2px rgba(29,78,216,.1);}
 .grid{display:grid; gap:12px;}
 .grid2{grid-template-columns: 1fr; }
 @media (min-width: 860px){ .grid2{grid-template-columns: 1fr 1fr;} }
 .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
-label{font-size:12px; color:#3f5b4a; display:block; margin-bottom:6px;}
-input, select, textarea{width:100%; padding:10px 12px; border-radius:12px; border:1px solid #cde2d5; background:#fff;}
-button{padding:10px 14px; border-radius:12px; border:0; background:#15803d; color:#fff; font-weight:600; cursor:pointer;}
-button.secondary{background:#166534;}
+label{font-size:12px; color:#334155; display:block; margin-bottom:6px;}
+input, select, textarea{width:100%; padding:10px 12px; border-radius:12px; border:1px solid #bfdbfe; background:#fff;}
+button{padding:10px 14px; border-radius:12px; border:0; background:#2563eb; color:#fff; font-weight:600; cursor:pointer;}
+button.secondary{background:#1d4ed8;}
 table{width:100%; border-collapse:collapse; font-size:14px;}
-th, td{padding:10px 8px; border-bottom:1px solid #e6f2ea; text-align:left;}
-.badge{font-size:12px; padding:4px 8px; border-radius:999px; background:#e9f7ee; color:#166534; display:inline-block;}
-.badge.income{background:#dcfce7; color:#166534;}
+th, td{padding:10px 8px; border-bottom:1px solid #dbeafe; text-align:left;}
+.badge{font-size:12px; padding:4px 8px; border-radius:999px; background:#e0f2fe; color:#1d4ed8; display:inline-block;}
+.badge.income{background:#dbeafe; color:#1e40af;}
 .badge.expense{background:#fee2e2; color:#991b1b;}
-.bar{height:10px; border-radius:999px; background:#e9f7ee; overflow:hidden;}
-.bar > div{height:100%; background:#16a34a;}
-.small{font-size:12px; color:#4b6355;}
+.bar{height:10px; border-radius:999px; background:#e0f2fe; overflow:hidden;}
+.bar > div{height:100%; background:#2563eb;}
+.small{font-size:12px; color:#475569;}
 
 .pie-card{display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:8px 0;}
-.pie-chart{width:170px; height:170px; border-radius:50%; border:8px solid #f0fdf4; box-shadow:inset 0 0 0 1px rgba(22,101,52,.15);}
+.pie-chart{width:170px; height:170px; border-radius:50%; border:8px solid #eff6ff; box-shadow:inset 0 0 0 1px rgba(29,78,216,.18);}
 .pie-legend{display:grid; gap:8px; min-width:220px; flex:1;}
-.pie-legend-item{display:flex; gap:8px; align-items:center; justify-content:space-between; background:#f5fbf7; border:1px solid #e1f0e7; border-radius:10px; padding:6px 10px;}
+.pie-legend-item{display:flex; gap:8px; align-items:center; justify-content:space-between; background:#f8fbff; border:1px solid #dbeafe; border-radius:10px; padding:6px 10px;}
 .pie-dot{width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:2px;}
 
 .modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:999;}
-.modal{width:min(520px,90vw); background:#fff; border-radius:16px; padding:16px; border:1px solid #d9eadf;}
+.modal{width:min(520px,90vw); background:#fff; border-radius:16px; padding:16px; border:1px solid #dbeafe;}
