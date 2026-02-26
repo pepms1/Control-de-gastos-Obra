@@ -207,41 +207,64 @@ export default function App() {
 /* ================= DASHBOARD ================= */
 function Dashboard({ isAdmin }) {
   const [stats, setStats] = useState(null);
+  const [supplierSummary, setSupplierSummary] = useState([]);
+  const [supplierSummaryError, setSupplierSummaryError] = useState('');
+  const [viewMode, setViewMode] = useState('category');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let ok = true;
     setLoading(true);
 
-    api.spendByCategory()
-      .then((s) => {
-        if (ok) {
-          setStats(s);
-          setLoading(false);
-        }
-      })
-      .catch((e) => {
-        if (ok) {
-          setStats({ error: e.message });
-          setLoading(false);
-        }
-      });
+    Promise.allSettled([api.spendByCategory(), api.expensesSummaryBySupplier()]).then(([categoryResult, supplierResult]) => {
+      if (!ok) return;
+
+      if (categoryResult.status === 'fulfilled') {
+        setStats(categoryResult.value);
+      } else {
+        setStats({ error: categoryResult.reason?.message || 'No se pudo cargar el dashboard.' });
+      }
+
+      if (supplierResult.status === 'fulfilled') {
+        setSupplierSummary(Array.isArray(supplierResult.value) ? supplierResult.value : []);
+        setSupplierSummaryError('');
+      } else {
+        setSupplierSummary([]);
+        setSupplierSummaryError(supplierResult.reason?.message || 'No se pudo cargar la vista por proveedor.');
+      }
+
+      setLoading(false);
+    });
 
     return () => {
       ok = false;
     };
   }, []);
 
+  const supplierTotal = supplierSummary.reduce((acc, row) => acc + (Number(row.totalAmount) || 0), 0);
+
   return (
     <div className="card">
-      <h2 style={{ margin: '0 0 8px' }}>Gasto por categoría</h2>
-      <div className="small">Porcentaje = gasto de la categoría / total de egresos</div>
+      <h2 style={{ margin: '0 0 8px' }}>Dashboard de egresos</h2>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
+          Por categoría
+        </button>
+        <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
+          Por proveedor
+        </button>
+      </div>
+      <div className="small">
+        {viewMode === 'category'
+          ? 'Porcentaje = gasto de la categoría / total de egresos'
+          : 'Totales agrupados por proveedor (SAP).'}
+      </div>
 
       {loading ? (
         <div style={{ padding: '12px 0' }}>Cargando...</div>
       ) : stats?.error ? (
         <div style={{ padding: '12px 0' }}>Error: {stats.error}</div>
-      ) : stats?.rows?.length ? (
+      ) : viewMode === 'category' && stats?.rows?.length ? (
         <div style={{ marginTop: 12 }} className="grid">
           <div className="row" style={{ justifyContent: 'space-between' }}>
             <div className="badge">Total egresos: ${formatMoney(stats.total_expenses || 0)}</div>
@@ -268,6 +291,36 @@ function Dashboard({ isAdmin }) {
             </div>
           ))}
         </div>
+      ) : viewMode === 'supplier' ? (
+        supplierSummaryError ? (
+          <div style={{ padding: '12px 0' }}>Error: {supplierSummaryError}</div>
+        ) : supplierSummary.length ? (
+          <div style={{ marginTop: 12 }} className="grid">
+            <div className="badge">Total egresos SAP: ${formatMoney(supplierTotal)}</div>
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Proveedor</th>
+                    <th>Movimientos</th>
+                    <th>Subtotal</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {supplierSummary.map((row) => (
+                    <tr key={row.supplierId || row.supplierName}>
+                      <td>{row.supplierName || '(Sin proveedor)'}</td>
+                      <td>{row.count}</td>
+                      <td>${formatMoney(row.totalAmount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: '12px 0' }}>No hay egresos SAP agrupados por proveedor para mostrar.</div>
+        )
       ) : (
         <div style={{ padding: '12px 0' }}>No hay egresos aún. Registra uno para ver el dashboard.</div>
       )}
@@ -473,6 +526,7 @@ function Transactions({ isAdmin, cats, vendors }) {
   const [rows, setRows] = useState([]);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('ALL');
+  const [sortBy, setSortBy] = useState('date_desc');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
@@ -493,7 +547,22 @@ function Transactions({ isAdmin, cats, vendors }) {
     load();
   }, []);
 
-  const shown = rows.filter((r) => (filter === 'ALL' ? true : r.type === filter));
+  const shown = [...rows]
+    .filter((r) => (filter === 'ALL' ? true : r.type === filter))
+    .sort((a, b) => {
+      if (sortBy === 'supplier_asc') {
+        const aSupplier = (venMap[a.vendor_id] || '').toLowerCase();
+        const bSupplier = (venMap[b.vendor_id] || '').toLowerCase();
+        if (aSupplier !== bSupplier) return aSupplier.localeCompare(bSupplier, 'es');
+      }
+
+      if (a.date === b.date) {
+        const aCreatedAt = a.created_at || '';
+        const bCreatedAt = b.created_at || '';
+        return bCreatedAt.localeCompare(aCreatedAt);
+      }
+      return b.date.localeCompare(a.date);
+    });
 
   async function saveEdit() {
     const payload = { ...editing, amount: parseMoneyInput(editing.amount) };
@@ -518,6 +587,10 @@ function Transactions({ isAdmin, cats, vendors }) {
             <option value="ALL">Todos</option>
             <option value="INCOME">Ingresos</option>
             <option value="EXPENSE">Egresos</option>
+          </select>
+          <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
+            <option value="date_desc">Fecha (más reciente)</option>
+            <option value="supplier_asc">Proveedor (A-Z)</option>
           </select>
           <button className="secondary" onClick={load}>
             Refrescar
