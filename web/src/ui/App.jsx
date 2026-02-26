@@ -187,7 +187,9 @@ export default function App() {
           />
         )}
 
-        {tab === 'transactions' && <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} />}
+        {tab === 'transactions' && (
+          <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} onCatalogChanged={refreshCatalog} />
+        )}
 
         {tab === 'search' && <SearchTransactions cats={cats} vendors={vendors} />}
 
@@ -561,7 +563,7 @@ function EditModal({ title, children, onClose, onSave }) {
 }
 
 /* ================= TRANSACTIONS ================= */
-function Transactions({ isAdmin, cats, vendors }) {
+function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
@@ -573,6 +575,9 @@ function Transactions({ isAdmin, cats, vendors }) {
   const [sortBy, setSortBy] = useState('date_desc');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [editErr, setEditErr] = useState('');
+  const [savingCategory, setSavingCategory] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -623,6 +628,7 @@ function Transactions({ isAdmin, cats, vendors }) {
     });
 
   async function saveEdit() {
+    setEditErr('');
     const payload = {
       date: editing.date,
       amount: parseMoneyInput(editing.amount),
@@ -631,7 +637,29 @@ function Transactions({ isAdmin, cats, vendors }) {
     };
     await api.updateTransaction(editing.id, payload);
     setEditing(null);
+    setNewCategoryName('');
     load();
+  }
+
+  async function createCategoryFromEdit() {
+    const cleanName = newCategoryName.trim();
+    if (cleanName.length < 2) {
+      setEditErr('Escribe un nombre de categoría válido.');
+      return;
+    }
+
+    setSavingCategory(true);
+    setEditErr('');
+    try {
+      const created = await api.createCategory(cleanName);
+      await onCatalogChanged?.();
+      setEditing((prev) => (prev ? { ...prev, category_id: created.id } : prev));
+      setNewCategoryName('');
+    } catch (e) {
+      setEditErr(e.message || 'No se pudo crear la categoría.');
+    } finally {
+      setSavingCategory(false);
+    }
   }
 
   async function remove(id) {
@@ -702,7 +730,14 @@ function Transactions({ isAdmin, cats, vendors }) {
                   <td style={{ fontWeight: 800 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
                   {isAdmin && (
                     <td>
-                      <button className="secondary" onClick={() => setEditing({ ...r })}>
+                      <button
+                        className="secondary"
+                        onClick={() => {
+                          setEditErr('');
+                          setNewCategoryName('');
+                          setEditing({ ...r });
+                        }}
+                      >
                         {r.source === 'sap' ? 'Categorizar' : 'Editar'}
                       </button>
                       {r.source !== 'sap' && (
@@ -738,6 +773,18 @@ function Transactions({ isAdmin, cats, vendors }) {
                 <option key={c.id} value={c.id}>{c.name}</option>
               ))}
             </select>
+            <label>Crear categoría nueva</label>
+            <div className="row">
+              <input
+                placeholder="Ej. Herramientas"
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+              />
+              <button type="button" className="secondary" onClick={createCategoryFromEdit} disabled={savingCategory}>
+                {savingCategory ? 'Creando...' : 'Crear'}
+              </button>
+            </div>
+            {editErr && <div style={{ color: '#b91c1c' }}>{editErr}</div>}
           </div>
         </EditModal>
       )}
