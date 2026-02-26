@@ -42,29 +42,33 @@ function Nav({ tab, setTab, role, username, onLogout }) {
 
   return (
     <div className="nav">
-      <div style={{ fontWeight: 800 }}>Control de Gastos Calderon de la Barca</div>
+      <div className="nav-title">Control de Gastos Calderon de la Barca</div>
 
-      {items
-        .filter(([, , show]) => show)
-        .map(([k, label]) => (
-          <button
-            key={k}
-            type="button"
-            className={tab === k ? 'active' : ''}
-            onClick={() => setTab(k)}
-            style={linkStyle(tab === k)}
-          >
-            {label}
-          </button>
-        ))}
-
-      <div style={{ marginLeft: 'auto' }} className="small">
-        {username} ({role})
+      <div className="nav-items">
+        {items
+          .filter(([, , show]) => show)
+          .map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              className={tab === k ? 'active' : ''}
+              onClick={() => setTab(k)}
+              style={linkStyle(tab === k)}
+            >
+              {label}
+            </button>
+          ))}
       </div>
 
-      <button className="secondary" type="button" onClick={onLogout}>
-        Salir
-      </button>
+      <div className="nav-user-actions">
+        <div className="small nav-user">
+          {username} ({role})
+        </div>
+
+        <button className="secondary" type="button" onClick={onLogout}>
+          Salir
+        </button>
+      </div>
     </div>
   );
 }
