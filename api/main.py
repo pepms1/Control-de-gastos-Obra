@@ -461,6 +461,59 @@ def update_supplier(supplier_id: str, payload: dict, _: dict = Depends(require_a
     return serialize(db.suppliers.find_one({"_id": oid(supplier_id)}))
 
 
+def build_sap_vendor_upsert(card_code: str, beneficiary: str, project_id: str):
+    return UpdateOne(
+        {"source": "sap", "externalIds.sapCardCode": card_code},
+        {
+            "$set": {
+                "name": beneficiary or card_code,
+                "source": "sap",
+                "externalIds.sapCardCode": card_code,
+                "categoryId": None,
+                "projectId": project_id,
+                "active": True,
+            },
+            "$setOnInsert": {
+                "category_ids": [],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "$addToSet": {"projectIds": project_id},
+        },
+        upsert=True,
+    )
+
+
+def sync_suppliers_into_vendors(suppliers: list[dict], project_id: str):
+    if not suppliers:
+        return 0
+
+    vendor_ops = []
+    for supplier in suppliers:
+        card_code = str(supplier.get("cardCode") or "").strip()
+        if not card_code:
+            continue
+        beneficiary = str(supplier.get("name") or "").strip()
+        vendor_ops.append(build_sap_vendor_upsert(card_code, beneficiary, project_id))
+
+    if not vendor_ops:
+        return 0
+
+    result = db.vendors.bulk_write(vendor_ops, ordered=False)
+    return (result.upserted_count or 0) + (result.modified_count or 0)
+
+
+def get_or_create_project_id(project: str):
+    project_name = project.strip() or "CALDERON DE LA BARCA"
+    project_doc = db.projects.find_one_and_update(
+        {"name": project_name},
+        {"$setOnInsert": {"name": project_name}},
+        upsert=True,
+    )
+    if not project_doc:
+        project_doc = db.projects.find_one({"name": project_name})
+    return str(project_doc["_id"])
+
+
 def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, source: str = "sap-payments"):
     file_hash = sha256(file_bytes).hexdigest()
 
@@ -471,15 +524,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
         return {"already_imported": True, "importRunId": str(existing_run["_id"])}
 
     now = datetime.now(timezone.utc).isoformat()
-    project_name = project.strip() or "CALDERON DE LA BARCA"
-    project_doc = db.projects.find_one_and_update(
-        {"name": project_name},
-        {"$setOnInsert": {"name": project_name}},
-        upsert=True,
-    )
-    if not project_doc:
-        project_doc = db.projects.find_one({"name": project_name})
-    project_id = str(project_doc["_id"])
+    project_id = get_or_create_project_id(project)
 
     import_run_doc = {
         "sha256": file_hash,
@@ -517,6 +562,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
     errors_sample = []
 
     suppliers_ops = []
+    suppliers_seen = {}
     line_records = []
     existing_cardcodes = {s["cardCode"] for s in db.suppliers.find({}, {"cardCode": 1})}
     created_cardcodes = set()
@@ -560,6 +606,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
                     upsert=True,
                 )
             )
+            suppliers_seen[card_code] = beneficiary or card_code
 
             payment_key = f"{payment_num}|{card_code}|{payment_date}|{currency}|{total_payment}|{concept}"
             invoice_key = f"{invoice_num}|{card_code}|{invoice_date}"
@@ -588,6 +635,11 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
 
     if suppliers_ops:
         db.suppliers.bulk_write(suppliers_ops, ordered=False)
+
+    vendors_synced = sync_suppliers_into_vendors(
+        [{"cardCode": card_code, "name": name} for card_code, name in suppliers_seen.items()],
+        project_id,
+    )
 
     suppliers_map = {s["cardCode"]: str(s["_id"]) for s in db.suppliers.find({}, {"cardCode": 1})}
 
@@ -721,6 +773,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
         "rowsTotal": rows_total,
         "rowsOk": rows_ok,
         "suppliersCreated": suppliers_created,
+        "vendorsSynced": vendors_synced,
         "paymentsUpserted": payments_upserted,
         "invoicesUpserted": invoices_upserted,
         "linesInserted": lines_inserted,
@@ -798,41 +851,16 @@ def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int =
     return run_sap_import(file_name, file_bytes, project, force, source="sap-payments-cron")
 
 
-@app.get("/api/expenses/summary-by-supplier")
-def summary_expenses_by_supplier(
-    project: str = "CALDERON DE LA BARCA",
-    _: dict = Depends(require_authenticated),
-):
-    project_name = (project or "").strip() or "CALDERON DE LA BARCA"
-    project_doc = db.projects.find_one({"name": project_name})
-    if not project_doc:
-        return []
-
-    project_id = str(project_doc["_id"])
-    pipeline = [
-        {"$match": {"type": "EXPENSE", "projectId": project_id}},
-        {"$group": {"_id": "$supplierId", "totalAmount": {"$sum": "$amount"}, "count": {"$sum": 1}}},
-    ]
-    rows = list(db.transactions.aggregate(pipeline))
-
-    supplier_ids = [oid(row["_id"]) for row in rows if row.get("_id")]
-    supplier_names = {}
-    if supplier_ids:
-        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1}):
-            supplier_names[str(supplier["_id"])] = supplier.get("name") or "(Sin proveedor)"
-
-    output = [
-        {
-            "supplierId": row.get("_id"),
-            "supplierName": supplier_names.get(row.get("_id"), "(Sin proveedor)"),
-            "totalAmount": round(float(row.get("totalAmount") or 0), 2),
-            "count": int(row.get("count") or 0),
-        }
-        for row in rows
-    ]
-
-    output.sort(key=lambda item: (item["supplierName"] or "").lower())
-    return output
+@app.post("/api/admin/backfill/suppliers-to-vendors")
+def backfill_suppliers_to_vendors(project: str = "CALDERON DE LA BARCA", _: dict = Depends(require_admin)):
+    project_id = get_or_create_project_id(project)
+    suppliers = list(db.suppliers.find({}, {"cardCode": 1, "name": 1}))
+    vendors_synced = sync_suppliers_into_vendors(suppliers, project_id)
+    return {
+        "projectId": project_id,
+        "suppliersScanned": len(suppliers),
+        "vendorsSynced": vendors_synced,
+    }
 
 
 # ---------- seed categories ----------
@@ -924,10 +952,19 @@ def delete_category(category_id: str, _: dict = Depends(require_admin)):
 
 # ---------- vendors ----------
 @app.get("/vendors")
-def list_vendors(active_only: bool = True, category_id: str | None = None, _: dict = Depends(require_authenticated)):
+def list_vendors(
+    active_only: bool = True,
+    category_id: str | None = None,
+    include_sap: bool = True,
+    _: dict = Depends(require_authenticated),
+):
     q = {"active": True} if active_only else {}
     if category_id:
         q["category_ids"] = category_id
+    if include_sap:
+        q["$or"] = [{"source": {"$exists": False}}, {"source": "manual"}, {"source": "sap"}]
+    else:
+        q["$or"] = [{"source": {"$exists": False}}, {"source": "manual"}]
     return [serialize(v) for v in db.vendors.find(q).sort("name", 1)]
 
 
