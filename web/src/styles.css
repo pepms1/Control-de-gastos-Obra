@@ -63,7 +63,18 @@ th, td{padding:10px 8px; border-bottom:1px solid var(--gray-200); text-align:lef
   .container{padding:12px;}
   .nav{align-items:flex-start;}
   .nav-title{width:100%;}
-  .nav-items{width:100%; gap:8px;}
+  .nav-items{
+    width:100%;
+    gap:8px;
+    display:grid;
+    grid-template-columns:repeat(auto-fit, minmax(120px, 1fr));
+  }
+  .nav-items button,
+  .nav-items a{
+    width:100%;
+    min-width:120px;
+    text-align:center;
+  }
   .nav-user-actions{width:100%; margin-left:0; justify-content:space-between;}
   .nav a,
   .nav button{font-size:14px;}
