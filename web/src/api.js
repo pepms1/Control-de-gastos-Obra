@@ -148,6 +148,11 @@ export const api = {
     return req(`/stats/spend-by-category${qs ? `?${qs}` : ''}`);
   },
 
+  expensesSummaryBySupplier: (project = 'CALDERON DE LA BARCA') => {
+    const qs = new URLSearchParams({ project }).toString();
+    return backendReq(`/api/expenses/summary-by-supplier?${qs}`);
+  },
+
   importSapPayments: (file, project = 'CALDERON DE LA BARCA') => {
     const formData = new FormData();
     formData.append('file', file);
