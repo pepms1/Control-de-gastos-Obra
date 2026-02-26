@@ -113,7 +113,7 @@ function Login({ onLogin }) {
             <label>Contraseña</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
-          {err && <div style={{ color: '#b91c1c' }}>{err}</div>}
+          {err && <div style={{ color: '#374151' }}>{err}</div>}
           <button disabled={saving}>{saving ? 'Ingresando...' : 'Entrar'}</button>
         </form>
       </div>

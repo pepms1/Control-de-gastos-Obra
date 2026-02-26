@@ -1,46 +1,57 @@
-:root{font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; color:#0f172a;}
-body{margin:0; background:#eff6ff;}
+:root{
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  color:#1f2937;
+  --primary:#022b75;
+  --primary-dark:#001a4d;
+  --primary-soft:#dbe6f8;
+  --gray-50:#f3f4f6;
+  --gray-100:#e5e7eb;
+  --gray-200:#d1d5db;
+  --gray-500:#6b7280;
+  --gray-700:#374151;
+}
+body{margin:0; background:var(--gray-50);}
 a{color:inherit}
 .container{max-width:1100px; margin:0 auto; padding:16px;}
-.nav{display:flex; gap:12px; align-items:center; padding:12px 16px; background:#f8fbff; border-bottom:1px solid #dbeafe; position:sticky; top:0; flex-wrap:wrap;}
-.nav-title{font-weight:800; min-width:0;}
+.nav{display:flex; gap:12px; align-items:center; padding:12px 16px; background:#fff; border-bottom:1px solid var(--gray-200); position:sticky; top:0; flex-wrap:wrap;}
+.nav-title{font-weight:800; min-width:0; color:var(--primary-dark);}
 .nav-items{display:flex; gap:12px; align-items:center; flex-wrap:wrap; flex:1; min-width:0;}
 .nav-user-actions{display:flex; align-items:center; gap:10px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end;}
 .nav-user{word-break:break-word; text-align:right;}
 .nav a{padding:8px 10px; border-radius:10px; text-decoration:none;}
-.nav a.active, .nav button.active{background:#dbeafe; color:#1d4ed8; font-weight:600; padding:8px 10px; border-radius:10px;}
-.card{background:#ffffff; border:1px solid #dbeafe; border-radius:16px; padding:14px; box-shadow:0 1px 2px rgba(29,78,216,.1);}
+.nav a.active, .nav button.active{background:var(--primary-soft); color:var(--primary); font-weight:600; padding:8px 10px; border-radius:10px;}
+.card{background:#ffffff; border:1px solid var(--gray-200); border-radius:16px; padding:14px; box-shadow:0 1px 2px rgba(0,26,77,.08);}
 .grid{display:grid; gap:12px;}
 .grid2{grid-template-columns: 1fr; }
 @media (min-width: 860px){ .grid2{grid-template-columns: 1fr 1fr;} }
 .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
-label{font-size:12px; color:#334155; display:block; margin-bottom:6px;}
-input, select, textarea{width:100%; padding:10px 12px; border-radius:12px; border:1px solid #bfdbfe; background:#fff;}
-button{padding:10px 14px; border-radius:12px; border:0; background:#2563eb; color:#fff; font-weight:600; cursor:pointer;}
-button.secondary{background:#1d4ed8;}
+label{font-size:12px; color:var(--gray-700); display:block; margin-bottom:6px;}
+input, select, textarea{width:100%; padding:10px 12px; border-radius:12px; border:1px solid var(--gray-200); background:#fff;}
+button{padding:10px 14px; border-radius:12px; border:0; background:var(--primary); color:#fff; font-weight:600; cursor:pointer;}
+button.secondary{background:var(--gray-700);}
 table{width:100%; border-collapse:collapse; font-size:14px;}
-th, td{padding:10px 8px; border-bottom:1px solid #dbeafe; text-align:left;}
-.badge{font-size:12px; padding:4px 8px; border-radius:999px; background:#e0f2fe; color:#1d4ed8; display:inline-block;}
-.badge.income{background:#dbeafe; color:#1e40af;}
-.badge.expense{background:#fee2e2; color:#991b1b;}
-.bar{height:10px; border-radius:999px; background:#e0f2fe; overflow:hidden;}
-.bar > div{height:100%; background:#2563eb;}
-.small{font-size:12px; color:#475569;}
+th, td{padding:10px 8px; border-bottom:1px solid var(--gray-200); text-align:left;}
+.badge{font-size:12px; padding:4px 8px; border-radius:999px; background:var(--primary-soft); color:var(--primary); display:inline-block;}
+.badge.income{background:var(--primary-soft); color:var(--primary-dark);}
+.badge.expense{background:var(--gray-100); color:var(--gray-700);}
+.bar{height:10px; border-radius:999px; background:var(--gray-100); overflow:hidden;}
+.bar > div{height:100%; background:var(--primary);}
+.small{font-size:12px; color:var(--gray-500);}
 
 .login-container{max-width:420px; margin-top:50px;}
 .login-brand{display:grid; justify-items:center; text-align:center; gap:8px; margin-bottom:12px;}
-.login-brand-image{width:min(250px,100%); border-radius:10px; border:1px solid #dbeafe; background:#fff;}
-.login-brand h1{margin:0; font-size:28px; letter-spacing:.08em; text-transform:uppercase; color:#0f172a;}
-.login-brand p{margin:0; font-size:14px; letter-spacing:.16em; text-transform:uppercase; color:#475569;}
+.login-brand-image{width:min(250px,100%); border-radius:10px; border:1px solid var(--gray-200); background:#fff;}
+.login-brand h1{margin:0; font-size:28px; letter-spacing:.08em; text-transform:uppercase; color:var(--primary-dark);}
+.login-brand p{margin:0; font-size:14px; letter-spacing:.16em; text-transform:uppercase; color:var(--gray-500);}
 
 .pie-card{display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:8px 0;}
-.pie-chart{width:170px; height:170px; border-radius:50%; border:8px solid #eff6ff; box-shadow:inset 0 0 0 1px rgba(29,78,216,.18);}
+.pie-chart{width:170px; height:170px; border-radius:50%; border:8px solid var(--gray-50); box-shadow:inset 0 0 0 1px rgba(0,26,77,.2);}
 .pie-legend{display:grid; gap:8px; min-width:220px; flex:1;}
-.pie-legend-item{display:flex; gap:8px; align-items:center; justify-content:space-between; background:#f8fbff; border:1px solid #dbeafe; border-radius:10px; padding:6px 10px;}
+.pie-legend-item{display:flex; gap:8px; align-items:center; justify-content:space-between; background:#fff; border:1px solid var(--gray-200); border-radius:10px; padding:6px 10px;}
 .pie-dot{width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:2px;}
 
-.modal-backdrop{position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:999;}
-.modal{width:min(520px,90vw); background:#fff; border-radius:16px; padding:16px; border:1px solid #dbeafe;}
+.modal-backdrop{position:fixed; inset:0; background:rgba(31,41,55,.35); display:flex; align-items:center; justify-content:center; z-index:999;}
+.modal{width:min(520px,90vw); background:#fff; border-radius:16px; padding:16px; border:1px solid var(--gray-200);}
 
 @media (max-width: 680px){
   .container{padding:12px;}
