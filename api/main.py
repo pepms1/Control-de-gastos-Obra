@@ -133,6 +133,11 @@ def ensure_indexes():
     db.apInvoices.create_index([("projectId", 1), ("sapInvoiceNum", 1)], unique=True)
     db.paymentLines.create_index([("paymentId", 1), ("apInvoiceId", 1), ("appliedAmount", 1)], unique=True)
     db.importRuns.create_index("sha256", unique=True)
+    db.transactions.create_index(
+        [("projectId", 1), ("sap.pagoNum", 1), ("sap.facturaNum", 1), ("sap.montoAplicado", 1)],
+        unique=True,
+        partialFilterExpression={"source": "sap"},
+    )
 
 
 def create_token(username: str, role: str):
@@ -437,6 +442,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
     payments_upserted = 0
     invoices_upserted = 0
     lines_inserted = 0
+    sap_expenses_upserted = 0
     duplicates_skipped = 0
     rows_ok = 0
     rows_error = 0
@@ -564,9 +570,11 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
     }
 
     lines_ops = []
+    sap_expense_ops = []
     for record in line_records:
         payment_id = payments_map.get(record["paymentNum"])
         invoice_id = invoices_map.get(record["invoiceNum"])
+        supplier_id = suppliers_map.get(record["cardCode"])
         if not payment_id or not invoice_id:
             rows_error += 1
             if len(errors_sample) < 50:
@@ -581,10 +589,48 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
             )
         )
 
+        if supplier_id:
+            sap_doc = {
+                "type": "EXPENSE",
+                "projectId": project_id,
+                "date": record["paymentDate"] or record["invoiceDate"],
+                "amount": record["appliedAmount"],
+                "currency": record["currency"],
+                "concept": record["concept"],
+                "description": record["concept"],
+                "supplierId": supplier_id,
+                "categoryId": None,
+                "category_id": None,
+                "vendor_id": None,
+                "source": "sap",
+                "sap": {
+                    "pagoNum": record["paymentNum"],
+                    "facturaNum": record["invoiceNum"],
+                    "montoAplicado": record["appliedAmount"],
+                },
+            }
+            sap_expense_ops.append(
+                UpdateOne(
+                    {
+                        "projectId": project_id,
+                        "sap.pagoNum": record["paymentNum"],
+                        "sap.facturaNum": record["invoiceNum"],
+                        "sap.montoAplicado": record["appliedAmount"],
+                        "source": "sap",
+                    },
+                    {"$set": sap_doc, "$setOnInsert": {"created_at": datetime.now(timezone.utc).isoformat()}},
+                    upsert=True,
+                )
+            )
+
     if lines_ops:
         result = db.paymentLines.bulk_write(lines_ops, ordered=False)
         lines_inserted = result.upserted_count or 0
         duplicates_skipped = len(lines_ops) - lines_inserted
+
+    if sap_expense_ops:
+        result = db.transactions.bulk_write(sap_expense_ops, ordered=False)
+        sap_expenses_upserted = (result.upserted_count or 0) + (result.modified_count or 0)
 
     rows_total = len(rows)
     db.importRuns.update_one(
@@ -610,6 +656,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
         "paymentsUpserted": payments_upserted,
         "invoicesUpserted": invoices_upserted,
         "linesInserted": lines_inserted,
+        "sapExpensesUpserted": sap_expenses_upserted,
         "duplicatesSkipped": duplicates_skipped,
         "errorsSample": errors_sample[:50],
         "importRunId": str(import_run_id),
