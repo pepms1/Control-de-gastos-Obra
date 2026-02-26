@@ -1,6 +1,22 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession } from '../api.js';
 
+const moneyFormatter = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+function formatMoney(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return '0.00';
+  return moneyFormatter.format(amount);
+}
+
+function parseMoneyInput(value) {
+  if (typeof value !== 'string') return Number(value);
+  return Number(value.replace(/,/g, '').trim());
+}
+
 /* ================= NAV ================= */
 function Nav({ tab, setTab, role, username, onLogout }) {
   const items = [
@@ -228,7 +244,7 @@ function Dashboard({ isAdmin }) {
       ) : stats?.rows?.length ? (
         <div style={{ marginTop: 12 }} className="grid">
           <div className="row" style={{ justifyContent: 'space-between' }}>
-            <div className="badge">Total egresos: ${Number(stats.total_expenses || 0).toFixed(2)}</div>
+            <div className="badge">Total egresos: ${formatMoney(stats.total_expenses || 0)}</div>
             {isAdmin && (
               <button className="secondary" onClick={() => api.seed().then(() => location.reload()).catch(() => {})}>
                 Seed categorías
@@ -243,7 +259,7 @@ function Dashboard({ isAdmin }) {
               <div className="row" style={{ justifyContent: 'space-between' }}>
                 <div style={{ fontWeight: 700 }}>{r.category_name}</div>
                 <div>
-                  ${Number(r.amount).toFixed(2)} <span className="small">({r.percent}%)</span>
+                  ${formatMoney(r.amount)} <span className="small">({r.percent}%)</span>
                 </div>
               </div>
               <div className="bar">
@@ -320,7 +336,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
   async function submit(e) {
     e.preventDefault();
     setErr('');
-    const a = Number(amount);
+    const a = parseMoneyInput(amount);
     if (!a || a <= 0) return setErr('Monto inválido');
 
     if (kind === 'EXPENSE' && (!categoryId || !vendorId)) return setErr('Selecciona categoría y proveedor');
@@ -457,7 +473,8 @@ function Transactions({ isAdmin, cats, vendors }) {
   const shown = rows.filter((r) => (filter === 'ALL' ? true : r.type === filter));
 
   async function saveEdit() {
-    await api.updateTransaction(editing.id, editing);
+    const payload = { ...editing, amount: parseMoneyInput(editing.amount) };
+    await api.updateTransaction(editing.id, payload);
     setEditing(null);
     load();
   }
@@ -512,7 +529,7 @@ function Transactions({ isAdmin, cats, vendors }) {
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.vendor_id ? venMap[r.vendor_id] || '' : ''}</td>
                   <td style={{ fontWeight: 800 }}>
-                    {r.type === 'EXPENSE' ? '-' : '+'}${Number(r.amount).toFixed(2)}
+                    {r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}
                   </td>
                   {isAdmin && (
                     <td>
