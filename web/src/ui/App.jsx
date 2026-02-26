@@ -718,6 +718,10 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
         const amount = Number(r.amount || 0);
         const amountWithoutTax = Number(r.montoSinIva ?? r.amount ?? 0);
         if (r.type === 'EXPENSE') {
+      (acc, row) => {
+        const amount = Number(row.amount) || 0;
+        if (row.type === 'EXPENSE') {
+          const montoSinIva = Number(row.montoSinIva ?? 0) || 0;
           acc.expenses += amount;
           acc.expensesWithoutTax += amountWithoutTax;
           acc.net -= amountWithoutTax;
@@ -847,8 +851,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
-                  <td style={{ fontWeight: 700 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.ivaAplicado ?? 0)}</td>
-                  <td style={{ fontWeight: 700 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.montoSinIva ?? r.amount)}</td>
+                  <td style={{ fontWeight: 700 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.montoIva ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.montoSinIva ?? 0)}</td>
                   {isAdmin && (
                     <td>
                       <button
@@ -888,7 +892,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <td style={{ fontWeight: 800 }}>
                   +${formatMoney(shownTotals.income)} / -${formatMoney(shownTotals.expenses)}
                 </td>
-                <td style={{ fontWeight: 700 }}>-${formatMoney(shown.reduce((acc, r) => acc + (Number(r.ivaAplicado ?? 0) || 0), 0))}</td>
+                <td style={{ fontWeight: 700 }}>-${formatMoney(shown.reduce((acc, r) => acc + (Number(r.montoIva ?? 0) || 0), 0))}</td>
                 <td style={{ fontWeight: 800 }}>-${formatMoney(shownTotals.expensesWithoutTax)}</td>
                 {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {shownTotals.net >= 0 ? '+' : '-'}${formatMoney(Math.abs(shownTotals.net))}</td>}
                 {isAdmin && <td />}

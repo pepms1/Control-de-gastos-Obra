@@ -255,11 +255,28 @@ def parse_optional_decimal(value):
 
 def compute_monto_sin_iva(tx: dict):
     amount = round(float(tx.get("amount") or 0), 2)
-    iva_aplicado = compute_iva_aplicado(tx)
-    return round(amount - iva_aplicado, 2)
+    tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else None
+    if tax is None:
+        return round(amount - compute_monto_iva(tx), 2)
+
+    subtotal = tax.get("subtotal")
+    total_factura = tax.get("totalFactura")
+
+    try:
+        subtotal_value = float(subtotal)
+        total_factura_value = float(total_factura)
+    except (TypeError, ValueError):
+        return round(amount - compute_monto_iva(tx), 2)
+
+    if total_factura_value == 0:
+        return round(amount - compute_monto_iva(tx), 2)
+
+    sign = -1 if amount < 0 else 1
+    proporcional = round(subtotal_value * (abs(amount) / total_factura_value), 2)
+    return round(sign * proporcional, 2)
 
 
-def compute_iva_aplicado(tx: dict):
+def compute_monto_iva(tx: dict):
     amount = round(float(tx.get("amount") or 0), 2)
     tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else None
     if tax is None:
@@ -850,7 +867,7 @@ def run_sap_import(
                         "iva": iva,
                         "retenciones": retenciones,
                         "totalFactura": total_factura,
-                    } if any(value is not None for value in (subtotal, iva, retenciones, total_factura)) else None,
+                    },
                 }
             )
             rows_ok += 1
@@ -884,6 +901,7 @@ def run_sap_import(
                     "currency": record["currency"],
                     "totalPayment": record["totalPayment"],
                     "concept": record["concept"],
+                    "tax": record["tax"],
                 }
             },
             upsert=True,
@@ -894,6 +912,7 @@ def run_sap_import(
                 "$set": {
                     "invoiceDate": record["invoiceDate"],
                     "supplierId": supplier_id,
+                    "tax": record["tax"],
                 }
             },
             upsert=True,
@@ -951,8 +970,8 @@ def run_sap_import(
                 "category_id": None,
                 "vendor_id": None,
                 "source": "sap",
-                "sourceDb": "IVA" if record.get("tax") else "SAP",
-                "tax": record.get("tax"),
+                "sourceDb": "SAP",
+                "tax": record["tax"],
                 "sap": {
                     "pagoNum": record["paymentNum"],
                     "facturaNum": record["invoiceNum"],
@@ -965,7 +984,7 @@ def run_sap_import(
                     {
                         "projectId": project_id,
                         "source": "sap",
-                        "sourceDb": "IVA" if record.get("tax") else "SAP",
+                        "sourceDb": "SAP",
                         "sap.pagoNum": record["paymentNum"],
                         "sap.facturaNum": record["invoiceNum"],
                         "sap.montoAplicado": record["appliedAmount"],
@@ -1139,6 +1158,61 @@ def backfill_suppliers_to_vendors(project: str = "CALDERON DE LA BARCA", _: dict
         "suppliersScanned": len(suppliers),
         "vendorsSynced": vendors_synced,
     }
+
+
+@app.post("/api/admin/backfill/tax-fields")
+def backfill_tax_fields(project: str = "CALDERON DE LA BARCA", _: dict = Depends(require_admin)):
+    project_id = get_or_create_project_id(project)
+    scanned = 0
+    updated = 0
+
+    query = {
+        "projectId": project_id,
+        "source": "sap",
+        "$or": [
+            {"tax": {"$exists": False}},
+            {"tax": None},
+        ],
+    }
+
+    for movement in db.transactions.find(query, {"sap": 1, "amount": 1}):
+        scanned += 1
+        sap_payload = movement.get("sap") if isinstance(movement.get("sap"), dict) else {}
+        payment_num = str(sap_payload.get("pagoNum") or "").strip()
+        invoice_num = str(sap_payload.get("facturaNum") or "").strip()
+
+        ap_invoice = db.apInvoices.find_one(
+            {"projectId": project_id, "sapInvoiceNum": invoice_num},
+            {"tax": 1},
+        ) if invoice_num else None
+        payment = db.payments.find_one(
+            {"projectId": project_id, "sapPaymentNum": payment_num},
+            {"tax": 1},
+        ) if payment_num else None
+
+        source_tax = None
+        if isinstance(ap_invoice, dict) and isinstance(ap_invoice.get("tax"), dict):
+            source_tax = ap_invoice.get("tax")
+        elif isinstance(payment, dict) and isinstance(payment.get("tax"), dict):
+            source_tax = payment.get("tax")
+        elif isinstance(sap_payload.get("tax"), dict):
+            source_tax = sap_payload.get("tax")
+
+        tax_doc = {
+            "subtotal": parse_optional_decimal((source_tax or {}).get("subtotal")),
+            "iva": parse_optional_decimal((source_tax or {}).get("iva")),
+            "retenciones": parse_optional_decimal((source_tax or {}).get("retenciones")),
+            "totalFactura": parse_optional_decimal((source_tax or {}).get("totalFactura")),
+        }
+
+        result = db.transactions.update_one(
+            {"_id": movement["_id"]},
+            {"$set": {"tax": tax_doc}},
+        )
+        if result.modified_count:
+            updated += 1
+
+    return {"projectId": project_id, "scanned": scanned, "updated": updated}
 
 
 @app.post("/api/admin/backfill/supplierName")
@@ -1584,10 +1658,11 @@ def list_transactions(
     }
 
     for tx in txs:
-        iva_aplicado = compute_iva_aplicado(tx)
+        monto_iva = compute_monto_iva(tx)
         monto_sin_iva = compute_monto_sin_iva(tx)
         tx_doc = serialize_transaction_with_supplier(tx, suppliers_by_id)
-        tx_doc["ivaAplicado"] = iva_aplicado
+        tx_doc["montoIva"] = monto_iva
+        tx_doc["ivaAplicado"] = monto_iva
         tx_doc["montoSinIva"] = monto_sin_iva
         items.append(tx_doc)
 
