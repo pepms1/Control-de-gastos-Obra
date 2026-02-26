@@ -54,6 +54,26 @@ def serialize(doc):
     return doc
 
 
+def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dict] | None = None):
+    tx_doc = serialize(tx)
+    supplier = None
+    supplier_id = tx_doc.get("supplierId")
+
+    if supplier_id and suppliers_by_id:
+        supplier = suppliers_by_id.get(supplier_id)
+
+    supplier_name = tx_doc.get("supplierName") or (supplier or {}).get("name") or ""
+    supplier_card_code = tx_doc.get("supplierCardCode") or (supplier or {}).get("cardCode") or ""
+
+    tx_doc["proveedorNombre"] = supplier_name
+    tx_doc["proveedorCardCode"] = supplier_card_code
+
+    if supplier:
+        tx_doc["proveedor"] = serialize(supplier)
+
+    return tx_doc
+
+
 def serialize_user(user):
     user_doc = serialize(user)
     user_doc.pop("password_hash", None)
@@ -719,6 +739,8 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
                 "concept": record["concept"],
                 "description": record["concept"],
                 "supplierId": supplier_id,
+                "supplierName": record["beneficiary"] or record["cardCode"],
+                "supplierCardCode": record["cardCode"],
                 "categoryId": None,
                 "category_id": None,
                 "vendor_id": None,
@@ -727,6 +749,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
                     "pagoNum": record["paymentNum"],
                     "facturaNum": record["invoiceNum"],
                     "montoAplicado": record["appliedAmount"],
+                    "cardCode": record["cardCode"],
                 },
             }
             sap_expense_ops.append(
@@ -861,6 +884,55 @@ def backfill_suppliers_to_vendors(project: str = "CALDERON DE LA BARCA", _: dict
         "suppliersScanned": len(suppliers),
         "vendorsSynced": vendors_synced,
     }
+
+
+@app.post("/api/admin/backfill/supplierName")
+def backfill_supplier_name(_: dict = Depends(require_admin)):
+    scanned = 0
+    updated = 0
+
+    query = {
+        "source": "sap",
+        "$or": [
+            {"supplierName": {"$exists": False}},
+            {"supplierName": None},
+            {"supplierName": ""},
+        ],
+    }
+
+    for movement in db.transactions.find(query, {"supplierId": 1, "sap": 1}):
+        scanned += 1
+        supplier = None
+
+        supplier_id = movement.get("supplierId")
+        if supplier_id:
+            try:
+                supplier = db.suppliers.find_one({"_id": oid(supplier_id)}, {"name": 1, "cardCode": 1})
+            except HTTPException:
+                supplier = None
+
+        if not supplier:
+            sap_card_code = str((movement.get("sap") or {}).get("cardCode") or "").strip()
+            if sap_card_code:
+                supplier = db.suppliers.find_one({"cardCode": sap_card_code}, {"name": 1, "cardCode": 1})
+
+        if not supplier:
+            continue
+
+        result = db.transactions.update_one(
+            {"_id": movement["_id"]},
+            {
+                "$set": {
+                    "supplierName": supplier.get("name") or "",
+                    "supplierCardCode": supplier.get("cardCode") or "",
+                    "supplierId": str(supplier.get("_id")),
+                }
+            },
+        )
+        if result.modified_count:
+            updated += 1
+
+    return {"scanned": scanned, "updated": updated}
 
 
 # ---------- seed categories ----------
@@ -1190,8 +1262,23 @@ def list_transactions(
         if date_to:
             q["date"]["$lte"] = date_to
 
-    cur = db.transactions.find(q).sort([("date", -1), ("created_at", -1)]).limit(min(limit, 500))
-    return [serialize(t) for t in cur]
+    txs = list(db.transactions.find(q).sort([("date", -1), ("created_at", -1)]).limit(min(limit, 500)))
+
+    supplier_ids = []
+    for tx in txs:
+        supplier_id = tx.get("supplierId")
+        if supplier_id:
+            try:
+                supplier_ids.append(oid(supplier_id))
+            except HTTPException:
+                continue
+
+    suppliers_by_id = {}
+    if supplier_ids:
+        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1, "cardCode": 1}):
+            suppliers_by_id[str(supplier["_id"])] = supplier
+
+    return [serialize_transaction_with_supplier(tx, suppliers_by_id) for tx in txs]
 
 
 @app.get("/stats/spend-by-category")
