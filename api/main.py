@@ -9,6 +9,8 @@ from passlib.context import CryptContext
 from hashlib import sha256
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
+from urllib.parse import urlparse
+from urllib.request import urlopen
 import csv
 import openpyxl
 import os
@@ -335,34 +337,28 @@ def update_supplier(supplier_id: str, payload: dict, _: dict = Depends(require_a
     return serialize(db.suppliers.find_one({"_id": oid(supplier_id)}))
 
 
-@app.post("/api/import/sap-payments")
-async def import_sap_payments(
-    file: UploadFile = File(...),
-    project: str = "CALDERON DE LA BARCA",
-    force: int = 0,
-    _: dict = Depends(require_admin),
-):
-    file_bytes = await file.read()
+def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, source: str = "sap-payments"):
     file_hash = sha256(file_bytes).hexdigest()
 
     existing_run = db.importRuns.find_one({"sha256": file_hash})
     if existing_run and force != 1:
-        return {"already_imported": True, "importRunId": str(existing_run["_id"]) }
+        return {"already_imported": True, "importRunId": str(existing_run["_id"])}
 
     now = datetime.now(timezone.utc).isoformat()
+    project_name = project.strip() or "CALDERON DE LA BARCA"
     project_doc = db.projects.find_one_and_update(
-        {"name": project.strip() or "CALDERON DE LA BARCA"},
-        {"$setOnInsert": {"name": project.strip() or "CALDERON DE LA BARCA"}},
+        {"name": project_name},
+        {"$setOnInsert": {"name": project_name}},
         upsert=True,
     )
     if not project_doc:
-        project_doc = db.projects.find_one({"name": project.strip() or "CALDERON DE LA BARCA"})
+        project_doc = db.projects.find_one({"name": project_name})
     project_id = str(project_doc["_id"])
 
     import_run_doc = {
         "sha256": file_hash,
-        "fileName": file.filename,
-        "source": "sap-payments",
+        "fileName": file_name,
+        "source": source,
         "projectId": project_id,
         "rowsTotal": 0,
         "rowsOk": 0,
@@ -380,7 +376,7 @@ async def import_sap_payments(
     else:
         import_run_id = db.importRuns.insert_one(import_run_doc).inserted_id
 
-    rows = parse_sap_file(file.filename or "", file_bytes)
+    rows = parse_sap_file(file_name, file_bytes)
 
     suppliers_created = 0
     payments_upserted = 0
@@ -553,7 +549,75 @@ async def import_sap_payments(
         "linesInserted": lines_inserted,
         "duplicatesSkipped": duplicates_skipped,
         "errorsSample": errors_sample[:50],
+        "importRunId": str(import_run_id),
     }
+
+
+@app.post("/api/import/sap-payments")
+async def import_sap_payments(
+    file: UploadFile = File(...),
+    project: str = "CALDERON DE LA BARCA",
+    force: int = 0,
+    _: dict = Depends(require_admin),
+):
+    file_bytes = await file.read()
+    return run_sap_import(file.filename or "", file_bytes, project, force, source="sap-payments")
+
+
+@app.post("/api/cron/import/sap-payments")
+def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int = 0):
+    sap_import_url = (os.getenv("SAP_IMPORT_URL") or "").strip()
+    now = datetime.now(timezone.utc).isoformat()
+
+    if not sap_import_url:
+        skipped_hash = sha256(f"skipped_no_source:{now}".encode("utf-8")).hexdigest()
+        import_run_id = db.importRuns.insert_one(
+            {
+                "sha256": skipped_hash,
+                "fileName": None,
+                "source": "sap-payments-cron",
+                "projectId": None,
+                "rowsTotal": 0,
+                "rowsOk": 0,
+                "rowsSkipped": 0,
+                "rowsError": 0,
+                "status": "skipped_no_source",
+                "startedAt": now,
+                "finishedAt": now,
+                "errorsSample": [],
+            }
+        ).inserted_id
+        print("sap_payments_cron skipped_no_source")
+        return {"status": "skipped_no_source", "importRunId": str(import_run_id)}
+
+    file_name = os.path.basename(urlparse(sap_import_url).path) or "sap_payments_import.csv"
+    try:
+        with urlopen(sap_import_url, timeout=60) as response:
+            file_bytes = response.read()
+    except Exception as exc:
+        error_hash = sha256(f"download_error:{sap_import_url}:{now}".encode("utf-8")).hexdigest()
+        import_run_id = db.importRuns.insert_one(
+            {
+                "sha256": error_hash,
+                "fileName": file_name,
+                "source": "sap-payments-cron",
+                "projectId": None,
+                "rowsTotal": 0,
+                "rowsOk": 0,
+                "rowsSkipped": 0,
+                "rowsError": 1,
+                "status": "failed_download",
+                "startedAt": now,
+                "finishedAt": datetime.now(timezone.utc).isoformat(),
+                "errorsSample": [{"error": str(exc)}],
+            }
+        ).inserted_id
+        raise HTTPException(
+            status_code=502,
+            detail={"status": "failed_download", "importRunId": str(import_run_id), "error": str(exc)},
+        ) from exc
+
+    return run_sap_import(file_name, file_bytes, project, force, source="sap-payments-cron")
 
 
 # ---------- seed categories ----------
