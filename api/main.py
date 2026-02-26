@@ -3,7 +3,7 @@ from fastapi import Header
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, UpdateOne
 from bson import ObjectId
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from hashlib import sha256
@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from urllib.parse import urlparse
 from urllib.request import urlopen
+import re
 import csv
 import openpyxl
 import os
@@ -144,21 +145,44 @@ ensure_indexes()
 ensure_default_users()
 
 
-def parse_excel_date(value):
+def normalizeDate(value):
     if value is None:
         return None
+
     if isinstance(value, datetime):
-        return value.date().isoformat()
-    if isinstance(value, str):
-        cleaned = value.strip()
-        if not cleaned:
-            return None
-        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y"):
-            try:
-                return datetime.strptime(cleaned, fmt).date().isoformat()
-            except Exception:
-                continue
-    raise ValueError(f"Invalid date value: {value}")
+        return value.date()
+
+    if isinstance(value, date):
+        return value
+
+    cleaned = str(value).strip().replace("\ufeff", "")
+    if not cleaned:
+        return None
+
+    yyyy_mm_dd_match = re.match(r"^(\d{4}-\d{2}-\d{2})", cleaned)
+    if yyyy_mm_dd_match:
+        try:
+            return datetime.strptime(yyyy_mm_dd_match.group(1), "%Y-%m-%d").date()
+        except ValueError as exc:
+            raise ValueError(f"Invalid date value: {value}") from exc
+
+    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+
+    try:
+        return datetime.fromisoformat(cleaned.replace("Z", "+00:00")).date()
+    except ValueError as exc:
+        raise ValueError(f"Invalid date value: {value}") from exc
+
+
+def parse_excel_date(value):
+    normalized = normalizeDate(value)
+    if normalized is None:
+        return None
+    return normalized.isoformat()
 
 
 def parse_decimal(value):
@@ -341,7 +365,9 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
     file_hash = sha256(file_bytes).hexdigest()
 
     existing_run = db.importRuns.find_one({"sha256": file_hash})
-    if existing_run and force != 1:
+    existing_ok_run = existing_run and existing_run.get("status") == "ok"
+
+    if existing_ok_run and force != 1:
         return {"already_imported": True, "importRunId": str(existing_run["_id"])}
 
     now = datetime.now(timezone.utc).isoformat()
@@ -370,7 +396,9 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
         "errorsSample": [],
     }
 
-    if existing_run and force == 1:
+    should_reuse_existing_run = existing_run and (force == 1 or not existing_ok_run or (existing_run.get("rowsOk") or 0) == 0)
+
+    if should_reuse_existing_run:
         db.importRuns.update_one({"_id": existing_run["_id"]}, {"$set": import_run_doc})
         import_run_id = existing_run["_id"]
     else:
@@ -532,7 +560,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
                 "rowsOk": rows_ok,
                 "rowsSkipped": duplicates_skipped,
                 "rowsError": rows_error,
-                "status": "completed" if rows_error == 0 else "completed_with_errors",
+                "status": "ok" if rows_error == 0 else "completed_with_errors",
                 "finishedAt": datetime.now(timezone.utc).isoformat(),
                 "errorsSample": errors_sample[:50],
             }
