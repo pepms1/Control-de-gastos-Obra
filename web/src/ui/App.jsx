@@ -42,7 +42,13 @@ function Nav({ tab, setTab, role, username, onLogout }) {
 
   return (
     <div className="nav">
-      <div className="nav-title">Control de Gastos Calderon de la Barca</div>
+      <div className="nav-header">
+        <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="nav-logo" />
+        <div className="nav-title-wrap">
+          <div className="nav-title">Grupo MDI</div>
+          <div className="nav-subtitle">Control de Gastos Calderon de la Barca</div>
+        </div>
+      </div>
 
       <div className="nav-items">
         {items
