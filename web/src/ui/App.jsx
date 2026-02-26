@@ -712,27 +712,23 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     }
   }
 
-  const shownTotals = useMemo(() => {
-    return shown.reduce(
-      (acc, r) => {
-        const amount = Number(r.amount || 0);
-        const amountWithoutTax = Number(r.montoSinIva ?? r.amount ?? 0);
-        if (r.type === 'EXPENSE') {
-      (acc, row) => {
-        const amount = Number(row.amount) || 0;
-        if (row.type === 'EXPENSE') {
-          const montoSinIva = Number(row.montoSinIva ?? 0) || 0;
-          acc.expenses += amount;
-          acc.expensesWithoutTax += amountWithoutTax;
-          acc.net -= amountWithoutTax;
-        } else {
-          acc.income += amount;
-          acc.net += amount;
-        }
-        return acc;
-      },
-      { income: 0, expenses: 0, expensesWithoutTax: 0, net: 0 }
-    );
+  const totals = useMemo(() => {
+    const init = { income: 0, expenses: 0, expensesWithoutTax: 0, net: 0 };
+
+    return (shown || []).reduce((acc, m) => {
+      const amount = Number(m.amount ?? m.monto ?? 0);
+      const withoutTax = Number(m.montoSinIva ?? m.expensesWithoutTax ?? amount);
+
+      if ((m.type || m.tipo) === "Ingreso") {
+        acc.income += amount;
+      } else {
+        acc.expenses += amount;
+        acc.expensesWithoutTax += withoutTax;
+      }
+
+      acc.net = acc.income + acc.expenses;
+      return acc;
+    }, init);
   }, [shown]);
 
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * limit + 1;
@@ -805,8 +801,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
       )}
 
       <div className="row" style={{ gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-        <div className="badge">Total egresos sin IVA: ${formatMoney(serverTotals?.egresos?.sinIva ?? shownTotals.expensesWithoutTax)}</div>
-        <div className="badge">Total egresos bruto: ${formatMoney(serverTotals?.egresos?.bruto ?? shownTotals.expenses)}</div>
+        <div className="badge">Total egresos sin IVA: ${formatMoney(serverTotals?.egresos?.sinIva ?? totals.expensesWithoutTax)}</div>
+        <div className="badge">Total egresos bruto: ${formatMoney(serverTotals?.egresos?.bruto ?? totals.expenses)}</div>
       </div>
 
       {loading ? (
@@ -890,11 +886,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
               <tr>
                 <td colSpan={6} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (página actual):</td>
                 <td style={{ fontWeight: 800 }}>
-                  +${formatMoney(shownTotals.income)} / -${formatMoney(shownTotals.expenses)}
+                  +${formatMoney(totals.income)} / -${formatMoney(totals.expenses)}
                 </td>
                 <td style={{ fontWeight: 700 }}>-${formatMoney(shown.reduce((acc, r) => acc + (Number(r.montoIva ?? 0) || 0), 0))}</td>
-                <td style={{ fontWeight: 800 }}>-${formatMoney(shownTotals.expensesWithoutTax)}</td>
-                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {shownTotals.net >= 0 ? '+' : '-'}${formatMoney(Math.abs(shownTotals.net))}</td>}
+                <td style={{ fontWeight: 800 }}>-${formatMoney(totals.expensesWithoutTax)}</td>
+                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {totals.net >= 0 ? '+' : '-'}${formatMoney(Math.abs(totals.net))}</td>}
                 {isAdmin && <td />}
               </tr>
             </tfoot>
