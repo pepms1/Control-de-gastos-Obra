@@ -828,6 +828,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <th>Categoría</th>
                 <th>Proveedor</th>
                 <th>Monto</th>
+                <th>Monto IVA</th>
                 <th>Monto sin IVA</th>
                 {isAdmin && <th>Acciones</th>}
                 {isAdmin && <th>Seleccionar</th>}
@@ -836,7 +837,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             <tbody>
               {isAdmin && (
                 <tr>
-                  <td colSpan={isAdmin ? 10 : 8} style={{ textAlign: 'right' }}>
+                  <td colSpan={isAdmin ? 11 : 9} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (filtro actual)
@@ -853,6 +854,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
+                  <td style={{ fontWeight: 700 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.ivaAplicado ?? 0)}</td>
                   <td style={{ fontWeight: 700 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.montoSinIva ?? r.amount)}</td>
                   {isAdmin && (
                     <td>
@@ -893,6 +895,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <td style={{ fontWeight: 800 }}>
                   +${formatMoney(shownTotals.income)} / -${formatMoney(shownTotals.expenses)}
                 </td>
+                <td style={{ fontWeight: 700 }}>-${formatMoney(shown.reduce((acc, r) => acc + (Number(r.ivaAplicado ?? 0) || 0), 0))}</td>
                 <td style={{ fontWeight: 800 }}>-${formatMoney(shownTotals.expensesWithoutTax)}</td>
                 {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {shownTotals.net >= 0 ? '+' : '-'}${formatMoney(Math.abs(shownTotals.net))}</td>}
                 {isAdmin && <td />}

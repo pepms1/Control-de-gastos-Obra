@@ -242,25 +242,31 @@ def parse_optional_decimal(value):
 
 def compute_monto_sin_iva(tx: dict):
     amount = round(float(tx.get("amount") or 0), 2)
+    iva_aplicado = compute_iva_aplicado(tx)
+    return round(amount - iva_aplicado, 2)
+
+
+def compute_iva_aplicado(tx: dict):
+    amount = round(float(tx.get("amount") or 0), 2)
     tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else None
     if tax is None:
-        return amount
-
-    subtotal = tax.get("subtotal")
-    if subtotal is not None:
-        try:
-            return round(float(subtotal), 2)
-        except (TypeError, ValueError):
-            pass
+        return 0.0
 
     iva = tax.get("iva")
-    if iva is not None:
-        try:
-            return round(amount - float(iva), 2)
-        except (TypeError, ValueError):
-            pass
+    total_factura = tax.get("totalFactura")
 
-    return amount
+    try:
+        iva_value = float(iva)
+        total_factura_value = float(total_factura)
+    except (TypeError, ValueError):
+        return 0.0
+
+    if total_factura_value == 0:
+        return 0.0
+
+    sign = -1 if amount < 0 else 1
+    proporcional = round(iva_value * (abs(amount) / total_factura_value), 2)
+    return round(sign * proporcional, 2)
 
 
 def build_transactions_query(
@@ -330,6 +336,9 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "nrofactura": "facturaproveedornum",
         "numfactura": "facturaproveedornum",
         "impuesto": "iva",
+        "apvatsum": "iva",
+        "apdoctotal": "totalfactura",
+        "pch1linetotal": "subtotal",
     }
 
     def normalize_header(header_value):
@@ -887,6 +896,7 @@ def run_sap_import(file_name: str, file_bytes: bytes, project: str, force: int, 
                 "category_id": None,
                 "vendor_id": None,
                 "source": "sap",
+                "sourceDb": "IVA" if record.get("tax") else "SAP",
                 "tax": record.get("tax"),
                 "sap": {
                     "pagoNum": record["paymentNum"],
@@ -1485,8 +1495,10 @@ def list_transactions(
     }
 
     for tx in txs:
+        iva_aplicado = compute_iva_aplicado(tx)
         monto_sin_iva = compute_monto_sin_iva(tx)
         tx_doc = serialize_transaction_with_supplier(tx, suppliers_by_id)
+        tx_doc["ivaAplicado"] = iva_aplicado
         tx_doc["montoSinIva"] = monto_sin_iva
         items.append(tx_doc)
 
