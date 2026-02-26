@@ -587,6 +587,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   const [filter, setFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [supplierFilter, setSupplierFilter] = useState('ALL');
+  const [searchFilter, setSearchFilter] = useState('');
   const [sortBy, setSortBy] = useState('date_desc');
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -616,7 +617,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
 
   useEffect(() => {
     setSelectedRows([]);
-  }, [filter, categoryFilter, supplierFilter, sortBy, rows]);
+  }, [filter, categoryFilter, supplierFilter, searchFilter, sortBy, rows]);
+
+  const normalizedSearch = searchFilter.trim().toLowerCase();
 
   const supplierOptions = useMemo(() => {
     const byId = new Map();
@@ -633,6 +636,14 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     .filter((r) => {
       if (supplierFilter === 'ALL') return true;
       return (r.supplierId || r.vendor_id || '') === supplierFilter;
+    })
+    .filter((r) => {
+      if (!normalizedSearch) return true;
+      const supplierName = (r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '').toLowerCase();
+      const concept = (r.description || r.concept || '').toLowerCase();
+      const categoryName = (r.category_id ? catMap[r.category_id] || '' : '').toLowerCase();
+      const typeLabel = (r.type === 'EXPENSE' ? 'egreso' : 'ingreso').toLowerCase();
+      return [supplierName, concept, categoryName, typeLabel, r.date || ''].some((value) => value.includes(normalizedSearch));
     })
     .sort((a, b) => {
       if (sortBy === 'supplier_asc') {
@@ -738,6 +749,13 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
       <div className="row" style={{ justifyContent: 'space-between' }}>
         <h2 style={{ margin: 0 }}>Movimientos</h2>
         <div className="row">
+          <input
+            type="search"
+            placeholder="Buscar en movimientos"
+            value={searchFilter}
+            onChange={(e) => setSearchFilter(e.target.value)}
+            style={{ minWidth: 220 }}
+          />
           <select value={filter} onChange={(e) => setFilter(e.target.value)}>
             <option value="ALL">Todos</option>
             <option value="INCOME">Ingresos</option>
