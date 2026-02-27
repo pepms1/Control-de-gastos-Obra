@@ -237,13 +237,18 @@ function Dashboard({ isAdmin }) {
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
   const [viewMode, setViewMode] = useState('category');
+  const [showCategoryIva, setShowCategoryIva] = useState(false);
+  const [showSupplierIva, setShowSupplierIva] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let ok = true;
     setLoading(true);
 
-    Promise.allSettled([api.spendByCategory(), api.expensesSummaryBySupplier()]).then(([categoryResult, supplierResult]) => {
+    Promise.allSettled([
+      api.spendByCategory({ include_iva: showCategoryIva ? 'true' : 'false' }),
+      api.expensesSummaryBySupplier('CALDERON DE LA BARCA', { include_iva: showSupplierIva ? 'true' : 'false' }),
+    ]).then(([categoryResult, supplierResult]) => {
       if (!ok) return;
 
       if (categoryResult.status === 'fulfilled') {
@@ -262,26 +267,11 @@ function Dashboard({ isAdmin }) {
 
       setLoading(false);
     });
-    Promise.all([api.spendByCategory(), api.expensesSummaryBySupplier()])
-      .then(([categoryStats, supplierStats]) => {
-        if (ok) {
-          setStats(categoryStats);
-          setSupplierSummary(Array.isArray(supplierStats) ? supplierStats : []);
-          setLoading(false);
-        }
-      })
-      .catch((e) => {
-        if (ok) {
-          setStats({ error: e.message });
-          setSupplierSummary([]);
-          setLoading(false);
-        }
-      });
 
     return () => {
       ok = false;
     };
-  }, []);
+  }, [showCategoryIva, showSupplierIva]);
 
   const supplierTotal = supplierSummary.reduce((acc, row) => acc + (Number(row.totalAmount) || 0), 0);
 
@@ -302,6 +292,18 @@ function Dashboard({ isAdmin }) {
           : 'Totales agrupados por proveedor (SAP).'}
       </div>
 
+      {viewMode === 'category' ? (
+        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
+          Mostrar IVA
+        </label>
+      ) : (
+        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
+          Mostrar IVA
+        </label>
+      )}
+
       
 {loading ? (
         <div style={{ padding: '12px 0' }}>Cargando...</div>
@@ -310,7 +312,9 @@ function Dashboard({ isAdmin }) {
       ) : viewMode === 'category' && stats?.rows?.length ? (
         <div style={{ marginTop: 12 }} className="grid">
           <div className="row" style={{ justifyContent: 'space-between' }}>
-            <div className="badge">Total egresos: ${formatMoney(stats.total_expenses || 0)}</div>
+            <div className="badge">
+              Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(stats.total_expenses || 0)}
+            </div>
             {isAdmin && (
               <button
                 className="secondary"
@@ -356,7 +360,7 @@ function Dashboard({ isAdmin }) {
           <div style={{ padding: '12px 0' }}>Error: {supplierSummaryError}</div>
         ) : supplierSummary.length ? (
           <div style={{ marginTop: 12 }} className="grid">
-            <div className="badge">Total egresos SAP: ${formatMoney(supplierTotal)}</div>
+            <div className="badge">Total egresos SAP {showSupplierIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(supplierTotal)}</div>
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>

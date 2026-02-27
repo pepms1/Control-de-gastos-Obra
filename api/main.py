@@ -1351,6 +1351,7 @@ def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int =
 @app.get("/api/expenses/summary-by-supplier")
 def summary_expenses_by_supplier(
     project: str = "CALDERON DE LA BARCA",
+    include_iva: bool = False,
     _: dict = Depends(require_authenticated),
 ):
     project_name = (project or "").strip() or "CALDERON DE LA BARCA"
@@ -1359,11 +1360,29 @@ def summary_expenses_by_supplier(
         return []
 
     project_id = str(project_doc["_id"])
-    pipeline = [
-        {"$match": {"type": "EXPENSE", "projectId": project_id}},
-        {"$group": {"_id": "$supplierId", "totalAmount": {"$sum": "$amount"}, "count": {"$sum": 1}}},
+    movements = list(
+        db.transactions.find(
+            {"type": "EXPENSE", "projectId": project_id},
+            {"supplierId": 1, "amount": 1, "tax": 1},
+        )
+    )
+
+    supplier_totals = {}
+    for tx in movements:
+        supplier_id = tx.get("supplierId")
+        bucket = supplier_totals.setdefault(supplier_id, {"totalAmount": 0.0, "count": 0})
+        amount_value = float(tx.get("amount") or 0)
+        bucket["totalAmount"] += amount_value if include_iva else compute_monto_sin_iva(tx)
+        bucket["count"] += 1
+
+    rows = [
+        {
+            "_id": supplier_id,
+            "totalAmount": round(values["totalAmount"], 2),
+            "count": values["count"],
+        }
+        for supplier_id, values in supplier_totals.items()
     ]
-    rows = list(db.transactions.aggregate(pipeline))
 
     supplier_ids = [oid(row["_id"]) for row in rows if row.get("_id")]
     supplier_names = {}
@@ -1940,6 +1959,7 @@ def spend_by_category(
     date_from: str | None = None,
     date_to: str | None = None,
     vendor_id: str | None = None,
+    include_iva: bool = False,
     _: dict = Depends(require_authenticated),
 ):
     match = {"type": "EXPENSE"}
@@ -1952,13 +1972,18 @@ def spend_by_category(
         if date_to:
             match["date"]["$lte"] = date_to
 
-    pipeline = [
-        {"$match": match},
-        {"$group": {"_id": "$category_id", "amount": {"$sum": "$amount"}}},
-        {"$sort": {"amount": -1}},
-    ]
-    rows = list(db.transactions.aggregate(pipeline))
-    total = sum(float(r["amount"]) for r in rows) if rows else 0.0
+    transactions = list(db.transactions.find(match, {"category_id": 1, "amount": 1, "tax": 1}))
+
+    totals_by_category = {}
+    for tx in transactions:
+        category_id = tx.get("category_id")
+        amount_value = float(tx.get("amount") or 0)
+        movement_amount = amount_value if include_iva else compute_monto_sin_iva(tx)
+        totals_by_category[category_id] = round(totals_by_category.get(category_id, 0.0) + movement_amount, 2)
+
+    rows = [{"_id": category_id, "amount": amount} for category_id, amount in totals_by_category.items()]
+    rows.sort(key=lambda row: row["amount"], reverse=True)
+    total = round(sum(float(r["amount"]) for r in rows), 2) if rows else 0.0
 
     cat_ids = [oid(r["_id"]) for r in rows if r.get("_id")]
     cats = {}
