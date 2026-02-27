@@ -33,6 +33,14 @@ a{color:inherit}
 .grid2{grid-template-columns: 1fr; }
 @media (min-width: 860px){ .grid2{grid-template-columns: 1fr 1fr;} }
 .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
+.date-filter-inline{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  flex:1 1 240px;
+  min-width:220px;
+  max-width:320px;
+}
 label{font-size:12px; color:var(--gray-700); display:block; margin-bottom:6px;}
 input, select, textarea{width:100%; padding:10px 12px; border-radius:12px; border:1px solid var(--gray-200); background:#fff; color:var(--gray-700);}
 input:focus, select:focus, textarea:focus{outline:2px solid rgba(31,77,150,.22); border-color:var(--primary);}

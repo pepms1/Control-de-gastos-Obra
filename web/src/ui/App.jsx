@@ -935,8 +935,26 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             }}
             style={{ minWidth: 220 }}
           />
-          <input type="date" value={dateFrom} onChange={(e) => { setPage(1); setDateFrom(e.target.value); }} />
-          <input type="date" value={dateTo} onChange={(e) => { setPage(1); setDateTo(e.target.value); }} />
+          <div className="date-filter-inline">
+            <input
+              type="date"
+              aria-label="Fecha desde"
+              value={dateFrom}
+              onChange={(e) => {
+                setPage(1);
+                setDateFrom(e.target.value);
+              }}
+            />
+            <input
+              type="date"
+              aria-label="Fecha hasta"
+              value={dateTo}
+              onChange={(e) => {
+                setPage(1);
+                setDateTo(e.target.value);
+              }}
+            />
+          </div>
           <select value={filter} onChange={(e) => { setPage(1); setFilter(e.target.value); }}>
             <option value="ALL">Todos</option>
             <option value="INCOME">Ingresos</option>
