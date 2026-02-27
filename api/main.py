@@ -568,6 +568,11 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "apvatsum": "iva",
         "apdoctotal": "totalfactura",
         "pch1linetotal": "subtotal",
+        # Explicit aliases requested for SAP exports with variant spacing/casing.
+        # normalize_header removes spaces/underscores/BOM before this lookup.
+        "subtotal": "subtotal",  # Subtotal | Sub total | SubTotal
+        "iva": "iva",  # IVA | Iva
+        "totalfactura": "totalfactura",  # TotalFactura | Total Factura | Total_Factura
     }
 
     def normalize_header(header_value):
@@ -1840,12 +1845,18 @@ def list_transactions(
 
     items = []
     for tx in txs:
-        monto_iva = compute_monto_iva(tx)
-        monto_sin_iva = compute_monto_sin_iva(tx)
         tx_doc = serialize_transaction_with_supplier(tx, suppliers_by_id)
-        tx_doc["montoIva"] = monto_iva
-        tx_doc["ivaAplicado"] = monto_iva
-        tx_doc["montoSinIva"] = monto_sin_iva
+
+        tax_doc = tx_doc.get("tax") if isinstance(tx_doc.get("tax"), dict) else {}
+        subtotal = parse_optional_decimal(tax_doc.get("subtotal"))
+        iva = parse_optional_decimal(tax_doc.get("iva"))
+        total_factura = parse_optional_decimal(tax_doc.get("totalFactura"))
+        amount = parse_optional_decimal(tx_doc.get("amount")) or 0
+        sign = -1 if amount < 0 else 1
+
+        tx_doc["subtotal"] = sign * subtotal if subtotal is not None else None
+        tx_doc["iva"] = sign * iva if iva is not None else None
+        tx_doc["totalFactura"] = sign * total_factura if total_factura is not None else None
         items.append(tx_doc)
 
     return {
