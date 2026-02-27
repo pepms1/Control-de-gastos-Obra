@@ -251,6 +251,8 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
 }
 
 function RawDataAdmin() {
+  const [collections, setCollections] = useState([]);
+  const [collection, setCollection] = useState('');
   const [fields, setFields] = useState([]);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -260,6 +262,30 @@ function RawDataAdmin() {
   const [totalCount, setTotalCount] = useState(0);
 
   const loadExpenses = () => {
+
+  useEffect(() => {
+    let active = true;
+    api
+      .adminRawCollections()
+      .then((data) => {
+        if (!active) return;
+        const items = Array.isArray(data?.collections) ? data.collections : [];
+        setCollections(items);
+        if (items.length) setCollection(items[0]);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setError(e.message || 'No se pudieron cargar las colecciones.');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!collection) return;
+    let active = true;
     setLoading(true);
     setError('');
 
@@ -283,6 +309,26 @@ function RawDataAdmin() {
   useEffect(() => {
     loadExpenses();
   }, []);
+      .adminRawRows(collection, { limit: 200 })
+      .then((data) => {
+        if (!active) return;
+        setFields(Array.isArray(data?.fields) ? data.fields : []);
+        setRows(Array.isArray(data?.rows) ? data.rows : []);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setFields([]);
+        setRows([]);
+        setError(e.message || 'No se pudo cargar la colección.');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [collection]);
 
   function editCell(rowId, field) {
     const row = rows.find((item) => item.id === rowId);
@@ -303,6 +349,7 @@ function RawDataAdmin() {
     setSavingRow(rowId);
     api
       .adminRawUpdateRow('transactions', rowId, { [field]: parsed })
+      .adminRawUpdateRow(collection, rowId, { [field]: parsed })
       .then((updatedRow) => {
         setRows((prev) => prev.map((item) => (item.id === rowId ? updatedRow : item)));
       })
@@ -332,6 +379,16 @@ function RawDataAdmin() {
         <span className="small">
           Mostrando {rows.length} de {totalCount} egresos en <code>transactions</code>
         </span>
+      <h3 style={{ marginTop: 0 }}>Raw data (solo admin)</h3>
+      <div className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <label htmlFor="raw-data-collection">Colección:</label>
+        <select id="raw-data-collection" value={collection} onChange={(e) => setCollection(e.target.value)}>
+          {collections.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
       </div>
 
       {error && <div className="small" style={{ color: '#b00020', marginBottom: 8 }}>{error}</div>}
@@ -339,6 +396,7 @@ function RawDataAdmin() {
         <div>Cargando...</div>
       ) : !rows.length ? (
         <div className="small">No hay egresos para mostrar.</div>
+        <div className="small">No hay filas para mostrar.</div>
       ) : (
         <table>
           <thead>
