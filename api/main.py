@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File,
 from fastapi import Header
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, UpdateOne
+from pymongo.errors import OperationFailure
 from bson import ObjectId
 from datetime import date, datetime, timedelta, timezone
 from jose import JWTError, jwt
@@ -166,11 +167,29 @@ def ensure_indexes():
         partialFilterExpression={"source": "sap"},
     )
     db.transactions.create_index([("projectId", 1), ("date", -1)])
-    db.transactions.create_index(
-        [("description", "text"), ("concept", "text"), ("supplierName", "text")],
-        name="transactions_text_search",
-        default_language="spanish",
-    )
+    text_index_name = "transactions_text_search"
+    current_indexes = {idx.get("name"): idx for idx in db.transactions.list_indexes()}
+    existing_text_index = current_indexes.get(text_index_name)
+    expected_text_fields = [
+        ("description", "text"),
+        ("concept", "text"),
+        ("supplierName", "text"),
+        ("beneficiario", "text"),
+    ]
+
+    if existing_text_index and existing_text_index.get("key") != dict(expected_text_fields):
+        db.transactions.drop_index(text_index_name)
+
+    try:
+        db.transactions.create_index(
+            expected_text_fields,
+            name=text_index_name,
+            default_language="spanish",
+        )
+    except OperationFailure:
+        # Si el índice de texto no puede crearse por restricciones del dataset,
+        # se mantiene fallback de búsqueda por regex en el endpoint.
+        pass
 
 
 def create_token(username: str, role: str):
@@ -343,8 +362,114 @@ def build_transactions_query(
             {"description": {"$regex": escaped_search, "$options": "i"}},
             {"concept": {"$regex": escaped_search, "$options": "i"}},
             {"supplierName": {"$regex": escaped_search, "$options": "i"}},
+            {"beneficiario": {"$regex": escaped_search, "$options": "i"}},
         ]
     return q
+
+
+def build_transaction_totals(match_query: dict, search_query: str | None = None):
+    aggregate_match = dict(match_query)
+    cleaned_search = (search_query or "").strip()
+    use_text_search = False
+
+    if cleaned_search and "$or" in aggregate_match:
+        aggregate_match.pop("$or", None)
+        aggregate_match["$text"] = {"$search": cleaned_search}
+        use_text_search = True
+
+    pipeline = [
+        {"$match": aggregate_match},
+        {
+            "$project": {
+                "type": 1,
+                "amount": {"$ifNull": ["$amount", 0]},
+                "tax": 1,
+                "montoIva": {
+                    "$let": {
+                        "vars": {
+                            "iva": {"$convert": {"input": "$tax.iva", "to": "double", "onError": 0, "onNull": 0}},
+                            "totalFactura": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": 0, "onNull": 0}},
+                            "amountValue": {"$ifNull": ["$amount", 0]},
+                        },
+                        "in": {
+                            "$cond": [
+                                {"$eq": ["$$totalFactura", 0]},
+                                0,
+                                {
+                                    "$round": [
+                                        {
+                                            "$multiply": [
+                                                {"$cond": [{"$lt": ["$$amountValue", 0]}, -1, 1]},
+                                                "$$iva",
+                                                {"$divide": [{"$abs": "$$amountValue"}, "$$totalFactura"]},
+                                            ]
+                                        },
+                                        2,
+                                    ]
+                                },
+                            ]
+                        },
+                    }
+                },
+            }
+        },
+        {
+            "$addFields": {
+                "montoSinIva": {
+                    "$cond": [
+                        {"$and": [{"$ne": ["$tax", None]}, {"$ne": ["$montoIva", None]}]},
+                        {"$round": [{"$subtract": ["$amount", "$montoIva"]}, 2]},
+                        "$amount",
+                    ]
+                }
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "expensesGross": {
+                    "$sum": {"$cond": [{"$eq": ["$type", "EXPENSE"]}, "$amount", 0]}
+                },
+                "expensesTax": {
+                    "$sum": {"$cond": [{"$eq": ["$type", "EXPENSE"]}, "$montoIva", 0]}
+                },
+                "expensesWithoutTax": {
+                    "$sum": {"$cond": [{"$eq": ["$type", "EXPENSE"]}, "$montoSinIva", 0]}
+                },
+                "incomeGross": {
+                    "$sum": {"$cond": [{"$eq": ["$type", "INCOME"]}, "$amount", 0]}
+                },
+            }
+        },
+        {
+            "$project": {
+                "_id": 0,
+                "expensesGross": {"$round": ["$expensesGross", 2]},
+                "expensesTax": {"$round": ["$expensesTax", 2]},
+                "expensesWithoutTax": {"$round": ["$expensesWithoutTax", 2]},
+                "incomeGross": {"$round": ["$incomeGross", 2]},
+                "net": {"$round": [{"$subtract": ["$incomeGross", "$expensesWithoutTax"]}, 2]},
+            }
+        },
+    ]
+
+    try:
+        rows = list(db.transactions.aggregate(pipeline))
+    except OperationFailure:
+        if use_text_search:
+            return build_transaction_totals(match_query, search_query=None)
+        rows = []
+
+    if rows:
+        return rows[0]
+
+    return {
+        "expensesGross": 0.0,
+        "expensesTax": 0.0,
+        "expensesWithoutTax": 0.0,
+        "incomeGross": 0.0,
+        "net": 0.0,
+    }
 
 
 def parse_sap_file(file_name: str, file_bytes: bytes):
@@ -1603,7 +1728,6 @@ def list_transactions(
     source: str | None = None,
     sourceDb: str | None = None,
     q: str | None = None,
-    withTotals: int = 0,
     page: int = 1,
     limit: int = 50,
     _: dict = Depends(require_authenticated),
@@ -1627,7 +1751,9 @@ def list_transactions(
         source_db=sourceDb,
         search_query=q,
     )
+
     total_count = db.transactions.count_documents(match_query)
+    totals = build_transaction_totals(match_query, search_query=q)
 
     txs = list(
         db.transactions.find(match_query)
@@ -1651,12 +1777,6 @@ def list_transactions(
             suppliers_by_id[str(supplier["_id"])] = supplier
 
     items = []
-    totals = {
-        "egresos": {"bruto": 0.0, "sinIva": 0.0},
-        "ingresos": {"bruto": 0.0},
-        "netoSinIva": 0.0,
-    }
-
     for tx in txs:
         monto_iva = compute_monto_iva(tx)
         monto_sin_iva = compute_monto_sin_iva(tx)
@@ -1666,31 +1786,13 @@ def list_transactions(
         tx_doc["montoSinIva"] = monto_sin_iva
         items.append(tx_doc)
 
-        amount = round(float(tx.get("amount") or 0), 2)
-        if tx.get("type") == "EXPENSE":
-            totals["egresos"]["bruto"] += amount
-            totals["egresos"]["sinIva"] += monto_sin_iva
-            totals["netoSinIva"] -= monto_sin_iva
-        else:
-            totals["ingresos"]["bruto"] += amount
-            totals["netoSinIva"] += amount
-
-    totals["egresos"]["bruto"] = round(totals["egresos"]["bruto"], 2)
-    totals["egresos"]["sinIva"] = round(totals["egresos"]["sinIva"], 2)
-    totals["ingresos"]["bruto"] = round(totals["ingresos"]["bruto"], 2)
-    totals["netoSinIva"] = round(totals["netoSinIva"], 2)
-
-    response = {
+    return {
         "items": items,
         "page": normalized_page,
         "limit": normalized_limit,
         "totalCount": total_count,
+        "totals": totals,
     }
-
-    if withTotals == 1:
-        response["totals"] = totals
-
-    return response
 
 
 @app.get("/stats/spend-by-category")
