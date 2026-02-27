@@ -829,7 +829,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <th>Categoría</th>
                 <th>Proveedor</th>
                 <th>Monto</th>
-                <th>Subtotal</th>
                 <th>IVA</th>
                 <th>Total Factura</th>
                 {isAdmin && <th>Acciones</th>}
@@ -839,7 +838,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             <tbody>
               {isAdmin && (
                 <tr>
-                  <td colSpan={isAdmin ? 12 : 10} style={{ textAlign: 'right' }}>
+                  <td colSpan={isAdmin ? 11 : 9} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (página actual)
@@ -856,7 +855,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
-                  <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.subtotal ?? 0)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.totalFactura ?? 0)}</td>
                   {isAdmin && (
