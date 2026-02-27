@@ -162,6 +162,10 @@ def role_from_token(authorization: str | None = Header(default=None)):
             "username": user["username"],
             "role": role,
             "displayName": display_name,
+        return {
+            "username": user["username"],
+            "role": role,
+            "displayName": user.get("displayName") or user["username"],
             "active": user.get("active", True),
         }
 
@@ -429,7 +433,10 @@ def build_transactions_query(
                 {"categoryId": {"$exists": False}},
             ]
         else:
-            q["category_id"] = category_id
+            q["$or"] = [
+                {"category_id": category_id},
+                {"categoryId": category_id},
+            ]
     if vendor_id:
         q["vendor_id"] = vendor_id
     if supplier_id:
@@ -458,6 +465,26 @@ def build_transactions_query(
             {"supplierName": {"$regex": escaped_search, "$options": "i"}},
             {"beneficiario": {"$regex": escaped_search, "$options": "i"}},
         ]
+
+        normalized_search = normalize_category_name(cleaned_search)
+        category_name_filters = [
+            {"name": {"$regex": escaped_search, "$options": "i"}},
+        ]
+        if normalized_search:
+            category_name_filters.append({"normalizedName": {"$regex": re.escape(normalized_search), "$options": "i"}})
+
+        matching_category_ids = [
+            str(category["_id"])
+            for category in db.categories.find({"$or": category_name_filters}, {"_id": 1})
+        ]
+        if matching_category_ids:
+            search_conditions.extend(
+                [
+                    {"category_id": {"$in": matching_category_ids}},
+                    {"categoryId": {"$in": matching_category_ids}},
+                ]
+            )
+
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": search_conditions}]
         else:
@@ -880,6 +907,7 @@ def login(payload: dict):
         role = user.get("role", "VIEWER")
         env_display_name = (get_env_auth_users().get(username) or {}).get("displayName")
         display_name = user.get("displayName") or env_display_name or username
+        display_name = user.get("displayName") or username
 
     token = create_token(username, role, display_name)
     return {
