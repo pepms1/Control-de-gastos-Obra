@@ -289,6 +289,26 @@ function Dashboard({ isAdmin }) {
             )}
           </div>
 
+          {stats.rows.map((r) => {
+            const percent = Number(r.percent) || 0;
+            const fillWidth = Math.max(0, Math.min(100, percent));
+
+            return (
+              <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div style={{ fontWeight: 700 }}>{r.category_name}</div>
+                  <div>
+                    ${formatMoney(r.amount)} <span className="small">({percent.toFixed(2)}%)</span>
+                  </div>
+                </div>
+                <div className="bar" aria-label={`Barra de avance de ${r.category_name}`}>
+                  <div style={{ width: fillWidth + '%' }}>
+                    <span>{percent.toFixed(2)}%</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
           {stats.rows.map((r) => (
             <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
               <div className="row" style={{ justifyContent: 'space-between' }}>
