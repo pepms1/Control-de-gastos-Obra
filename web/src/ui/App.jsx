@@ -283,7 +283,19 @@ function Dashboard({ isAdmin }) {
           <div className="row" style={{ justifyContent: 'space-between' }}>
             <div className="badge">Total egresos: ${formatMoney(stats.total_expenses || 0)}</div>
             {isAdmin && (
-              <button className="secondary" onClick={() => api.seed().then(() => location.reload()).catch(() => {})}>
+              <button
+                className="secondary"
+                onClick={async () => {
+                  const confirmed = window.confirm('Esto solo agrega faltantes, no borra');
+                  if (!confirmed) return;
+                  try {
+                    await api.seed();
+                    location.reload();
+                  } catch (_) {
+                    // Intencionalmente silencioso para mantener el comportamiento previo.
+                  }
+                }}
+              >
                 Seed categorías
               </button>
             )}
