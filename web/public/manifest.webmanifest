@@ -1,0 +1,17 @@
+{
+  "name": "Control de Gastos Obra",
+  "short_name": "Gastos Obra",
+  "description": "Aplicación para control de gastos de obra.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3f4f6",
+  "theme_color": "#022B75",
+  "icons": [
+    {
+      "src": "/logo-grupo-mdi.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ]
+}
