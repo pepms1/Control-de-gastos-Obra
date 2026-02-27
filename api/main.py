@@ -473,7 +473,6 @@ def build_transactions_query(
                         },
                     ]
                 },
-                {"categoryId": category_id},
             ]
     if vendor_id:
         q["vendor_id"] = vendor_id
@@ -536,30 +535,6 @@ def build_transactions_query(
                 search_conditions = category_search_conditions
             else:
                 search_conditions.extend(category_search_conditions)
-        matching_category_ids = [
-            str(category["_id"])
-            for category in db.categories.find({"$or": category_name_filters}, {"_id": 1})
-        ]
-        if matching_category_ids:
-            search_conditions.extend(
-                [
-                    {"category_id": {"$in": matching_category_ids}},
-                    {
-                        "$and": [
-                            {"categoryId": {"$in": matching_category_ids}},
-                            {
-                                "$or": [
-                                    {"category_id": None},
-                                    {"category_id": ""},
-                                    {"category_id": {"$exists": False}},
-                                ]
-                            },
-                        ]
-                    },
-                    {"categoryId": {"$in": matching_category_ids}},
-                ]
-            )
-
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": search_conditions}]
         else:
