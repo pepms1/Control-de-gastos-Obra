@@ -558,6 +558,7 @@ function EditModal({ title, children, onClose, onSave }) {
 
 /* ================= TRANSACTIONS ================= */
 function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
+  const UNCATEGORIZED_FILTER = '__UNCATEGORIZED__';
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
@@ -763,6 +764,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
           </select>
           <select value={categoryFilter} onChange={(e) => { setPage(1); setCategoryFilter(e.target.value); }}>
             <option value="ALL">Todas las categorías</option>
+            <option value={UNCATEGORIZED_FILTER}>Sin categoría</option>
             {cats.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
