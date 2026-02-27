@@ -54,11 +54,6 @@ th, td{padding:10px 8px; border-bottom:1px solid var(--gray-200); text-align:lef
 .login-brand h1{margin:0; font-size:28px; letter-spacing:.08em; text-transform:uppercase; color:var(--primary-dark);}
 .login-brand p{margin:0; font-size:14px; letter-spacing:.16em; text-transform:uppercase; color:var(--gray-500);}
 
-.pie-card{display:flex; flex-direction:column; gap:16px; align-items:flex-start; padding:8px 0;}
-.pie-chart{width:170px; height:170px; border-radius:50%; border:8px solid var(--gray-50); box-shadow:inset 0 0 0 1px rgba(18,48,95,.25);}
-.pie-legend{display:grid; gap:8px; min-width:220px; flex:1;}
-.pie-legend-item{display:flex; gap:8px; align-items:center; justify-content:space-between; background:#fff; border:1px solid var(--gray-200); border-radius:10px; padding:6px 10px;}
-.pie-dot{width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:2px;}
 
 .modal-backdrop{position:fixed; inset:0; background:rgba(30,41,59,.38); display:flex; align-items:center; justify-content:center; z-index:999;}
 .modal{width:min(520px,90vw); background:#fff; border-radius:16px; padding:16px; border:1px solid var(--gray-200);}
@@ -84,6 +79,4 @@ th, td{padding:10px 8px; border-bottom:1px solid var(--gray-200); text-align:lef
   .nav-user-actions{width:100%; margin-left:0; justify-content:space-between;}
   .nav a,
   .nav button{font-size:14px;}
-  .pie-chart{width:140px; height:140px;}
-  .pie-legend{min-width:0; width:100%;}
 }
