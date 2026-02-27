@@ -949,34 +949,45 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
 function SearchTransactions({ cats, vendors }) {
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const limit = 50;
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   useEffect(() => {
+    setPage(1);
+  }, [query]);
+
+  useEffect(() => {
     setLoading(true);
-    api.transactions({ page: '1', limit: '100' })
-      .then((data) => setRows(Array.isArray(data?.items) ? data.items : []))
-      .catch(() => setRows([]))
+    setError('');
+    api.transactions({
+      type: 'EXPENSE',
+      page: String(page),
+      limit: String(limit),
+      q: query.trim(),
+    })
+      .then((data) => {
+        setRows(Array.isArray(data?.items) ? data.items : []);
+        setTotalCount(Number(data?.totalCount) || 0);
+      })
+      .catch((err) => {
+        setRows([]);
+        setTotalCount(0);
+        setError(err?.message || 'No se pudo buscar movimientos');
+      })
       .finally(() => setLoading(false));
-  }, []);
-
-  const filteredRows = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return rows;
-
-    return rows.filter((r) => {
-      const supplier = (r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '').toLowerCase();
-      const concept = (r.description || r.concept || '').toLowerCase();
-      const category = (r.category_name || (r.category_id ? catMap[r.category_id] || '' : '')).toLowerCase();
-      return supplier.includes(needle) || concept.includes(needle) || category.includes(needle);
-    });
-  }, [rows, query, catMap, vendorMap]);
+  }, [page, query]);
 
   const filteredTotal = useMemo(
-    () => filteredRows.reduce((acc, r) => acc + (Number(r.amount) || 0), 0),
-    [filteredRows],
+    () => rows.reduce((acc, r) => acc + (Number(r.amount) || 0), 0),
+    [rows],
   );
+  const rangeStart = totalCount === 0 ? 0 : (page - 1) * limit + 1;
+  const rangeEnd = Math.min(page * limit, totalCount);
 
   return (
     <div className="card">
@@ -987,7 +998,10 @@ function SearchTransactions({ cats, vendors }) {
         onChange={(e) => setQuery(e.target.value)}
         style={{ maxWidth: 420 }}
       />
-      <div className="small" style={{ marginTop: 8 }}>{loading ? 'Buscando...' : `${filteredRows.length} resultados (filtrados de los primeros 100)`}</div>
+      <div className="small" style={{ marginTop: 8 }}>
+        {loading ? 'Buscando...' : `${totalCount} resultados en egresos${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''}`}
+      </div>
+      {!!error && <div className="small" style={{ marginTop: 8, color: '#b91c1c' }}>{error}</div>}
       <div style={{ overflowX: 'auto', marginTop: 10 }}>
         <table>
           <thead>
@@ -996,7 +1010,7 @@ function SearchTransactions({ cats, vendors }) {
             </tr>
           </thead>
           <tbody>
-            {filteredRows.map((r) => (
+            {rows.map((r) => (
               <tr key={r.id}>
                 <td>{r.date}</td>
                 <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
@@ -1005,7 +1019,7 @@ function SearchTransactions({ cats, vendors }) {
                 <td>${formatMoney(r.amount)}</td>
               </tr>
             ))}
-            {!filteredRows.length && !loading && (
+            {!rows.length && !loading && (
               <tr><td colSpan={5} className="small">Sin resultados</td></tr>
             )}
           </tbody>
@@ -1016,6 +1030,10 @@ function SearchTransactions({ cats, vendors }) {
             </tr>
           </tfoot>
         </table>
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+        <button className="secondary" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1 || loading}>Anterior</button>
+        <button className="secondary" onClick={() => setPage((p) => p + 1)} disabled={rangeEnd >= totalCount || loading}>Siguiente</button>
       </div>
     </div>
   );
