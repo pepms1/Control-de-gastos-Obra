@@ -42,6 +42,46 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 # ---------- helpers ----------
+def env_get(primary_key: str, fallback_key: str | None = None, default: str | None = None):
+    value = os.getenv(primary_key)
+    if value is None and fallback_key:
+        value = os.getenv(fallback_key)
+    if value is None:
+        return default
+    return value
+
+
+def get_env_auth_users():
+    default_admin_user = env_get("DEFAULT_ADMIN_USERNAME", "default_admin_username", "admin")
+    default_admin_pass = env_get("DEFAULT_ADMIN_PASSWORD", "default_admin_password", "admin123")
+    default_viewer_user = env_get("DEFAULT_VIEWER_USERNAME", "default_viewer_username", "viewer")
+    default_viewer_pass = env_get("DEFAULT_VIEWER_PASSWORD", "default_viewer_password", "viewer123")
+    viewer_users_raw = env_get("VIEWER_USERS", "viewer_users", "") or ""
+
+    auth_users = {
+        default_admin_user: {"password": default_admin_pass, "role": "ADMIN"},
+        default_viewer_user: {"password": default_viewer_pass, "role": "VIEWER"},
+    }
+
+    for entry in viewer_users_raw.split(","):
+        pair = entry.strip()
+        if not pair:
+            continue
+
+        parts = pair.split(":", 1)
+        if len(parts) != 2:
+            continue
+
+        viewer_username = parts[0].strip()
+        viewer_password = parts[1].strip()
+        if not viewer_username or not viewer_password:
+            continue
+
+        auth_users[viewer_username] = {"password": viewer_password, "role": "VIEWER"}
+
+    return auth_users
+
+
 def oid(s: str) -> ObjectId:
     try:
         return ObjectId(s)
@@ -95,13 +135,24 @@ def role_from_token(authorization: str | None = Header(default=None)):
         raise HTTPException(status_code=401, detail="Invalid token payload")
 
     user = db.users.find_one({"username": username})
-    if not user or not user.get("active", True):
+    if user:
+        if not user.get("active", True):
+            raise HTTPException(status_code=401, detail="User inactive or not found")
+
+        role = user.get("role")
+        if role not in ("ADMIN", "VIEWER"):
+            raise HTTPException(status_code=401, detail="Invalid role")
+        return {"username": user["username"], "role": role, "active": user.get("active", True)}
+
+    token_role = payload.get("role")
+    env_user = get_env_auth_users().get(username)
+    if not env_user:
         raise HTTPException(status_code=401, detail="User inactive or not found")
 
-    role = user.get("role")
-    if role not in ("ADMIN", "VIEWER"):
+    role = env_user.get("role")
+    if role not in ("ADMIN", "VIEWER") or token_role != role:
         raise HTTPException(status_code=401, detail="Invalid role")
-    return {"username": user["username"], "role": role, "active": user.get("active", True)}
+    return {"username": username, "role": role, "active": True}
 
 
 def require_admin(user=Depends(role_from_token)):
@@ -118,10 +169,10 @@ def ensure_default_users():
     users = db.users
     users.create_index("username", unique=True)
 
-    default_admin_user = os.getenv("DEFAULT_ADMIN_USERNAME", "admin")
-    default_admin_pass = os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")
-    default_viewer_user = os.getenv("DEFAULT_VIEWER_USERNAME", "viewer")
-    default_viewer_pass = os.getenv("DEFAULT_VIEWER_PASSWORD", "viewer123")
+    default_admin_user = env_get("DEFAULT_ADMIN_USERNAME", "default_admin_username", "admin")
+    default_admin_pass = env_get("DEFAULT_ADMIN_PASSWORD", "default_admin_password", "admin123")
+    default_viewer_user = env_get("DEFAULT_VIEWER_USERNAME", "default_viewer_username", "viewer")
+    default_viewer_pass = env_get("DEFAULT_VIEWER_PASSWORD", "default_viewer_password", "viewer123")
 
     defaults = [
         (default_admin_user, default_admin_pass, "ADMIN"),
@@ -787,13 +838,17 @@ def login(payload: dict):
     if not username or not password:
         raise HTTPException(status_code=400, detail="username and password are required")
 
-    user = db.users.find_one({"username": username})
-    if not user or not pwd_context.verify(password, user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    if not user.get("active", True):
-        raise HTTPException(status_code=403, detail="User is inactive")
+    env_user = get_env_auth_users().get(username)
+    if env_user and password == env_user.get("password"):
+        role = env_user.get("role", "VIEWER")
+    else:
+        user = db.users.find_one({"username": username})
+        if not user or not pwd_context.verify(password, user.get("password_hash", "")):
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if not user.get("active", True):
+            raise HTTPException(status_code=403, detail="User is inactive")
+        role = user.get("role", "VIEWER")
 
-    role = user.get("role", "VIEWER")
     token = create_token(username, role)
     return {"access_token": token, "token_type": "bearer", "role": role, "username": username}
 
