@@ -830,8 +830,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <th>Proveedor</th>
                 <th>Monto</th>
                 <th>Subtotal</th>
-                <th>Iva</th>
-                <th>Total</th>
                 <th>IVA</th>
                 <th>Total Factura</th>
                 {isAdmin && <th>Acciones</th>}
@@ -858,9 +856,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
-                  <td style={{ fontWeight: 700 }}>{r.subtotal == null ? '—' : `$${formatMoney(r.subtotal)}`}</td>
-                  <td style={{ fontWeight: 700 }}>{r.iva == null ? '—' : `$${formatMoney(r.iva)}`}</td>
-                  <td style={{ fontWeight: 700 }}>{r.totalFactura == null ? '—' : `$${formatMoney(r.totalFactura)}`}</td>
+                  <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.subtotal ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.totalFactura ?? 0)}</td>
                   {isAdmin && (
                     <td>
                       <button
