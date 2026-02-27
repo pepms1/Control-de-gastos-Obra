@@ -1851,6 +1851,10 @@ def list_transactions(
         subtotal = parse_optional_decimal(tax_doc.get("subtotal"))
         iva = parse_optional_decimal(tax_doc.get("iva"))
         total_factura = parse_optional_decimal(tax_doc.get("totalFactura"))
+
+        tx_doc["subtotal"] = subtotal if subtotal is not None else None
+        tx_doc["iva"] = iva if iva is not None else None
+        tx_doc["totalFactura"] = total_factura if total_factura is not None else None
         amount = parse_optional_decimal(tx_doc.get("amount")) or 0
         sign = -1 if amount < 0 else 1
 
