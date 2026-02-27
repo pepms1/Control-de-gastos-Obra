@@ -224,6 +224,15 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
         >
           Importar a SAP
         </button>
+        <button
+          type="button"
+          className={section === 'raw-data' ? '' : 'secondary'}
+          onClick={() => setSection('raw-data')}
+          disabled={!isAdmin}
+          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+        >
+          Raw data
+        </button>
       </div>
 
       {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
@@ -234,6 +243,160 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
         ) : (
           <div className="card">Solo los administradores pueden importar pagos SAP.</div>
         ))}
+
+      {section === 'raw-data' &&
+        (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
+    </div>
+  );
+}
+
+function RawDataAdmin() {
+  const [collections, setCollections] = useState([]);
+  const [collection, setCollection] = useState('');
+  const [fields, setFields] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [savingRow, setSavingRow] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    api
+      .adminRawCollections()
+      .then((data) => {
+        if (!active) return;
+        const items = Array.isArray(data?.collections) ? data.collections : [];
+        setCollections(items);
+        if (items.length) setCollection(items[0]);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setError(e.message || 'No se pudieron cargar las colecciones.');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!collection) return;
+    let active = true;
+    setLoading(true);
+    setError('');
+
+    api
+      .adminRawRows(collection, { limit: 200 })
+      .then((data) => {
+        if (!active) return;
+        setFields(Array.isArray(data?.fields) ? data.fields : []);
+        setRows(Array.isArray(data?.rows) ? data.rows : []);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setFields([]);
+        setRows([]);
+        setError(e.message || 'No se pudo cargar la colección.');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [collection]);
+
+  function editCell(rowId, field) {
+    const row = rows.find((item) => item.id === rowId);
+    if (!row) return;
+
+    const current = row[field];
+    const nextRaw = window.prompt(`Editar ${field} (valor JSON):`, JSON.stringify(current ?? null));
+    if (nextRaw === null) return;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(nextRaw);
+    } catch {
+      window.alert('Valor inválido. Debe ser JSON válido, por ejemplo: "texto", 123, true, null o {"a":1}.');
+      return;
+    }
+
+    setSavingRow(rowId);
+    api
+      .adminRawUpdateRow(collection, rowId, { [field]: parsed })
+      .then((updatedRow) => {
+        setRows((prev) => prev.map((item) => (item.id === rowId ? updatedRow : item)));
+      })
+      .catch((e) => {
+        window.alert(e.message || 'No se pudo actualizar el campo.');
+      })
+      .finally(() => setSavingRow(''));
+  }
+
+  return (
+    <div className="card" style={{ overflowX: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>Raw data (solo admin)</h3>
+      <div className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <label htmlFor="raw-data-collection">Colección:</label>
+        <select id="raw-data-collection" value={collection} onChange={(e) => setCollection(e.target.value)}>
+          {collections.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {error && <div className="small" style={{ color: '#b00020', marginBottom: 8 }}>{error}</div>}
+      {loading ? (
+        <div>Cargando...</div>
+      ) : !rows.length ? (
+        <div className="small">No hay filas para mostrar.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              {fields.map((field) => (
+                <th key={field}>{field}</th>
+              ))}
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                {fields.map((field) => (
+                  <td key={`${row.id}-${field}`} style={{ maxWidth: 260 }}>
+                    <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {JSON.stringify(row[field] ?? null)}
+                    </code>
+                  </td>
+                ))}
+                <td>
+                  {savingRow === row.id ? (
+                    <span className="small">Guardando…</span>
+                  ) : (
+                    <select defaultValue="" onChange={(e) => e.target.value && editCell(row.id, e.target.value)}>
+                      <option value="" disabled>
+                        Editar campo…
+                      </option>
+                      {fields
+                        .filter((field) => field !== 'id')
+                        .map((field) => (
+                          <option key={`${row.id}-action-${field}`} value={field}>
+                            {field}
+                          </option>
+                        ))}
+                    </select>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
