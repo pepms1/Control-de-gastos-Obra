@@ -54,13 +54,15 @@ def env_get(primary_key: str, fallback_key: str | None = None, default: str | No
 def get_env_auth_users():
     default_admin_user = env_get("DEFAULT_ADMIN_USERNAME", "default_admin_username", "admin")
     default_admin_pass = env_get("DEFAULT_ADMIN_PASSWORD", "default_admin_password", "admin123")
+    default_admin_name = env_get("DEFAULT_ADMIN_NAME", "default_admin_name", default_admin_user)
     default_viewer_user = env_get("DEFAULT_VIEWER_USERNAME", "default_viewer_username", "viewer")
     default_viewer_pass = env_get("DEFAULT_VIEWER_PASSWORD", "default_viewer_password", "viewer123")
+    default_viewer_name = env_get("DEFAULT_VIEWER_NAME", "default_viewer_name", default_viewer_user)
     viewer_users_raw = env_get("VIEWER_USERS", "viewer_users", "") or ""
 
     auth_users = {
-        default_admin_user: {"password": default_admin_pass, "role": "ADMIN"},
-        default_viewer_user: {"password": default_viewer_pass, "role": "VIEWER"},
+        default_admin_user: {"password": default_admin_pass, "role": "ADMIN", "displayName": default_admin_name},
+        default_viewer_user: {"password": default_viewer_pass, "role": "VIEWER", "displayName": default_viewer_name},
     }
 
     for entry in viewer_users_raw.split(","):
@@ -68,16 +70,21 @@ def get_env_auth_users():
         if not pair:
             continue
 
-        parts = pair.split(":", 1)
-        if len(parts) != 2:
+        parts = pair.split(":", 2)
+        if len(parts) < 2:
             continue
 
         viewer_username = parts[0].strip()
         viewer_password = parts[1].strip()
+        viewer_display_name = (parts[2].strip() if len(parts) > 2 else "") or viewer_username
         if not viewer_username or not viewer_password:
             continue
 
-        auth_users[viewer_username] = {"password": viewer_password, "role": "VIEWER"}
+        auth_users[viewer_username] = {
+            "password": viewer_password,
+            "role": "VIEWER",
+            "displayName": viewer_display_name,
+        }
 
     return auth_users
 
@@ -142,7 +149,12 @@ def role_from_token(authorization: str | None = Header(default=None)):
         role = user.get("role")
         if role not in ("ADMIN", "VIEWER"):
             raise HTTPException(status_code=401, detail="Invalid role")
-        return {"username": user["username"], "role": role, "active": user.get("active", True)}
+        return {
+            "username": user["username"],
+            "role": role,
+            "displayName": user.get("displayName") or user["username"],
+            "active": user.get("active", True),
+        }
 
     token_role = payload.get("role")
     env_user = get_env_auth_users().get(username)
@@ -152,7 +164,8 @@ def role_from_token(authorization: str | None = Header(default=None)):
     role = env_user.get("role")
     if role not in ("ADMIN", "VIEWER") or token_role != role:
         raise HTTPException(status_code=401, detail="Invalid role")
-    return {"username": username, "role": role, "active": True}
+    display_name = payload.get("displayName") or payload.get("name") or env_user.get("displayName") or username
+    return {"username": username, "role": role, "displayName": display_name, "active": True}
 
 
 def require_admin(user=Depends(role_from_token)):
@@ -171,15 +184,17 @@ def ensure_default_users():
 
     default_admin_user = env_get("DEFAULT_ADMIN_USERNAME", "default_admin_username", "admin")
     default_admin_pass = env_get("DEFAULT_ADMIN_PASSWORD", "default_admin_password", "admin123")
+    default_admin_name = env_get("DEFAULT_ADMIN_NAME", "default_admin_name", default_admin_user)
     default_viewer_user = env_get("DEFAULT_VIEWER_USERNAME", "default_viewer_username", "viewer")
     default_viewer_pass = env_get("DEFAULT_VIEWER_PASSWORD", "default_viewer_password", "viewer123")
+    default_viewer_name = env_get("DEFAULT_VIEWER_NAME", "default_viewer_name", default_viewer_user)
 
     defaults = [
-        (default_admin_user, default_admin_pass, "ADMIN"),
-        (default_viewer_user, default_viewer_pass, "VIEWER"),
+        (default_admin_user, default_admin_pass, "ADMIN", default_admin_name),
+        (default_viewer_user, default_viewer_pass, "VIEWER", default_viewer_name),
     ]
 
-    for username, plain_password, role in defaults:
+    for username, plain_password, role, display_name in defaults:
         existing = users.find_one({"username": username})
         if existing:
             continue
@@ -188,6 +203,7 @@ def ensure_default_users():
                 "username": username,
                 "password_hash": pwd_context.hash(plain_password),
                 "role": role,
+                "displayName": display_name,
                 "active": True,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -243,9 +259,9 @@ def ensure_indexes():
         pass
 
 
-def create_token(username: str, role: str):
+def create_token(username: str, role: str, display_name: str):
     exp = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
-    payload = {"sub": username, "role": role, "exp": exp}
+    payload = {"sub": username, "role": role, "displayName": display_name, "name": display_name, "exp": exp}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -841,6 +857,7 @@ def login(payload: dict):
     env_user = get_env_auth_users().get(username)
     if env_user and password == env_user.get("password"):
         role = env_user.get("role", "VIEWER")
+        display_name = env_user.get("displayName") or username
     else:
         user = db.users.find_one({"username": username})
         if not user or not pwd_context.verify(password, user.get("password_hash", "")):
@@ -848,9 +865,17 @@ def login(payload: dict):
         if not user.get("active", True):
             raise HTTPException(status_code=403, detail="User is inactive")
         role = user.get("role", "VIEWER")
+        display_name = user.get("displayName") or username
 
-    token = create_token(username, role)
-    return {"access_token": token, "token_type": "bearer", "role": role, "username": username}
+    token = create_token(username, role, display_name)
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "token": token,
+        "role": role,
+        "username": username,
+        "displayName": display_name,
+    }
 
 
 @app.get("/auth/me")
