@@ -20,11 +20,12 @@ function parseMoneyInput(value) {
 
 /* ================= NAV ================= */
 function Nav({ tab, setTab, role, username, displayName, onLogout }) {
+  const canSeeSettings = role !== 'VIEWER';
   const items = [
     ['dashboard', 'Dashboard', true],
     ['transactions', 'Movimientos', true],
     ['search', 'Buscar', true],
-    ['settings', 'Ajustes', true],
+    ['settings', 'Ajustes', canSeeSettings],
   ];
 
   const linkStyle = (active) => ({
