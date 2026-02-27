@@ -24,8 +24,7 @@ function Nav({ tab, setTab, role, username, onLogout }) {
     ['dashboard', 'Dashboard', true],
     ['transactions', 'Movimientos', true],
     ['search', 'Buscar', true],
-    ['catalog', 'Catálogo', true],
-    ['import-sap', 'Importar datos SAP', role === 'ADMIN'],
+    ['settings', 'Ajustes', true],
   ];
 
   const linkStyle = (active) => ({
@@ -178,20 +177,18 @@ export default function App() {
 
         {tab === 'dashboard' && <Dashboard isAdmin={isAdmin} />}
 
-        {tab === 'import-sap' && isAdmin && <ImportSapScreen />}
-
         {tab === 'transactions' && (
           <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} onCatalogChanged={refreshCatalog} />
         )}
 
         {tab === 'search' && <SearchTransactions cats={cats} vendors={vendors} />}
 
-        {tab === 'catalog' && (
-          <Catalog
+        {tab === 'settings' && (
+          <Settings
             isAdmin={isAdmin}
             cats={cats}
             vendors={vendors}
-            onChanged={async () => {
+            onCatalogChanged={async () => {
               await refreshCatalog();
               setToast('Catálogo actualizado');
             }}
@@ -199,6 +196,38 @@ export default function App() {
         )}
       </div>
     </>
+  );
+}
+
+function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
+  const [section, setSection] = useState('catalog');
+
+  return (
+    <div className="grid" style={{ gap: 14 }}>
+      <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <button type="button" className={section === 'catalog' ? '' : 'secondary'} onClick={() => setSection('catalog')}>
+          Catálogo
+        </button>
+        <button
+          type="button"
+          className={section === 'import-sap' ? '' : 'secondary'}
+          onClick={() => setSection('import-sap')}
+          disabled={!isAdmin}
+          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+        >
+          Importar a SAP
+        </button>
+      </div>
+
+      {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
+
+      {section === 'import-sap' &&
+        (isAdmin ? (
+          <ImportSapScreen />
+        ) : (
+          <div className="card">Solo los administradores pueden importar pagos SAP.</div>
+        ))}
+    </div>
   );
 }
 
