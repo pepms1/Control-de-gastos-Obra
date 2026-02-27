@@ -955,22 +955,39 @@ function SearchTransactions({ cats, vendors }) {
 
   useEffect(() => {
     setLoading(true);
-    api.transactions({ q: query.trim(), page: '1', limit: '100' })
+    api.transactions({ page: '1', limit: '100' })
       .then((data) => setRows(Array.isArray(data?.items) ? data.items : []))
       .catch(() => setRows([]))
       .finally(() => setLoading(false));
-  }, [query]);
+  }, []);
+
+  const filteredRows = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return rows;
+
+    return rows.filter((r) => {
+      const supplier = (r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '').toLowerCase();
+      const concept = (r.description || r.concept || '').toLowerCase();
+      const category = (r.category_name || (r.category_id ? catMap[r.category_id] || '' : '')).toLowerCase();
+      return supplier.includes(needle) || concept.includes(needle) || category.includes(needle);
+    });
+  }, [rows, query, catMap, vendorMap]);
+
+  const filteredTotal = useMemo(
+    () => filteredRows.reduce((acc, r) => acc + (Number(r.amount) || 0), 0),
+    [filteredRows],
+  );
 
   return (
     <div className="card">
       <h2 style={{ marginTop: 0 }}>Buscar movimientos</h2>
       <input
-        placeholder="Buscar por proveedor o concepto"
+        placeholder="Buscar por proveedor, concepto o categoría"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         style={{ maxWidth: 420 }}
       />
-      <div className="small" style={{ marginTop: 8 }}>{loading ? 'Buscando...' : `${rows.length} resultados (primeros 100)`}</div>
+      <div className="small" style={{ marginTop: 8 }}>{loading ? 'Buscando...' : `${filteredRows.length} resultados (filtrados de los primeros 100)`}</div>
       <div style={{ overflowX: 'auto', marginTop: 10 }}>
         <table>
           <thead>
@@ -979,19 +996,25 @@ function SearchTransactions({ cats, vendors }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {filteredRows.map((r) => (
               <tr key={r.id}>
                 <td>{r.date}</td>
                 <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                 <td>{r.description || r.concept || ''}</td>
-                <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
+                <td>{r.category_name || (r.category_id ? catMap[r.category_id] || '' : '')}</td>
                 <td>${formatMoney(r.amount)}</td>
               </tr>
             ))}
-            {!rows.length && !loading && (
+            {!filteredRows.length && !loading && (
               <tr><td colSpan={5} className="small">Sin resultados</td></tr>
             )}
           </tbody>
+          <tfoot>
+            <tr>
+              <td colSpan={4} style={{ textAlign: 'right', fontWeight: 700 }}>Total filtrado</td>
+              <td style={{ fontWeight: 700 }}>${formatMoney(filteredTotal)}</td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </div>
