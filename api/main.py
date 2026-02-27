@@ -485,6 +485,31 @@ def build_transactions_query(
         if normalized_search:
             category_name_filters.append({"normalizedName": {"$regex": re.escape(normalized_search), "$options": "i"}})
 
+        matching_categories = list(db.categories.find({"$or": category_name_filters}, {"_id": 1, "normalizedName": 1}))
+        matching_category_ids = [str(category["_id"]) for category in matching_categories]
+        category_search_conditions = []
+        if matching_category_ids:
+            category_search_conditions = [
+                {"category_id": {"$in": matching_category_ids}},
+                {
+                    "$and": [
+                        {"categoryId": {"$in": matching_category_ids}},
+                        {
+                            "$or": [
+                                {"category_id": None},
+                                {"category_id": ""},
+                                {"category_id": {"$exists": False}},
+                            ]
+                        },
+                    ]
+                },
+            ]
+
+            exact_category_match = any((category.get("normalizedName") or "") == normalized_search for category in matching_categories)
+            if exact_category_match:
+                search_conditions = category_search_conditions
+            else:
+                search_conditions.extend(category_search_conditions)
         matching_category_ids = [
             str(category["_id"])
             for category in db.categories.find({"$or": category_name_filters}, {"_id": 1})
