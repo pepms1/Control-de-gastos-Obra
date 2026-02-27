@@ -416,7 +416,10 @@ def build_transactions_query(
                 {"categoryId": {"$exists": False}},
             ]
         else:
-            q["category_id"] = category_id
+            q["$or"] = [
+                {"category_id": category_id},
+                {"categoryId": category_id},
+            ]
     if vendor_id:
         q["vendor_id"] = vendor_id
     if supplier_id:
