@@ -263,6 +263,10 @@ def parse_decimal(value):
         raise ValueError(f"Invalid number: {value}") from exc
 
 
+def normalize_category_name(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip()).lower()
+
+
 def parse_optional_decimal(value):
     if value is None:
         return None
@@ -1523,11 +1527,30 @@ DEFAULT_CATEGORIES = [
 @app.post("/seed")
 def seed(_: dict = Depends(require_admin)):
     cats = db.categories
-    existing = {c["name"] for c in cats.find({}, {"name": 1})}
-    to_insert = [{"name": n, "active": True} for n in DEFAULT_CATEGORIES if n not in existing]
-    if to_insert:
-        cats.insert_many(to_insert)
-    return {"created_categories": len(to_insert)}
+    created_categories = 0
+
+    for category_name in DEFAULT_CATEGORIES:
+        normalized_name = normalize_category_name(category_name)
+        result = cats.update_one(
+            {
+                "$or": [
+                    {"nameKey": normalized_name},
+                    {"name": {"$regex": f"^{re.escape(category_name)}$", "$options": "i"}},
+                ]
+            },
+            {
+                "$set": {"nameKey": normalized_name},
+                "$setOnInsert": {
+                    "name": category_name,
+                    "active": True,
+                },
+            },
+            upsert=True,
+        )
+        if result.upserted_id:
+            created_categories += 1
+
+    return {"created_categories": created_categories}
 
 
 # ---------- categories ----------
