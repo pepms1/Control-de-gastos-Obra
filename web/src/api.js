@@ -184,4 +184,22 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ category_id: categoryId }),
     }),
+
+  adminRawCollections: () => backendReq('/api/admin/raw-data/collections'),
+
+  adminRawExpenses: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/admin/raw-data-expenses${qs ? `?${qs}` : ''}`);
+  },
+
+  adminRawRows: (collection, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/admin/raw-data/${encodeURIComponent(collection)}${qs ? `?${qs}` : ''}`);
+  },
+
+  adminRawUpdateRow: (collection, rowId, changes) =>
+    backendReq(`/api/admin/raw-data/${encodeURIComponent(collection)}/${rowId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ changes }),
+    }),
 };
