@@ -309,16 +309,6 @@ function Dashboard({ isAdmin }) {
               </div>
             );
           })}
-          {stats.rows.map((r) => (
-            <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
-              <div className="row" style={{ justifyContent: 'space-between' }}>
-                <div style={{ fontWeight: 700 }}>{r.category_name}</div>
-                <div>
-                  ${formatMoney(r.amount)} <span className="small">({r.percent}%)</span>
-                </div>
-              </div>
-            </div>
-          ))}
         </div>
       ) : viewMode === 'supplier' ? (
         supplierSummaryError ? (
