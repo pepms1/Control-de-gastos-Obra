@@ -1887,6 +1887,8 @@ def list_transactions(
         tx_doc["subtotal"] = sign * subtotal if subtotal is not None else None
         tx_doc["iva"] = sign * iva if iva is not None else None
         tx_doc["totalFactura"] = sign * total_factura if total_factura is not None else None
+        tx_doc["montoIva"] = compute_monto_iva(tx_doc)
+        tx_doc["montoSinIva"] = compute_monto_sin_iva(tx_doc)
         items.append(tx_doc)
 
     return {
