@@ -224,6 +224,15 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
         >
           Importar a SAP
         </button>
+        <button
+          type="button"
+          className={section === 'raw-data' ? '' : 'secondary'}
+          onClick={() => setSection('raw-data')}
+          disabled={!isAdmin}
+          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+        >
+          Raw data
+        </button>
       </div>
 
       {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
@@ -234,6 +243,145 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
         ) : (
           <div className="card">Solo los administradores pueden importar pagos SAP.</div>
         ))}
+
+      {section === 'raw-data' &&
+        (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
+    </div>
+  );
+}
+
+function RawDataAdmin() {
+  const [fields, setFields] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [savingRow, setSavingRow] = useState('');
+  const [limit, setLimit] = useState(500);
+  const [totalCount, setTotalCount] = useState(0);
+
+  const loadExpenses = () => {
+    setLoading(true);
+    setError('');
+
+    api
+      .adminRawExpenses({ limit })
+      .then((data) => {
+        setFields(Array.isArray(data?.fields) ? data.fields : []);
+        setRows(Array.isArray(data?.rows) ? data.rows : []);
+        setTotalCount(Number(data?.totalCount || 0));
+      })
+      .catch((e) => {
+        setFields([]);
+        setRows([]);
+        setError(e.message || 'No se pudieron cargar los egresos.');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  };
+
+  useEffect(() => {
+    loadExpenses();
+  }, []);
+
+  function editCell(rowId, field) {
+    const row = rows.find((item) => item.id === rowId);
+    if (!row) return;
+
+    const current = row[field];
+    const nextRaw = window.prompt(`Editar ${field} (valor JSON):`, JSON.stringify(current ?? null));
+    if (nextRaw === null) return;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(nextRaw);
+    } catch {
+      window.alert('Valor inválido. Debe ser JSON válido, por ejemplo: "texto", 123, true, null o {"a":1}.');
+      return;
+    }
+
+    setSavingRow(rowId);
+    api
+      .adminRawUpdateRow('transactions', rowId, { [field]: parsed })
+      .then((updatedRow) => {
+        setRows((prev) => prev.map((item) => (item.id === rowId ? updatedRow : item)));
+      })
+      .catch((e) => {
+        window.alert(e.message || 'No se pudo actualizar el campo.');
+      })
+      .finally(() => setSavingRow(''));
+  }
+
+  return (
+    <div className="card" style={{ overflowX: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>Raw data de egresos (solo admin)</h3>
+      <div className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <label htmlFor="raw-data-limit">Filas:</label>
+        <input
+          id="raw-data-limit"
+          type="number"
+          min={1}
+          max={1000}
+          value={limit}
+          onChange={(e) => setLimit(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))}
+          style={{ width: 100 }}
+        />
+        <button type="button" className="secondary" onClick={loadExpenses} disabled={loading}>
+          Recargar
+        </button>
+        <span className="small">
+          Mostrando {rows.length} de {totalCount} egresos en <code>transactions</code>
+        </span>
+      </div>
+
+      {error && <div className="small" style={{ color: '#b00020', marginBottom: 8 }}>{error}</div>}
+      {loading ? (
+        <div>Cargando...</div>
+      ) : !rows.length ? (
+        <div className="small">No hay egresos para mostrar.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              {fields.map((field) => (
+                <th key={field}>{field}</th>
+              ))}
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                {fields.map((field) => (
+                  <td key={`${row.id}-${field}`} style={{ maxWidth: 260 }}>
+                    <code style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {JSON.stringify(row[field] ?? null)}
+                    </code>
+                  </td>
+                ))}
+                <td>
+                  {savingRow === row.id ? (
+                    <span className="small">Guardando…</span>
+                  ) : (
+                    <select defaultValue="" onChange={(e) => e.target.value && editCell(row.id, e.target.value)}>
+                      <option value="" disabled>
+                        Editar campo…
+                      </option>
+                      {fields
+                        .filter((field) => field !== 'id')
+                        .map((field) => (
+                          <option key={`${row.id}-action-${field}`} value={field}>
+                            {field}
+                          </option>
+                        ))}
+                    </select>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
