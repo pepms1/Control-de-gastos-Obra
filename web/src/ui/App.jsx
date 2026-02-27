@@ -851,7 +851,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td>{r.description || r.concept || ''}</td>
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
-                  <td style={{ fontWeight: 800 }}>${formatMoney(r.amount)}</td>
+                  <td style={{ fontWeight: 800 }}>${formatMoney(r.subtotal ?? r.amount)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.totalFactura ?? 0)}</td>
                   {isAdmin && (
