@@ -102,6 +102,36 @@ def serialize(doc):
     return doc
 
 
+def _serialize_any(value):
+    if isinstance(value, ObjectId):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _serialize_any(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_serialize_any(v) for v in value]
+    return value
+
+
+def serialize_raw_doc(doc):
+    raw = dict(doc)
+    raw["id"] = str(raw.pop("_id"))
+    return {k: _serialize_any(v) for k, v in raw.items()}
+
+
+def normalize_raw_value(value):
+    if isinstance(value, dict):
+        return {k: normalize_raw_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_raw_value(v) for v in value]
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if ObjectId.is_valid(trimmed):
+            return ObjectId(trimmed)
+    return value
+
+
 def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dict] | None = None):
     tx_doc = serialize(tx)
     supplier = None
@@ -162,10 +192,6 @@ def role_from_token(authorization: str | None = Header(default=None)):
             "username": user["username"],
             "role": role,
             "displayName": display_name,
-        return {
-            "username": user["username"],
-            "role": role,
-            "displayName": user.get("displayName") or user["username"],
             "active": user.get("active", True),
         }
 
@@ -980,6 +1006,67 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
 def list_users(_: dict = Depends(require_admin)):
     users = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
     return [serialize(u) for u in users]
+
+
+@app.get("/api/admin/raw-data/collections")
+def raw_data_collections(_: dict = Depends(require_admin)):
+    excluded = {"system.indexes", "system.profile"}
+    names = [name for name in db.list_collection_names() if name not in excluded and not name.startswith("system.")]
+    return {"collections": sorted(names)}
+
+
+def build_raw_data_response(collection: str, limit: int = 200):
+    if collection.startswith("system."):
+        raise HTTPException(status_code=400, detail="Collection not allowed")
+
+    safe_limit = max(1, min(limit, 1000))
+    cursor = db[collection].find({}).sort("date", -1).limit(safe_limit)
+    docs = [serialize_raw_doc(doc) for doc in cursor]
+
+    field_names = set()
+    for doc in docs:
+        field_names.update(doc.keys())
+
+    sorted_fields = sorted(field_names, key=lambda field: (field == "id", field))
+    return {
+        "collection": collection,
+        "count": len(docs),
+        "totalCount": db[collection].count_documents({}),
+        "fields": sorted_fields,
+        "rows": docs,
+    }
+
+
+@app.get("/api/admin/raw-data/{collection}")
+def raw_data_rows(collection: str, limit: int = 200, _: dict = Depends(require_admin)):
+    return build_raw_data_response(collection, limit)
+
+
+@app.get("/api/admin/raw-data-expenses")
+def raw_data_expenses(limit: int = 500, _: dict = Depends(require_admin)):
+    return build_raw_data_response("transactions", limit)
+
+
+@app.patch("/api/admin/raw-data/{collection}/{row_id}")
+def raw_data_update_row(collection: str, row_id: str, payload: dict, _: dict = Depends(require_admin)):
+    if collection.startswith("system."):
+        raise HTTPException(status_code=400, detail="Collection not allowed")
+
+    changes = payload.get("changes")
+    if not isinstance(changes, dict) or not changes:
+        raise HTTPException(status_code=400, detail="changes is required")
+
+    if "id" in changes or "_id" in changes:
+        raise HTTPException(status_code=400, detail="id cannot be updated")
+
+    existing = db[collection].find_one({"_id": oid(row_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Row not found")
+
+    normalized = {key: normalize_raw_value(value) for key, value in changes.items()}
+    db[collection].update_one({"_id": oid(row_id)}, {"$set": normalized})
+    updated = db[collection].find_one({"_id": oid(row_id)})
+    return serialize_raw_doc(updated)
 
 
 @app.get("/api/supplier-categories")
