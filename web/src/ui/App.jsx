@@ -813,8 +813,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
       )}
 
       <div className="row" style={{ gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-        <div className="badge">Total IVA: ${formatMoney(backendTotals.expensesTax)}</div>
         <div className="badge">Total egresos sin IVA: ${formatMoney(backendTotals.expensesWithoutTax)}</div>
+        <div className="badge">Total IVA: ${formatMoney(backendTotals.expensesTax)}</div>
+        <div className="badge">Total egresos con IVA: ${formatMoney(backendTotals.expensesGross)}</div>
       </div>
 
       {loading ? (
