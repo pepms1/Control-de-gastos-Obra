@@ -562,6 +562,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   const [rows, setRows] = useState([]);
+  const [allSuppliers, setAllSuppliers] = useState([]);
   const [serverTotals, setServerTotals] = useState(null);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('ALL');
@@ -614,17 +615,33 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   }, [filter, categoryFilter, supplierFilter, searchFilter, dateFrom, dateTo]);
 
   useEffect(() => {
+    api.suppliers()
+      .then((supplierList) => {
+        setAllSuppliers(Array.isArray(supplierList) ? supplierList : []);
+      })
+      .catch(() => {
+        setAllSuppliers([]);
+      });
+  }, []);
+
+  useEffect(() => {
     setSelectedRows([]);
   }, [rows, sortBy]);
 
   const supplierOptions = useMemo(() => {
     const byId = new Map();
+
+    allSuppliers.forEach((supplier) => {
+      if (supplier?.id) byId.set(supplier.id, supplier.name || 'Proveedor SAP');
+    });
+
     rows.forEach((r) => {
       if (r.supplierId) byId.set(r.supplierId, r.proveedorNombre || r.supplierName || r.proveedor?.name || 'Proveedor SAP');
       if (r.vendor_id) byId.set(r.vendor_id, vendorMap[r.vendor_id] || 'Proveedor');
     });
+
     return Array.from(byId.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
-  }, [rows, vendorMap]);
+  }, [allSuppliers, rows, vendorMap]);
 
   const shown = [...rows].sort((a, b) => {
     if (sortBy === 'supplier_asc') {
