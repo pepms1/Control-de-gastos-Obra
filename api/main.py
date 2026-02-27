@@ -335,7 +335,17 @@ def build_transactions_query(
     if type_value:
         q["type"] = type_value
     if category_id:
-        q["category_id"] = category_id
+        if category_id == "__UNCATEGORIZED__":
+            q["$or"] = [
+                {"category_id": None},
+                {"category_id": ""},
+                {"category_id": {"$exists": False}},
+                {"categoryId": None},
+                {"categoryId": ""},
+                {"categoryId": {"$exists": False}},
+            ]
+        else:
+            q["category_id"] = category_id
     if vendor_id:
         q["vendor_id"] = vendor_id
     if supplier_id:
@@ -358,12 +368,16 @@ def build_transactions_query(
     cleaned_search = (search_query or "").strip()
     if cleaned_search:
         escaped_search = re.escape(cleaned_search)
-        q["$or"] = [
+        search_conditions = [
             {"description": {"$regex": escaped_search, "$options": "i"}},
             {"concept": {"$regex": escaped_search, "$options": "i"}},
             {"supplierName": {"$regex": escaped_search, "$options": "i"}},
             {"beneficiario": {"$regex": escaped_search, "$options": "i"}},
         ]
+        if "$or" in q:
+            q["$and"] = [{"$or": q.pop("$or")}, {"$or": search_conditions}]
+        else:
+            q["$or"] = search_conditions
     return q
 
 
