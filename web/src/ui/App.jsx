@@ -289,21 +289,26 @@ function Dashboard({ isAdmin }) {
             )}
           </div>
 
-          <PieChart rows={stats.rows} />
+          {stats.rows.map((r) => {
+            const percent = Number(r.percent) || 0;
+            const fillWidth = Math.max(0, Math.min(100, percent));
 
-          {stats.rows.map((r) => (
-            <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
-              <div className="row" style={{ justifyContent: 'space-between' }}>
-                <div style={{ fontWeight: 700 }}>{r.category_name}</div>
-                <div>
-                  ${formatMoney(r.amount)} <span className="small">({r.percent}%)</span>
+            return (
+              <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div style={{ fontWeight: 700 }}>{r.category_name}</div>
+                  <div>
+                    ${formatMoney(r.amount)} <span className="small">({percent.toFixed(2)}%)</span>
+                  </div>
+                </div>
+                <div className="bar" aria-label={`Barra de avance de ${r.category_name}`}>
+                  <div style={{ width: fillWidth + '%' }}>
+                    <span>{percent.toFixed(2)}%</span>
+                  </div>
                 </div>
               </div>
-              <div className="bar">
-                <div style={{ width: Math.min(100, r.percent) + '%' }} />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       ) : viewMode === 'supplier' ? (
         supplierSummaryError ? (
@@ -366,47 +371,6 @@ function Dashboard({ isAdmin }) {
   );
 }
 
-function PieChart({ rows }) {
-  const slices = rows
-    .map((row, index) => {
-      const percent = Number(row.percent) || 0;
-      return {
-        ...row,
-        percent,
-        color: PIE_COLORS[index % PIE_COLORS.length],
-      };
-    })
-    .filter((row) => row.percent > 0);
-
-  if (!slices.length) return null;
-
-  let current = 0;
-  const gradient = slices
-    .map((slice) => {
-      const start = current;
-      const end = current + slice.percent;
-      current = end;
-      return `${slice.color} ${start}% ${Math.min(100, end)}%`;
-    })
-    .join(', ');
-
-  return (
-    <div className="pie-card">
-      <div className="pie-chart" style={{ background: `conic-gradient(${gradient})` }} aria-label="Gráfica de pastel por categoría" />
-      <div className="pie-legend">
-        {slices.map((slice) => (
-          <div key={slice.category_id} className="pie-legend-item">
-            <span className="pie-dot" style={{ background: slice.color }} />
-            <span>{slice.category_name}</span>
-            <strong>{slice.percent.toFixed(2)}%</strong>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-const PIE_COLORS = ['#12305f', '#1f4d96', '#3b629b', '#5f7ea8', '#7f97b8', '#9fafc7', '#c4cfdf'];
 const ADD_NEW_VENDOR_VALUE = '__add_new_vendor__';
 
 /* ================= TXN FORM ================= */
