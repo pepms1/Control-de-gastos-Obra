@@ -416,7 +416,21 @@ def build_transactions_query(
                 {"categoryId": {"$exists": False}},
             ]
         else:
-            q["category_id"] = category_id
+            q["$or"] = [
+                {"category_id": category_id},
+                {
+                    "$and": [
+                        {"categoryId": category_id},
+                        {
+                            "$or": [
+                                {"category_id": None},
+                                {"category_id": ""},
+                                {"category_id": {"$exists": False}},
+                            ]
+                        },
+                    ]
+                },
+            ]
     if vendor_id:
         q["vendor_id"] = vendor_id
     if supplier_id:
@@ -445,6 +459,40 @@ def build_transactions_query(
             {"supplierName": {"$regex": escaped_search, "$options": "i"}},
             {"beneficiario": {"$regex": escaped_search, "$options": "i"}},
         ]
+
+        normalized_search = normalize_category_name(cleaned_search)
+        category_name_filters = [
+            {"name": {"$regex": escaped_search, "$options": "i"}},
+        ]
+        if normalized_search:
+            category_name_filters.append({"normalizedName": {"$regex": re.escape(normalized_search), "$options": "i"}})
+
+        matching_categories = list(db.categories.find({"$or": category_name_filters}, {"_id": 1, "normalizedName": 1}))
+        matching_category_ids = [str(category["_id"]) for category in matching_categories]
+        category_search_conditions = []
+        if matching_category_ids:
+            category_search_conditions = [
+                {"category_id": {"$in": matching_category_ids}},
+                {
+                    "$and": [
+                        {"categoryId": {"$in": matching_category_ids}},
+                        {
+                            "$or": [
+                                {"category_id": None},
+                                {"category_id": ""},
+                                {"category_id": {"$exists": False}},
+                            ]
+                        },
+                    ]
+                },
+            ]
+
+            exact_category_match = any((category.get("normalizedName") or "") == normalized_search for category in matching_categories)
+            if exact_category_match:
+                search_conditions = category_search_conditions
+            else:
+                search_conditions.extend(category_search_conditions)
+
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": search_conditions}]
         else:
@@ -1889,6 +1937,7 @@ def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(req
         if cid and not db.categories.find_one({"_id": oid(cid), "active": True}):
             raise HTTPException(status_code=400, detail="Invalid category_id")
         updates["category_id"] = cid
+        updates["categoryId"] = cid
 
     if "vendor_id" in payload:
         vid = payload.get("vendor_id")
