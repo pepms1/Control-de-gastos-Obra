@@ -149,6 +149,19 @@ def role_from_token(authorization: str | None = Header(default=None)):
         role = user.get("role")
         if role not in ("ADMIN", "VIEWER"):
             raise HTTPException(status_code=401, detail="Invalid role")
+
+        env_user = get_env_auth_users().get(username)
+        display_name = (
+            user.get("displayName")
+            or (env_user or {}).get("displayName")
+            or payload.get("displayName")
+            or payload.get("name")
+            or user["username"]
+        )
+        return {
+            "username": user["username"],
+            "role": role,
+            "displayName": display_name,
         return {
             "username": user["username"],
             "role": role,
@@ -197,6 +210,10 @@ def ensure_default_users():
     for username, plain_password, role, display_name in defaults:
         existing = users.find_one({"username": username})
         if existing:
+            users.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"displayName": existing.get("displayName") or display_name}},
+            )
             continue
         users.insert_one(
             {
@@ -430,6 +447,7 @@ def build_transactions_query(
                         },
                     ]
                 },
+                {"categoryId": category_id},
             ]
     if vendor_id:
         q["vendor_id"] = vendor_id
@@ -487,6 +505,7 @@ def build_transactions_query(
                             },
                         ]
                     },
+                    {"categoryId": {"$in": matching_category_ids}},
                 ]
             )
 
@@ -910,6 +929,8 @@ def login(payload: dict):
         if not user.get("active", True):
             raise HTTPException(status_code=403, detail="User is inactive")
         role = user.get("role", "VIEWER")
+        env_display_name = (get_env_auth_users().get(username) or {}).get("displayName")
+        display_name = user.get("displayName") or env_display_name or username
         display_name = user.get("displayName") or username
 
     token = create_token(username, role, display_name)
