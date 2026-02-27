@@ -383,17 +383,16 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
             "$project": {
                 "type": 1,
                 "amount": {"$ifNull": ["$amount", 0]},
-                "tax": 1,
                 "montoIva": {
                     "$let": {
                         "vars": {
-                            "iva": {"$convert": {"input": "$tax.iva", "to": "double", "onError": 0, "onNull": 0}},
-                            "totalFactura": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": 0, "onNull": 0}},
+                            "iva": {"$convert": {"input": "$tax.iva", "to": "double", "onError": None, "onNull": None}},
+                            "totalFactura": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": None, "onNull": None}},
                             "amountValue": {"$ifNull": ["$amount", 0]},
                         },
                         "in": {
                             "$cond": [
-                                {"$eq": ["$$totalFactura", 0]},
+                                {"$or": [{"$eq": ["$$iva", None]}, {"$eq": ["$$totalFactura", None]}, {"$eq": ["$$totalFactura", 0]}]},
                                 0,
                                 {
                                     "$round": [
@@ -411,17 +410,68 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                         },
                     }
                 },
-            }
-        },
-        {
-            "$addFields": {
                 "montoSinIva": {
-                    "$cond": [
-                        {"$and": [{"$ne": ["$tax", None]}, {"$ne": ["$montoIva", None]}]},
-                        {"$round": [{"$subtract": ["$amount", "$montoIva"]}, 2]},
-                        "$amount",
-                    ]
-                }
+                    "$let": {
+                        "vars": {
+                            "subtotal": {"$convert": {"input": "$tax.subtotal", "to": "double", "onError": None, "onNull": None}},
+                            "totalFactura": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": None, "onNull": None}},
+                            "amountValue": {"$ifNull": ["$amount", 0]},
+                        },
+                        "in": {
+                            "$cond": [
+                                {"$or": [{"$eq": ["$$subtotal", None]}, {"$eq": ["$$totalFactura", None]}, {"$eq": ["$$totalFactura", 0]}]},
+                                {
+                                    "$round": [
+                                        {
+                                            "$subtract": [
+                                                "$$amountValue",
+                                                {
+                                                    "$let": {
+                                                        "vars": {
+                                                            "iva": {"$convert": {"input": "$tax.iva", "to": "double", "onError": None, "onNull": None}},
+                                                            "totalFacturaIva": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": None, "onNull": None}},
+                                                        },
+                                                        "in": {
+                                                            "$cond": [
+                                                                {"$or": [{"$eq": ["$$iva", None]}, {"$eq": ["$$totalFacturaIva", None]}, {"$eq": ["$$totalFacturaIva", 0]}]},
+                                                                0,
+                                                                {
+                                                                    "$round": [
+                                                                        {
+                                                                            "$multiply": [
+                                                                                {"$cond": [{"$lt": ["$$amountValue", 0]}, -1, 1]},
+                                                                                "$$iva",
+                                                                                {"$divide": [{"$abs": "$$amountValue"}, "$$totalFacturaIva"]},
+                                                                            ]
+                                                                        },
+                                                                        2,
+                                                                    ]
+                                                                },
+                                                            ]
+                                                        },
+                                                    }
+                                                },
+                                            ]
+                                        },
+                                        2,
+                                    ]
+                                },
+                                {
+                                    "$round": [
+                                        {
+                                            "$multiply": [
+                                                {"$cond": [{"$lt": ["$$amountValue", 0]}, -1, 1]},
+                                                "$$subtotal",
+                                                {"$divide": [{"$abs": "$$amountValue"}, "$$totalFactura"]},
+                                            ]
+                                        },
+                                        2,
+                                    ]
+                                },
+                            ]
+                        },
+                    }
+                },
             }
         },
         {
@@ -498,6 +548,7 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "montoaplicado",
     ]
     optional_tax_headers = ["subtotal", "iva", "retenciones", "totalfactura"]
+    optional_movement_headers = ["sourcedb"]
     canonical_to_expected = dict(zip(canonical_headers, expected_headers))
     header_aliases = {
         "docnum": "pagonum",
@@ -509,6 +560,10 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "facturaproveedor": "facturaproveedornum",
         "nrofactura": "facturaproveedornum",
         "numfactura": "facturaproveedornum",
+        "facturaprov": "facturaproveedornum",
+        "facturaprove": "facturaproveedornum",
+        "fechafactur": "fechafactura",
+        "montoaplica": "montoaplicado",
         "impuesto": "iva",
         "apvatsum": "iva",
         "apdoctotal": "totalfactura",
@@ -529,7 +584,7 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
             canonical = header_aliases.get(normalized, normalized)
             if normalized == "fecha" and not has_fechafactura:
                 canonical = "fechapago"
-            if canonical in (canonical_headers + optional_tax_headers) and canonical not in header_index:
+            if canonical in (canonical_headers + optional_tax_headers + optional_movement_headers) and canonical not in header_index:
                 header_index[canonical] = idx
 
         missing = [h for h in canonical_headers if h not in header_index]
@@ -644,6 +699,8 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
             for tax_key in optional_tax_headers:
                 source_idx = header_index.get(tax_key)
                 row_dict[tax_key] = row_values[source_idx] if source_idx is not None and source_idx < len(row_values) else None
+            source_db_idx = header_index.get("sourcedb")
+            row_dict["sourceDb"] = row_values[source_db_idx] if source_db_idx is not None and source_db_idx < len(row_values) else None
 
             if should_try_repair:
                 row_dict["__csvRepairApplied"] = len(values) > len(rows[0])
@@ -671,6 +728,8 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
             for tax_key in optional_tax_headers:
                 source_idx = header_index.get(tax_key)
                 row_dict[tax_key] = values[source_idx] if source_idx is not None and source_idx < len(values) else None
+            source_db_idx = header_index.get("sourcedb")
+            row_dict["sourceDb"] = values[source_db_idx] if source_db_idx is not None and source_db_idx < len(values) else None
             parsed.append(row_dict)
         return parsed
 
@@ -953,6 +1012,7 @@ def run_sap_import(
             iva = parse_optional_decimal(row.get("iva"))
             retenciones = parse_optional_decimal(row.get("retenciones"))
             total_factura = parse_optional_decimal(row.get("totalfactura"))
+            source_db = str(row.get("sourceDb") or "").strip() or "SAP"
 
             if card_code not in existing_cardcodes and card_code not in created_cardcodes:
                 suppliers_created += 1
@@ -993,6 +1053,7 @@ def run_sap_import(
                         "retenciones": retenciones,
                         "totalFactura": total_factura,
                     },
+                    "sourceDb": source_db,
                 }
             )
             rows_ok += 1
@@ -1095,7 +1156,7 @@ def run_sap_import(
                 "category_id": None,
                 "vendor_id": None,
                 "source": "sap",
-                "sourceDb": "SAP",
+                "sourceDb": record["sourceDb"],
                 "tax": record["tax"],
                 "sap": {
                     "pagoNum": record["paymentNum"],
@@ -1109,7 +1170,7 @@ def run_sap_import(
                     {
                         "projectId": project_id,
                         "source": "sap",
-                        "sourceDb": "SAP",
+                        "sourceDb": record["sourceDb"],
                         "sap.pagoNum": record["paymentNum"],
                         "sap.facturaNum": record["invoiceNum"],
                         "sap.montoAplicado": record["appliedAmount"],
@@ -1712,6 +1773,7 @@ def delete_transaction(transaction_id: str, _: dict = Depends(require_admin)):
 
 
 @app.get("/transactions")
+@app.get("/api/transactions")
 @app.get("/api/movimientos")
 def list_transactions(
     type: str | None = None,
