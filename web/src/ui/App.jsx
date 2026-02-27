@@ -829,8 +829,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <th>Categoría</th>
                 <th>Proveedor</th>
                 <th>Monto</th>
-                <th>Monto IVA</th>
-                <th>Monto sin IVA</th>
+                <th>Subtotal</th>
+                <th>Iva</th>
+                <th>Total</th>
                 {isAdmin && <th>Acciones</th>}
                 {isAdmin && <th>Seleccionar</th>}
               </tr>
@@ -838,7 +839,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             <tbody>
               {isAdmin && (
                 <tr>
-                  <td colSpan={isAdmin ? 11 : 9} style={{ textAlign: 'right' }}>
+                  <td colSpan={isAdmin ? 12 : 10} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (página actual)
@@ -855,8 +856,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
-                  <td style={{ fontWeight: 700 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.montoIva ?? 0)}</td>
-                  <td style={{ fontWeight: 700 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.montoSinIva ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>{r.subtotal == null ? '—' : `$${formatMoney(r.subtotal)}`}</td>
+                  <td style={{ fontWeight: 700 }}>{r.iva == null ? '—' : `$${formatMoney(r.iva)}`}</td>
+                  <td style={{ fontWeight: 700 }}>{r.totalFactura == null ? '—' : `$${formatMoney(r.totalFactura)}`}</td>
                   {isAdmin && (
                     <td>
                       <button
@@ -896,8 +898,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <td style={{ fontWeight: 800 }}>
                   +${formatMoney(backendTotals.incomeGross)} / -${formatMoney(backendTotals.expensesGross)}
                 </td>
-                <td style={{ fontWeight: 700 }}>-${formatMoney(backendTotals.expensesTax)}</td>
-                <td style={{ fontWeight: 800 }}>-${formatMoney(backendTotals.expensesWithoutTax)}</td>
+                <td style={{ fontWeight: 700 }}>—</td>
+                <td style={{ fontWeight: 700 }}>—</td>
+                <td style={{ fontWeight: 800 }}>—</td>
                 {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {backendTotals.net >= 0 ? '+' : '-'}${formatMoney(Math.abs(backendTotals.net))}</td>}
                 {isAdmin && <td />}
               </tr>
