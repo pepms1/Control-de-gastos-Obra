@@ -435,6 +435,18 @@ def build_transactions_query(
         else:
             q["$or"] = [
                 {"category_id": category_id},
+                {
+                    "$and": [
+                        {"categoryId": category_id},
+                        {
+                            "$or": [
+                                {"category_id": None},
+                                {"category_id": ""},
+                                {"category_id": {"$exists": False}},
+                            ]
+                        },
+                    ]
+                },
                 {"categoryId": category_id},
             ]
     if vendor_id:
@@ -481,6 +493,18 @@ def build_transactions_query(
             search_conditions.extend(
                 [
                     {"category_id": {"$in": matching_category_ids}},
+                    {
+                        "$and": [
+                            {"categoryId": {"$in": matching_category_ids}},
+                            {
+                                "$or": [
+                                    {"category_id": None},
+                                    {"category_id": ""},
+                                    {"category_id": {"$exists": False}},
+                                ]
+                            },
+                        ]
+                    },
                     {"categoryId": {"$in": matching_category_ids}},
                 ]
             )
@@ -1931,6 +1955,7 @@ def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(req
         if cid and not db.categories.find_one({"_id": oid(cid), "active": True}):
             raise HTTPException(status_code=400, detail="Invalid category_id")
         updates["category_id"] = cid
+        updates["categoryId"] = cid
 
     if "vendor_id" in payload:
         vid = payload.get("vendor_id")
