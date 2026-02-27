@@ -187,11 +187,6 @@ export const api = {
 
   adminRawCollections: () => backendReq('/api/admin/raw-data/collections'),
 
-  adminRawExpenses: (params = {}) => {
-    const qs = new URLSearchParams(params).toString();
-    return backendReq(`/api/admin/raw-data-expenses${qs ? `?${qs}` : ''}`);
-  },
-
   adminRawRows: (collection, params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return backendReq(`/api/admin/raw-data/${encodeURIComponent(collection)}${qs ? `?${qs}` : ''}`);

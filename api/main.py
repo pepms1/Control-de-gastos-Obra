@@ -473,7 +473,6 @@ def build_transactions_query(
                         },
                     ]
                 },
-                {"categoryId": category_id},
             ]
     if vendor_id:
         q["vendor_id"] = vendor_id
@@ -511,30 +510,31 @@ def build_transactions_query(
         if normalized_search:
             category_name_filters.append({"normalizedName": {"$regex": re.escape(normalized_search), "$options": "i"}})
 
-        matching_category_ids = [
-            str(category["_id"])
-            for category in db.categories.find({"$or": category_name_filters}, {"_id": 1})
-        ]
+        matching_categories = list(db.categories.find({"$or": category_name_filters}, {"_id": 1, "normalizedName": 1}))
+        matching_category_ids = [str(category["_id"]) for category in matching_categories]
+        category_search_conditions = []
         if matching_category_ids:
-            search_conditions.extend(
-                [
-                    {"category_id": {"$in": matching_category_ids}},
-                    {
-                        "$and": [
-                            {"categoryId": {"$in": matching_category_ids}},
-                            {
-                                "$or": [
-                                    {"category_id": None},
-                                    {"category_id": ""},
-                                    {"category_id": {"$exists": False}},
-                                ]
-                            },
-                        ]
-                    },
-                    {"categoryId": {"$in": matching_category_ids}},
-                ]
-            )
+            category_search_conditions = [
+                {"category_id": {"$in": matching_category_ids}},
+                {
+                    "$and": [
+                        {"categoryId": {"$in": matching_category_ids}},
+                        {
+                            "$or": [
+                                {"category_id": None},
+                                {"category_id": ""},
+                                {"category_id": {"$exists": False}},
+                            ]
+                        },
+                    ]
+                },
+            ]
 
+            exact_category_match = any((category.get("normalizedName") or "") == normalized_search for category in matching_categories)
+            if exact_category_match:
+                search_conditions = category_search_conditions
+            else:
+                search_conditions.extend(category_search_conditions)
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": search_conditions}]
         else:
@@ -1015,12 +1015,13 @@ def raw_data_collections(_: dict = Depends(require_admin)):
     return {"collections": sorted(names)}
 
 
-def build_raw_data_response(collection: str, limit: int = 200):
+@app.get("/api/admin/raw-data/{collection}")
+def raw_data_rows(collection: str, limit: int = 200, _: dict = Depends(require_admin)):
     if collection.startswith("system."):
         raise HTTPException(status_code=400, detail="Collection not allowed")
 
-    safe_limit = max(1, min(limit, 1000))
-    cursor = db[collection].find({}).sort("date", -1).limit(safe_limit)
+    safe_limit = max(1, min(limit, 500))
+    cursor = db[collection].find({}).limit(safe_limit)
     docs = [serialize_raw_doc(doc) for doc in cursor]
 
     field_names = set()
@@ -1031,20 +1032,9 @@ def build_raw_data_response(collection: str, limit: int = 200):
     return {
         "collection": collection,
         "count": len(docs),
-        "totalCount": db[collection].count_documents({}),
         "fields": sorted_fields,
         "rows": docs,
     }
-
-
-@app.get("/api/admin/raw-data/{collection}")
-def raw_data_rows(collection: str, limit: int = 200, _: dict = Depends(require_admin)):
-    return build_raw_data_response(collection, limit)
-
-
-@app.get("/api/admin/raw-data-expenses")
-def raw_data_expenses(limit: int = 500, _: dict = Depends(require_admin)):
-    return build_raw_data_response("transactions", limit)
 
 
 @app.patch("/api/admin/raw-data/{collection}/{row_id}")

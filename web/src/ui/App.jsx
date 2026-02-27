@@ -251,40 +251,63 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
 }
 
 function RawDataAdmin() {
+  const [collections, setCollections] = useState([]);
+  const [collection, setCollection] = useState('');
   const [fields, setFields] = useState([]);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [savingRow, setSavingRow] = useState('');
-  const [limit, setLimit] = useState(500);
-  const [totalCount, setTotalCount] = useState(0);
 
-  const loadExpenses = () => {
+  useEffect(() => {
+    let active = true;
+    api
+      .adminRawCollections()
+      .then((data) => {
+        if (!active) return;
+        const items = Array.isArray(data?.collections) ? data.collections : [];
+        setCollections(items);
+        if (items.length) setCollection(items[0]);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setError(e.message || 'No se pudieron cargar las colecciones.');
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!collection) return;
+    let active = true;
     setLoading(true);
     setError('');
 
     api
-      .adminRawExpenses({ limit })
+      .adminRawRows(collection, { limit: 200 })
       .then((data) => {
+        if (!active) return;
         setFields(Array.isArray(data?.fields) ? data.fields : []);
         setRows(Array.isArray(data?.rows) ? data.rows : []);
-        setTotalCount(Number(data?.totalCount || 0));
       })
       .catch((e) => {
+        if (!active) return;
         setFields([]);
         setRows([]);
-        setError(e.message || 'No se pudieron cargar los egresos.');
+        setError(e.message || 'No se pudo cargar la colección.');
       })
       .finally(() => {
-        setLoading(false);
+        if (active) setLoading(false);
       });
-  };
 
-  useEffect(() => {
-    loadExpenses();
-  }, []);
+    return () => {
+      active = false;
+    };
+  }, [collection]);
 
-  async function editCell(rowId, field) {
+  function editCell(rowId, field) {
     const row = rows.find((item) => item.id === rowId);
     if (!row) return;
 
@@ -295,49 +318,42 @@ function RawDataAdmin() {
     let parsed;
     try {
       parsed = JSON.parse(nextRaw);
-    } catch (err) {
+    } catch {
       window.alert('Valor inválido. Debe ser JSON válido, por ejemplo: "texto", 123, true, null o {"a":1}.');
       return;
     }
 
     setSavingRow(rowId);
-    try {
-      const updatedRow = await api.adminRawUpdateRow('transactions', rowId, { [field]: parsed });
-      setRows((prev) => prev.map((item) => (item.id === rowId ? updatedRow : item)));
-    } catch (e) {
-      window.alert(e.message || 'No se pudo actualizar el campo.');
-    } finally {
-      setSavingRow('');
-    }
+    api
+      .adminRawUpdateRow(collection, rowId, { [field]: parsed })
+      .then((updatedRow) => {
+        setRows((prev) => prev.map((item) => (item.id === rowId ? updatedRow : item)));
+      })
+      .catch((e) => {
+        window.alert(e.message || 'No se pudo actualizar el campo.');
+      })
+      .finally(() => setSavingRow(''));
   }
 
   return (
     <div className="card" style={{ overflowX: 'auto' }}>
-      <h3 style={{ marginTop: 0 }}>Raw data de egresos (solo admin)</h3>
-      <div className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-        <label htmlFor="raw-data-limit">Filas:</label>
-        <input
-          id="raw-data-limit"
-          type="number"
-          min={1}
-          max={1000}
-          value={limit}
-          onChange={(e) => setLimit(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))}
-          style={{ width: 100 }}
-        />
-        <button type="button" className="secondary" onClick={loadExpenses} disabled={loading}>
-          Recargar
-        </button>
-        <span className="small">
-          Mostrando {rows.length} de {totalCount} egresos en <code>transactions</code>
-        </span>
+      <h3 style={{ marginTop: 0 }}>Raw data (solo admin)</h3>
+      <div className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <label htmlFor="raw-data-collection">Colección:</label>
+        <select id="raw-data-collection" value={collection} onChange={(e) => setCollection(e.target.value)}>
+          {collections.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
       </div>
 
       {error && <div className="small" style={{ color: '#b00020', marginBottom: 8 }}>{error}</div>}
       {loading ? (
         <div>Cargando...</div>
       ) : !rows.length ? (
-        <div className="small">No hay egresos para mostrar.</div>
+        <div className="small">No hay filas para mostrar.</div>
       ) : (
         <table>
           <thead>
