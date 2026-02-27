@@ -51,19 +51,48 @@ def env_get(primary_key: str, fallback_key: str | None = None, default: str | No
     return value
 
 
+def default_viewer_accounts():
+    return [
+        ("viewer", "viewer123", "viewer"),
+        ("rvh", "rvh123", "rvh"),
+        ("dms", "dms123", "dms"),
+        ("rma", "rma123", "rma"),
+        ("jma", "jma123", "jma"),
+    ]
+
+
 def get_env_auth_users():
     default_admin_user = env_get("DEFAULT_ADMIN_USERNAME", "default_admin_username", "admin")
     default_admin_pass = env_get("DEFAULT_ADMIN_PASSWORD", "default_admin_password", "admin123")
     default_admin_name = env_get("DEFAULT_ADMIN_NAME", "default_admin_name", default_admin_user)
-    default_viewer_user = env_get("DEFAULT_VIEWER_USERNAME", "default_viewer_username", "viewer")
-    default_viewer_pass = env_get("DEFAULT_VIEWER_PASSWORD", "default_viewer_password", "viewer123")
-    default_viewer_name = env_get("DEFAULT_VIEWER_NAME", "default_viewer_name", default_viewer_user)
     viewer_users_raw = env_get("VIEWER_USERS", "viewer_users", "") or ""
 
     auth_users = {
         default_admin_user: {"password": default_admin_pass, "role": "ADMIN", "displayName": default_admin_name},
-        default_viewer_user: {"password": default_viewer_pass, "role": "VIEWER", "displayName": default_viewer_name},
     }
+
+    for default_username, default_password, default_display_name in default_viewer_accounts():
+        viewer_username = env_get(
+            f"DEFAULT_{default_username.upper()}_USERNAME",
+            f"default_{default_username}_username",
+            default_username,
+        )
+        viewer_password = env_get(
+            f"DEFAULT_{default_username.upper()}_PASSWORD",
+            f"default_{default_username}_password",
+            default_password,
+        )
+        viewer_display_name = env_get(
+            f"DEFAULT_{default_username.upper()}_NAME",
+            f"default_{default_username}_name",
+            viewer_username,
+        )
+
+        auth_users[viewer_username] = {
+            "password": viewer_password,
+            "role": "VIEWER",
+            "displayName": viewer_display_name or default_display_name,
+        }
 
     for entry in viewer_users_raw.split(","):
         pair = entry.strip()
@@ -224,14 +253,25 @@ def ensure_default_users():
     default_admin_user = env_get("DEFAULT_ADMIN_USERNAME", "default_admin_username", "admin")
     default_admin_pass = env_get("DEFAULT_ADMIN_PASSWORD", "default_admin_password", "admin123")
     default_admin_name = env_get("DEFAULT_ADMIN_NAME", "default_admin_name", default_admin_user)
-    default_viewer_user = env_get("DEFAULT_VIEWER_USERNAME", "default_viewer_username", "viewer")
-    default_viewer_pass = env_get("DEFAULT_VIEWER_PASSWORD", "default_viewer_password", "viewer123")
-    default_viewer_name = env_get("DEFAULT_VIEWER_NAME", "default_viewer_name", default_viewer_user)
+    defaults = [(default_admin_user, default_admin_pass, "ADMIN", default_admin_name)]
 
-    defaults = [
-        (default_admin_user, default_admin_pass, "ADMIN", default_admin_name),
-        (default_viewer_user, default_viewer_pass, "VIEWER", default_viewer_name),
-    ]
+    for default_username, default_password, _ in default_viewer_accounts():
+        viewer_username = env_get(
+            f"DEFAULT_{default_username.upper()}_USERNAME",
+            f"default_{default_username}_username",
+            default_username,
+        )
+        viewer_password = env_get(
+            f"DEFAULT_{default_username.upper()}_PASSWORD",
+            f"default_{default_username}_password",
+            default_password,
+        )
+        viewer_display_name = env_get(
+            f"DEFAULT_{default_username.upper()}_NAME",
+            f"default_{default_username}_name",
+            viewer_username,
+        )
+        defaults.append((viewer_username, viewer_password, "VIEWER", viewer_display_name))
 
     for username, plain_password, role, display_name in defaults:
         existing = users.find_one({"username": username})
