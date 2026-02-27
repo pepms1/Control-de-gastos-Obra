@@ -867,11 +867,11 @@ def build_sap_vendor_upsert(card_code: str, beneficiary: str, project_id: str):
                 "name": beneficiary or card_code,
                 "source": "sap",
                 "externalIds.sapCardCode": card_code,
-                "categoryId": None,
                 "projectId": project_id,
                 "active": True,
             },
             "$setOnInsert": {
+                "categoryId": None,
                 "category_ids": [],
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
@@ -977,6 +977,10 @@ def run_sap_import(
     invoices_upserted = 0
     lines_inserted = 0
     sap_expenses_upserted = 0
+    sap_expenses_inserted = 0
+    sap_expenses_updated = 0
+    category_preserved_count = 0
+    category_would_have_changed_count = 0
     duplicates_skipped = 0
     rows_ok = 0
     rows_error = 0
@@ -1146,7 +1150,23 @@ def run_sap_import(
         )
 
         if supplier_id:
-            sap_doc = {
+            tx_filter = {
+                "projectId": project_id,
+                "source": "sap",
+                "sourceDb": record["sourceDb"],
+                "sap.pagoNum": record["paymentNum"],
+                "sap.facturaNum": record["invoiceNum"],
+                "sap.montoAplicado": record["appliedAmount"],
+            }
+            existing_tx = db.transactions.find_one(tx_filter, {"categoryId": 1, "category_id": 1})
+            existing_category_id = None
+            if existing_tx:
+                existing_category_id = existing_tx.get("categoryId") or existing_tx.get("category_id")
+                if existing_category_id:
+                    category_preserved_count += 1
+                    category_would_have_changed_count += 1
+
+            sap_set_doc = {
                 "type": "EXPENSE",
                 "projectId": project_id,
                 "date": record["paymentDate"] or record["invoiceDate"],
@@ -1157,8 +1177,6 @@ def run_sap_import(
                 "supplierId": supplier_id,
                 "supplierName": record["beneficiary"] or record["cardCode"],
                 "supplierCardCode": record["cardCode"],
-                "categoryId": None,
-                "category_id": None,
                 "vendor_id": None,
                 "source": "sap",
                 "sourceDb": record["sourceDb"],
@@ -1172,15 +1190,15 @@ def run_sap_import(
             }
             sap_expense_ops.append(
                 UpdateOne(
+                    tx_filter,
                     {
-                        "projectId": project_id,
-                        "source": "sap",
-                        "sourceDb": record["sourceDb"],
-                        "sap.pagoNum": record["paymentNum"],
-                        "sap.facturaNum": record["invoiceNum"],
-                        "sap.montoAplicado": record["appliedAmount"],
+                        "$set": sap_set_doc,
+                        "$setOnInsert": {
+                            "categoryId": None,
+                            "category_id": None,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        },
                     },
-                    {"$set": sap_doc, "$setOnInsert": {"created_at": datetime.now(timezone.utc).isoformat()}},
                     upsert=True,
                 )
             )
@@ -1193,6 +1211,8 @@ def run_sap_import(
     if sap_expense_ops:
         result = db.transactions.bulk_write(sap_expense_ops, ordered=False)
         sap_expenses_upserted = (result.upserted_count or 0) + (result.modified_count or 0)
+        sap_expenses_inserted = result.upserted_count or 0
+        sap_expenses_updated = result.modified_count or 0
 
     rows_total = len(rows)
     db.importRuns.update_one(
@@ -1206,6 +1226,8 @@ def run_sap_import(
                 "status": "ok" if rows_error == 0 else "completed_with_errors",
                 "finishedAt": datetime.now(timezone.utc).isoformat(),
                 "errorsSample": errors_sample[:50],
+                "categoryPreservedCount": category_preserved_count,
+                "categoryWouldHaveChangedCount": category_would_have_changed_count,
             }
         },
     )
@@ -1220,6 +1242,10 @@ def run_sap_import(
         "invoicesUpserted": invoices_upserted,
         "linesInserted": lines_inserted,
         "sapExpensesUpserted": sap_expenses_upserted,
+        "insertedCount": sap_expenses_inserted,
+        "updatedCount": sap_expenses_updated,
+        "categoryPreservedCount": category_preserved_count,
+        "categoryWouldHaveChangedCount": category_would_have_changed_count,
         "duplicatesSkipped": duplicates_skipped,
         "errorsSample": errors_sample[:50],
         "importRunId": str(import_run_id),
