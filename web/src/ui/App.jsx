@@ -10,7 +10,7 @@ const moneyFormatter = new Intl.NumberFormat('en-US', {
 function formatMoney(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return '0.00';
-  return moneyFormatter.format(amount);
+  return moneyFormatter.format(Math.abs(amount));
 }
 
 function parseMoneyInput(value) {
@@ -851,7 +851,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td>{r.description || r.concept || ''}</td>
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
-                  <td style={{ fontWeight: 800 }}>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
+                  <td style={{ fontWeight: 800 }}>${formatMoney(r.amount)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.totalFactura ?? 0)}</td>
                   {isAdmin && (
@@ -891,12 +891,12 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
               <tr>
                 <td colSpan={6} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (dataset filtrado):</td>
                 <td style={{ fontWeight: 800 }}>
-                  +${formatMoney(backendTotals.incomeGross)} / -${formatMoney(backendTotals.expensesGross)}
+                  ${formatMoney(backendTotals.incomeGross)} / ${formatMoney(backendTotals.expensesGross)}
                 </td>
                 <td style={{ fontWeight: 700 }}>—</td>
                 <td style={{ fontWeight: 700 }}>—</td>
                 <td style={{ fontWeight: 800 }}>—</td>
-                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {backendTotals.net >= 0 ? '+' : '-'}${formatMoney(Math.abs(backendTotals.net))}</td>}
+                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: ${formatMoney(backendTotals.net)}</td>}
                 {isAdmin && <td />}
               </tr>
             </tfoot>
@@ -985,7 +985,7 @@ function SearchTransactions({ cats, vendors }) {
                 <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                 <td>{r.description || r.concept || ''}</td>
                 <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
-                <td>{r.type === 'EXPENSE' ? '-' : '+'}${formatMoney(r.amount)}</td>
+                <td>${formatMoney(r.amount)}</td>
               </tr>
             ))}
             {!rows.length && !loading && (
