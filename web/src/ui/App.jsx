@@ -832,6 +832,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <th>Subtotal</th>
                 <th>Iva</th>
                 <th>Total</th>
+                <th>IVA</th>
+                <th>Total Factura</th>
                 {isAdmin && <th>Acciones</th>}
                 {isAdmin && <th>Seleccionar</th>}
               </tr>
