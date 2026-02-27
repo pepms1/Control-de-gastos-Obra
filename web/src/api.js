@@ -173,6 +173,8 @@ export const api = {
 
   unclassifiedSuppliers: () => backendReq('/api/suppliers?uncategorized=1'),
 
+  suppliers: () => backendReq('/api/suppliers'),
+
   updateSupplierCategory: (id, categoryId) =>
     backendReq(`/api/suppliers/${id}`, {
       method: 'PATCH',
