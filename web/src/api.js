@@ -12,25 +12,29 @@ const BACKEND_URL = RAW_BACKEND_URL.replace(/\/+$/, '');
 const TOKEN_KEY = 'obra_token';
 const ROLE_KEY = 'obra_role';
 const USER_KEY = 'obra_user';
+const DISPLAY_NAME_KEY = 'obra_display_name';
 
 export function getSession() {
   return {
     token: localStorage.getItem(TOKEN_KEY) || '',
     role: localStorage.getItem(ROLE_KEY) || '',
     username: localStorage.getItem(USER_KEY) || '',
+    displayName: localStorage.getItem(DISPLAY_NAME_KEY) || '',
   };
 }
 
-export function saveSession({ access_token, role, username }) {
-  localStorage.setItem(TOKEN_KEY, access_token);
-  localStorage.setItem(ROLE_KEY, role);
+export function saveSession({ access_token, token, role, username, displayName }) {
+  localStorage.setItem(TOKEN_KEY, access_token || token || '');
+  localStorage.setItem(ROLE_KEY, role || '');
   localStorage.setItem(USER_KEY, username || '');
+  localStorage.setItem(DISPLAY_NAME_KEY, displayName || username || '');
 }
 
 export function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(ROLE_KEY);
   localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(DISPLAY_NAME_KEY);
 }
 
 async function request(baseUrl, path, opts = {}) {

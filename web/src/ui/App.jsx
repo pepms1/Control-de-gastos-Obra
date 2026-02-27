@@ -19,7 +19,7 @@ function parseMoneyInput(value) {
 }
 
 /* ================= NAV ================= */
-function Nav({ tab, setTab, role, username, onLogout }) {
+function Nav({ tab, setTab, role, username, displayName, onLogout }) {
   const items = [
     ['dashboard', 'Dashboard', true],
     ['transactions', 'Movimientos', true],
@@ -67,7 +67,7 @@ function Nav({ tab, setTab, role, username, onLogout }) {
 
       <div className="nav-user-actions">
         <div className="small nav-user">
-          {username} ({role})
+          {displayName || username} ({role})
         </div>
 
         <button className="secondary" type="button" onClick={onLogout}>
@@ -170,7 +170,14 @@ export default function App() {
 
   return (
     <>
-      <Nav tab={tab} setTab={setTab} role={session.role} username={session.username} onLogout={logout} />
+      <Nav
+        tab={tab}
+        setTab={setTab}
+        role={session.role}
+        username={session.username}
+        displayName={session.displayName}
+        onLogout={logout}
+      />
 
       <div className="container grid" style={{ gap: 14 }}>
         {toast && <div className="card">{toast}</div>}
