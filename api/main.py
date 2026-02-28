@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File,
 from fastapi import Header
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, UpdateOne
-from pymongo.errors import OperationFailure
+from pymongo.errors import BulkWriteError, OperationFailure
 from bson import ObjectId
 from datetime import date, datetime, timedelta, timezone
 from jose import JWTError, jwt
@@ -305,6 +305,8 @@ def ensure_indexes():
     db.apInvoices.create_index([("projectId", 1), ("sapInvoiceNum", 1)], unique=True)
     db.paymentLines.create_index([("paymentId", 1), ("apInvoiceId", 1), ("appliedAmount", 1)], unique=True)
     db.importRuns.create_index("sha256", unique=True)
+    backfill_sap_transactions_metadata()
+    dedupe_sap_transactions_for_unique_index()
     db.transactions.create_index(
         [
             ("projectId", 1),
@@ -317,6 +319,7 @@ def ensure_indexes():
         unique=True,
         partialFilterExpression={"source": "sap"},
     )
+    drop_legacy_sap_unique_index()
     db.transactions.create_index([("projectId", 1), ("date", -1)])
     text_index_name = "transactions_text_search"
     current_indexes = {idx.get("name"): idx for idx in db.transactions.list_indexes()}
@@ -341,6 +344,97 @@ def ensure_indexes():
         # Si el índice de texto no puede crearse por restricciones del dataset,
         # se mantiene fallback de búsqueda por regex en el endpoint.
         pass
+
+
+def infer_sap_source_db(tx: dict) -> str:
+    source_db = str(tx.get("sourceDb") or "").strip().upper()
+    if source_db:
+        return source_db
+
+    tax = tx.get("tax") or {}
+    iva_value = tax.get("iva")
+    if iva_value is None:
+        return "UNKNOWN"
+
+    try:
+        if Decimal(str(iva_value)) > 0:
+            return "IVA"
+    except (InvalidOperation, ValueError, TypeError):
+        return "UNKNOWN"
+    return "EFECTIVO"
+
+
+def backfill_sap_transactions_metadata():
+    query = {
+        "sap": {"$exists": True},
+        "$or": [
+            {"source": {"$exists": False}},
+            {"source": None},
+            {"source": {"$ne": "sap"}},
+            {"sourceDb": {"$exists": False}},
+            {"sourceDb": None},
+            {"sourceDb": ""},
+        ],
+    }
+    ops = []
+    for tx in db.transactions.find(query, {"source": 1, "sourceDb": 1, "tax": 1}):
+        normalized_source_db = infer_sap_source_db(tx)
+        ops.append(
+            UpdateOne(
+                {"_id": tx["_id"]},
+                {
+                    "$set": {
+                        "source": "sap",
+                        "sourceDb": normalized_source_db,
+                    }
+                },
+            )
+        )
+
+    if ops:
+        db.transactions.bulk_write(ops, ordered=False)
+
+
+def dedupe_sap_transactions_for_unique_index():
+    duplicates = list(
+        db.transactions.aggregate(
+            [
+                {"$match": {"source": "sap", "sap": {"$exists": True}}},
+                {
+                    "$group": {
+                        "_id": {
+                            "projectId": "$projectId",
+                            "source": "$source",
+                            "sourceDb": "$sourceDb",
+                            "pagoNum": "$sap.pagoNum",
+                            "facturaNum": "$sap.facturaNum",
+                            "montoAplicado": "$sap.montoAplicado",
+                        },
+                        "ids": {"$push": "$_id"},
+                        "count": {"$sum": 1},
+                    }
+                },
+                {"$match": {"count": {"$gt": 1}}},
+            ]
+        )
+    )
+    if not duplicates:
+        return
+
+    ids_to_delete = []
+    for duplicate_group in duplicates:
+        ids = duplicate_group.get("ids") or []
+        ids_to_delete.extend(ids[1:])
+
+    if ids_to_delete:
+        db.transactions.delete_many({"_id": {"$in": ids_to_delete}})
+
+
+def drop_legacy_sap_unique_index():
+    legacy_index_name = "projectId_1_sap.pagoNum_1_sap.facturaNum_1_sap.montoAplicado_1"
+    current_indexes = {idx.get("name"): idx for idx in db.transactions.list_indexes()}
+    if legacy_index_name in current_indexes:
+        db.transactions.drop_index(legacy_index_name)
 
 
 def create_token(username: str, role: str, display_name: str):
@@ -1406,7 +1500,7 @@ def run_sap_import(
             iva = parse_optional_decimal(row.get("iva"))
             retenciones = parse_optional_decimal(row.get("retenciones"))
             total_factura = parse_optional_decimal(row.get("totalfactura"))
-            source_db = source_db_override or str(row.get("sourceDb") or "").strip() or "SAP"
+            source_db = (source_db_override or str(row.get("sourceDb") or "").strip() or "SAP").upper()
 
             if card_code not in existing_cardcodes and card_code not in created_cardcodes:
                 suppliers_created += 1
@@ -1605,10 +1699,34 @@ def run_sap_import(
         duplicates_skipped = len(lines_ops) - lines_inserted
 
     if sap_expense_ops:
-        result = db.transactions.bulk_write(sap_expense_ops, ordered=False)
-        sap_expenses_upserted = (result.upserted_count or 0) + (result.modified_count or 0)
-        sap_expenses_inserted = result.upserted_count or 0
-        sap_expenses_updated = result.modified_count or 0
+        try:
+            result = db.transactions.bulk_write(sap_expense_ops, ordered=False)
+            sap_expenses_upserted = (result.upserted_count or 0) + (result.modified_count or 0)
+            sap_expenses_inserted = result.upserted_count or 0
+            sap_expenses_updated = result.modified_count or 0
+        except BulkWriteError as exc:
+            details = exc.details or {}
+            write_errors = details.get("writeErrors") or []
+            non_duplicate_errors = [error for error in write_errors if error.get("code") != 11000]
+            duplicate_errors_count = len(write_errors) - len(non_duplicate_errors)
+            duplicates_skipped += duplicate_errors_count
+
+            if non_duplicate_errors:
+                rows_error += len(non_duplicate_errors)
+                for error in non_duplicate_errors[: max(0, 50 - len(errors_sample))]:
+                    errors_sample.append(
+                        {
+                            "row": error.get("index"),
+                            "code": error.get("code"),
+                            "error": error.get("errmsg") or "Bulk write error",
+                        }
+                    )
+
+            upserted_count = len(details.get("upserted") or [])
+            modified_count = details.get("nModified") or 0
+            sap_expenses_inserted = upserted_count
+            sap_expenses_updated = modified_count
+            sap_expenses_upserted = upserted_count + modified_count
 
     rows_total = len(rows)
     db.importRuns.update_one(
