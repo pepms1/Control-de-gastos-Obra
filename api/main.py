@@ -1193,6 +1193,41 @@ def get_or_create_project_id(project: str):
     return str(project_doc["_id"])
 
 
+def build_supplier_auto_category_map(supplier_ids: list[str]) -> dict[str, str]:
+    if not supplier_ids:
+        return {}
+
+    distinct_categories_by_supplier: dict[str, set[str]] = {}
+
+    query = {
+        "supplierId": {"$in": supplier_ids},
+        "type": "EXPENSE",
+        "$or": [
+            {"category_id": {"$exists": True, "$nin": [None, ""]}},
+            {"categoryId": {"$exists": True, "$nin": [None, ""]}},
+        ],
+    }
+
+    for tx in db.transactions.find(query, {"supplierId": 1, "category_id": 1, "categoryId": 1}):
+        supplier_id = str(tx.get("supplierId") or "").strip()
+        if not supplier_id:
+            continue
+
+        category_id = str(tx.get("category_id") or tx.get("categoryId") or "").strip()
+        if not category_id:
+            continue
+
+        if supplier_id not in distinct_categories_by_supplier:
+            distinct_categories_by_supplier[supplier_id] = set()
+        distinct_categories_by_supplier[supplier_id].add(category_id)
+
+    return {
+        supplier_id: next(iter(categories))
+        for supplier_id, categories in distinct_categories_by_supplier.items()
+        if len(categories) == 1
+    }
+
+
 def run_sap_import(
     file_name: str,
     file_bytes: bytes,
@@ -1410,6 +1445,15 @@ def run_sap_import(
         for i in db.apInvoices.find({"projectId": project_id}, {"sapInvoiceNum": 1})
     }
 
+    supplier_ids_in_file = sorted(
+        {
+            supplier_id
+            for supplier_id in (suppliers_map.get(record["cardCode"]) for record in line_records)
+            if supplier_id
+        }
+    )
+    supplier_auto_category_map = build_supplier_auto_category_map(supplier_ids_in_file)
+
     lines_ops = []
     sap_expense_ops = []
     for record in line_records:
@@ -1447,6 +1491,8 @@ def run_sap_import(
                     category_preserved_count += 1
                     category_would_have_changed_count += 1
 
+            inferred_category_id = supplier_auto_category_map.get(supplier_id)
+
             sap_set_doc = {
                 "type": "EXPENSE",
                 "projectId": project_id,
@@ -1475,8 +1521,8 @@ def run_sap_import(
                     {
                         "$set": sap_set_doc,
                         "$setOnInsert": {
-                            "categoryId": None,
-                            "category_id": None,
+                            "categoryId": inferred_category_id,
+                            "category_id": inferred_category_id,
                             "created_at": datetime.now(timezone.utc).isoformat(),
                         },
                     },
