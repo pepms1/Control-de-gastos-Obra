@@ -845,6 +845,9 @@ function EditModal({ title, children, onClose, onSave }) {
 /* ================= TRANSACTIONS ================= */
 function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   const UNCATEGORIZED_FILTER = '__UNCATEGORIZED__';
+  const getTransactionStableKey = (tx) =>
+    tx?._id ?? tx?.id ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sap?.pagoNum || ''}|${tx?.sap?.facturaNum || ''}|${tx?.sap?.montoAplicado || ''}`;
+  const dedupeTransactions = (items) => Array.from(new Map((Array.isArray(items) ? items : []).map((tx) => [getTransactionStableKey(tx), tx])).values());
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
@@ -886,7 +889,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
         to: dateTo,
       });
 
-      setRows(Array.isArray(response?.items) ? response.items : []);
+      setRows(dedupeTransactions(response?.items));
       setServerTotals(response?.totals || null);
       setTotalCount(Number(response?.totalCount) || 0);
       setPage(Number(response?.page) || targetPage);
@@ -898,6 +901,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   }
 
   useEffect(() => {
+    setPage(1);
+    setRows([]);
     load(1);
   }, [filter, categoryFilter, supplierFilter, searchFilter, dateFrom, dateTo]);
 
@@ -1151,7 +1156,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 </tr>
               )}
               {shown.map((r) => (
-                <tr key={r.id}>
+                <tr key={getTransactionStableKey(r)}>
                   <td>{r.date}</td>
                   <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
                   <td>{r.source === 'sap' ? <span className="badge">SAP</span> : ''}</td>
