@@ -445,120 +445,70 @@ function Dashboard({ isAdmin }) {
   }, [showCategoryIva, showSupplierIva]);
 
   const supplierTotal = supplierSummary.reduce((acc, row) => acc + (Number(row.totalAmount) || 0), 0);
+  const categoryRows = Array.isArray(stats?.rows) ? stats.rows : [];
+  const topCategories = useMemo(
+    () => [...categoryRows].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0)).slice(0, 6),
+    [categoryRows]
+  );
+  const chartPoints = useMemo(() => {
+    if (!categoryRows.length) return '';
+    const sorted = [...categoryRows].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0)).slice(0, 10);
+    const maxAmount = Math.max(...sorted.map((row) => Number(row.amount) || 0), 1);
+    return sorted
+      .map((row, index) => {
+        const x = sorted.length === 1 ? 0 : (index / (sorted.length - 1)) * 100;
+        const y = 100 - ((Number(row.amount) || 0) / maxAmount) * 80;
+        return `${x},${Math.max(4, y)}`;
+      })
+      .join(' ');
+  }, [categoryRows]);
+  const biggestCategory = topCategories[0];
+  const allocatedPercent = Math.min(
+    100,
+    Math.max(0, topCategories.reduce((acc, row) => acc + (Number(row.percent) || 0), 0))
+  );
 
-  return (
-    <div className="card">
-      <h2 style={{ margin: '0 0 8px' }}>Dashboard de egresos</h2>
-      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
-        <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
-          Por categoría
-        </button>
-        <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
-          Por proveedor
-        </button>
-      </div>
-      <div className="small">
-        {viewMode === 'category'
-          ? 'Porcentaje = gasto de la categoría / total de egresos'
-          : 'Totales agrupados por proveedor (SAP).'}
-      </div>
+  const subtitle =
+    viewMode === 'supplier'
+      ? 'Totales agrupados por proveedor (SAP).'
+      : viewMode === 'experimental'
+        ? 'Vista visual experimental de categorías.'
+        : 'Porcentaje = gasto de la categoría / total de egresos';
 
-      {viewMode === 'category' ? (
-        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
-          Mostrar IVA
-        </label>
-      ) : (
-        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
-          Mostrar IVA
-        </label>
+  const renderCategorySummaryHeader = () => (
+    <div className="row" style={{ justifyContent: 'space-between' }}>
+      <div className="badge">Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(stats.total_expenses || 0)}</div>
+      {isAdmin && (
+        <button
+          className="secondary"
+          onClick={async () => {
+            const confirmed = window.confirm('Esto solo agrega faltantes, no borra');
+            if (!confirmed) return;
+            try {
+              await api.seed();
+              location.reload();
+            } catch (_) {
+              // Intencionalmente silencioso para mantener el comportamiento previo.
+            }
+          }}
+        >
+          Seed categorías
+        </button>
       )}
+    </div>
+  );
 
-      
-{loading ? (
-        <div style={{ padding: '12px 0' }}>Cargando...</div>
-      ) : stats?.error ? (
-        <div style={{ padding: '12px 0' }}>Error: {stats.error}</div>
-      ) : viewMode === 'category' && stats?.rows?.length ? (
+  let dashboardContent = <div style={{ padding: '12px 0' }}>No hay egresos aún. Registra uno para ver el dashboard.</div>;
+
+  if (loading) {
+    dashboardContent = <div style={{ padding: '12px 0' }}>Cargando...</div>;
+  } else if (viewMode === 'supplier') {
+    if (supplierSummaryError) {
+      dashboardContent = <div style={{ padding: '12px 0' }}>Error: {supplierSummaryError}</div>;
+    } else if (supplierSummary.length) {
+      dashboardContent = (
         <div style={{ marginTop: 12 }} className="grid">
-          <div className="row" style={{ justifyContent: 'space-between' }}>
-            <div className="badge">
-              Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(stats.total_expenses || 0)}
-            </div>
-            {isAdmin && (
-              <button
-                className="secondary"
-                onClick={async () => {
-                  const confirmed = window.confirm('Esto solo agrega faltantes, no borra');
-                  if (!confirmed) return;
-                  try {
-                    await api.seed();
-                    location.reload();
-                  } catch (_) {
-                    // Intencionalmente silencioso para mantener el comportamiento previo.
-                  }
-                }}
-              >
-                Seed categorías
-              </button>
-            )}
-          </div>
-
-          {stats.rows.map((r) => {
-            const percent = Number(r.percent) || 0;
-            const fillWidth = Math.max(0, Math.min(100, percent));
-
-            return (
-              <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <div style={{ fontWeight: 700 }}>{r.category_name}</div>
-                  <div>
-                    ${formatMoney(r.amount)} <span className="small">({percent.toFixed(2)}%)</span>
-                  </div>
-                </div>
-                <div className="bar" aria-label={`Barra de avance de ${r.category_name}`}>
-                  <div style={{ width: fillWidth + '%' }}>
-                    <span>{percent.toFixed(2)}%</span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ) : viewMode === 'supplier' ? (
-        supplierSummaryError ? (
-          <div style={{ padding: '12px 0' }}>Error: {supplierSummaryError}</div>
-        ) : supplierSummary.length ? (
-          <div style={{ marginTop: 12 }} className="grid">
-            <div className="badge">Total egresos SAP {showSupplierIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(supplierTotal)}</div>
-            <div style={{ overflowX: 'auto' }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Proveedor</th>
-                    <th>Movimientos</th>
-                    <th>Subtotal</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {supplierSummary.map((row) => (
-                    <tr key={row.supplierId || row.supplierName}>
-                      <td>{row.supplierName || '(Sin proveedor)'}</td>
-                      <td>{row.count}</td>
-                      <td>${formatMoney(row.totalAmount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : (
-          <div style={{ padding: '12px 0' }}>No hay egresos SAP agrupados por proveedor para mostrar.</div>
-        )
-      ) : viewMode === 'supplier' && supplierSummary.length ? (
-        <div style={{ marginTop: 12 }} className="grid">
-          <div className="badge">Total egresos SAP: ${formatMoney(supplierTotal)}</div>
+          <div className="badge">Total egresos SAP {showSupplierIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(supplierTotal)}</div>
           <div style={{ overflowX: 'auto' }}>
             <table>
               <thead>
@@ -580,12 +530,168 @@ function Dashboard({ isAdmin }) {
             </table>
           </div>
         </div>
+      );
+    } else {
+      dashboardContent = <div style={{ padding: '12px 0' }}>No hay egresos SAP agrupados por proveedor para mostrar.</div>;
+    }
+  } else if (stats?.error) {
+    dashboardContent = <div style={{ padding: '12px 0' }}>Error: {stats.error}</div>;
+  } else if (categoryRows.length) {
+    if (viewMode === 'experimental') {
+      dashboardContent = (
+        <div style={{ marginTop: 12 }} className="dashboard-experimental">
+          <div className="dashboard-kpi-grid">
+            <div className="dashboard-kpi-card">
+              <div className="dashboard-kpi-icon">💰</div>
+              <strong>${formatMoney(stats.total_expenses || 0)}</strong>
+              <span>Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}</span>
+            </div>
+            <div className="dashboard-kpi-card">
+              <div className="dashboard-kpi-icon">📊</div>
+              <strong>{categoryRows.length}</strong>
+              <span>Categorías con movimiento</span>
+            </div>
+            <div className="dashboard-kpi-card">
+              <div className="dashboard-kpi-icon">🏷️</div>
+              <strong>{biggestCategory?.category_name || 'Sin datos'}</strong>
+              <span>Mayor categoría (${formatMoney(biggestCategory?.amount || 0)})</span>
+            </div>
+          </div>
+
+          <div className="dashboard-experimental-grid">
+            <section className="dashboard-panel">
+              <h3>Comportamiento por categoría</h3>
+              <svg
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+                className="dashboard-line-chart"
+                role="img"
+                aria-label="Tendencia de categorías por monto"
+              >
+                <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
+              </svg>
+              <div className="small">Visual experimental para comparar magnitudes entre categorías.</div>
+            </section>
+
+            <section className="dashboard-panel dashboard-gauge-panel">
+              <h3>Distribución top categorías</h3>
+              <div
+                className="dashboard-gauge"
+                style={{
+                  background: `conic-gradient(#1f4d96 0deg ${(allocatedPercent / 100) * 360}deg, #e2e8f0 ${(allocatedPercent / 100) * 360}deg 360deg)`,
+                }}
+              >
+                <span>{allocatedPercent.toFixed(1)}%</span>
+              </div>
+              <div className="small">Participación acumulada de las 6 categorías principales.</div>
+            </section>
+
+            <section className="dashboard-panel">
+              <h3>Avance por categoría</h3>
+              <div className="grid">
+                {topCategories.map((r) => {
+                  const percent = Number(r.percent) || 0;
+                  const fillWidth = Math.max(0, Math.min(100, percent));
+                  return (
+                    <div key={r.category_id} style={{ display: 'grid', gap: 4 }}>
+                      <div className="row" style={{ justifyContent: 'space-between' }}>
+                        <div style={{ fontWeight: 700 }}>{r.category_name}</div>
+                        <div className="small">{percent.toFixed(2)}%</div>
+                      </div>
+                      <div className="bar" aria-label={`Barra de avance de ${r.category_name}`}>
+                        <div style={{ width: fillWidth + '%' }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            <section className="dashboard-panel">
+              <h3>Montos principales</h3>
+              <div className="dashboard-column-chart">
+                {topCategories.slice(0, 5).map((r) => {
+                  const amount = Number(r.amount) || 0;
+                  const maxAmount = Number(biggestCategory?.amount) || 1;
+                  return (
+                    <div key={`column-${r.category_id}`} className="dashboard-column-item">
+                      <div className="dashboard-column-value">${formatMoney(amount)}</div>
+                      <div className="dashboard-column-track">
+                        <div className="dashboard-column-fill" style={{ height: `${Math.max(12, (amount / maxAmount) * 100)}%` }} />
+                      </div>
+                      <div className="dashboard-column-label">{r.category_name}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          </div>
+
+          {renderCategorySummaryHeader()}
+        </div>
+      );
+    } else {
+      dashboardContent = (
+        <div style={{ marginTop: 12 }} className="grid">
+          {renderCategorySummaryHeader()}
+          {categoryRows.map((r) => {
+            const percent = Number(r.percent) || 0;
+            const fillWidth = Math.max(0, Math.min(100, percent));
+
+            return (
+              <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <div style={{ fontWeight: 700 }}>{r.category_name}</div>
+                  <div>
+                    ${formatMoney(r.amount)} <span className="small">({percent.toFixed(2)}%)</span>
+                  </div>
+                </div>
+                <div className="bar" aria-label={`Barra de avance de ${r.category_name}`}>
+                  <div style={{ width: fillWidth + '%' }}>
+                    <span>{percent.toFixed(2)}%</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+  }
+
+  return (
+    <div className="card">
+      <h2 style={{ margin: '0 0 8px' }}>Dashboard de egresos</h2>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
+          Por categoría
+        </button>
+        <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
+          Por proveedor
+        </button>
+        <button className={viewMode === 'experimental' ? '' : 'secondary'} onClick={() => setViewMode('experimental')}>
+          Vista experimental
+        </button>
+      </div>
+      <div className="small">{subtitle}</div>
+
+      {viewMode === 'supplier' ? (
+        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
+          Mostrar IVA
+        </label>
       ) : (
-        <div style={{ padding: '12px 0' }}>No hay egresos aún. Registra uno para ver el dashboard.</div>
+        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
+          Mostrar IVA
+        </label>
       )}
+
+      {dashboardContent}
     </div>
   );
 }
+
 
 const ADD_NEW_VENDOR_VALUE = '__add_new_vendor__';
 
