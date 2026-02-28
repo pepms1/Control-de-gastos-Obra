@@ -314,12 +314,12 @@ def ensure_indexes():
             ("sourceDb", 1),
             ("sap.pagoNum", 1),
             ("sap.facturaNum", 1),
-            ("sap.montoAplicado", 1),
+            ("sap.montoAplicadoCents", 1),
         ],
         unique=True,
         partialFilterExpression={"source": "sap"},
+        name="sap_transactions_unique_v2_cents",
     )
-    drop_legacy_sap_unique_index()
     db.transactions.create_index([("projectId", 1), ("date", -1)])
     text_index_name = "transactions_text_search"
     current_indexes = {idx.get("name"): idx for idx in db.transactions.list_indexes()}
@@ -366,19 +366,45 @@ def infer_sap_source_db(tx: dict) -> str:
 
 def backfill_sap_transactions_metadata():
     query = {
-        "sap": {"$exists": True},
         "$or": [
-            {"source": {"$exists": False}},
-            {"source": None},
-            {"source": {"$ne": "sap"}},
-            {"sourceDb": {"$exists": False}},
-            {"sourceDb": None},
-            {"sourceDb": ""},
-        ],
+            {"source": "sap"},
+            {"sap": {"$exists": True}},
+        ]
     }
     ops = []
-    for tx in db.transactions.find(query, {"source": 1, "sourceDb": 1, "tax": 1}):
+    projection = {
+        "source": 1,
+        "sourceDb": 1,
+        "tax": 1,
+        "amount": 1,
+        "sap": 1,
+    }
+    for tx in db.transactions.find(query, projection):
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else None
+        if not sap_doc:
+            continue
+
+        normalized_sap = normalize_sap_fields(sap_doc, fallback_amount=tx.get("amount"))
         normalized_source_db = infer_sap_source_db(tx)
+
+        current_pago_num = str(sap_doc.get("pagoNum") or "").strip()
+        current_factura_num = str(sap_doc.get("facturaNum") or "").strip()
+        current_amount = round(float(sap_doc.get("montoAplicado") or tx.get("amount") or 0), 2)
+        current_cents = sap_doc.get("montoAplicadoCents")
+
+        requires_update = any(
+            [
+                tx.get("source") != "sap",
+                str(tx.get("sourceDb") or "").strip().upper() != normalized_source_db,
+                current_pago_num != normalized_sap["pagoNum"],
+                current_factura_num != normalized_sap["facturaNum"],
+                current_amount != normalized_sap["montoAplicado"],
+                current_cents != normalized_sap["montoAplicadoCents"],
+            ]
+        )
+        if not requires_update:
+            continue
+
         ops.append(
             UpdateOne(
                 {"_id": tx["_id"]},
@@ -386,16 +412,99 @@ def backfill_sap_transactions_metadata():
                     "$set": {
                         "source": "sap",
                         "sourceDb": normalized_source_db,
+                        "sap.pagoNum": normalized_sap["pagoNum"],
+                        "sap.facturaNum": normalized_sap["facturaNum"],
+                        "sap.montoAplicado": normalized_sap["montoAplicado"],
+                        "sap.montoAplicadoCents": normalized_sap["montoAplicadoCents"],
                     }
                 },
             )
         )
 
     if ops:
-        db.transactions.bulk_write(ops, ordered=False)
+        result = db.transactions.bulk_write(ops, ordered=False)
+        return {"scanned": len(ops), "updated": (result.modified_count or 0) + (result.upserted_count or 0)}
+    return {"scanned": 0, "updated": 0}
+
+
+def _is_missing(value) -> bool:
+    return value in (None, "", [], {})
+
+
+def _pick_sap_winner(candidates: list[dict]) -> dict:
+    def sort_key(doc: dict):
+        has_category = doc.get("categoryId") or doc.get("category_id")
+        created_at = str(doc.get("created_at") or "")
+        return (1 if has_category else 0, created_at, doc.get("_id"))
+
+    return max(candidates, key=sort_key)
 
 
 def dedupe_sap_transactions_for_unique_index():
+    projection = {
+        "projectId": 1,
+        "sourceDb": 1,
+        "sap": 1,
+        "amount": 1,
+        "categoryId": 1,
+        "category_id": 1,
+        "supplierId": 1,
+        "supplierName": 1,
+        "supplierCardCode": 1,
+        "vendor_id": 1,
+        "tax": 1,
+        "created_at": 1,
+    }
+    groups = {}
+    for tx in db.transactions.find({"source": "sap", "sap": {"$exists": True}}, projection):
+        normalized_sap = normalize_sap_fields(tx.get("sap"), fallback_amount=tx.get("amount"))
+        key = (
+            tx.get("projectId"),
+            infer_sap_source_db(tx),
+            normalized_sap["pagoNum"],
+            normalized_sap["facturaNum"],
+            normalized_sap["montoAplicadoCents"],
+        )
+        groups.setdefault(key, []).append(tx)
+
+    duplicate_groups = [group for group in groups.values() if len(group) > 1]
+    if not duplicate_groups:
+        return {"groups": 0, "deleted": 0}
+
+    deleted_ids = []
+    winner_updates = []
+    merge_fields = ["categoryId", "category_id", "supplierId", "supplierName", "supplierCardCode", "vendor_id", "tax"]
+    for group in duplicate_groups:
+        winner = _pick_sap_winner(group)
+        merged_values = {}
+
+        for candidate in group:
+            if candidate["_id"] == winner["_id"]:
+                continue
+            deleted_ids.append(candidate["_id"])
+            for field in merge_fields:
+                if _is_missing(winner.get(field)) and not _is_missing(candidate.get(field)):
+                    winner[field] = candidate.get(field)
+                    merged_values[field] = candidate.get(field)
+
+        if merged_values:
+            winner_updates.append(UpdateOne({"_id": winner["_id"]}, {"$set": merged_values}))
+
+    if winner_updates:
+        db.transactions.bulk_write(winner_updates, ordered=False)
+    if deleted_ids:
+        db.transactions.delete_many({"_id": {"$in": deleted_ids}})
+
+    return {"groups": len(duplicate_groups), "deleted": len(deleted_ids)}
+
+
+def run_sap_manual_migration_and_dedupe():
+    backfill_result = backfill_sap_transactions_metadata()
+    dedupe_result = dedupe_sap_transactions_for_unique_index()
+    return {
+        "backfill": backfill_result,
+        "dedupe": dedupe_result,
+    }
     result = dedupe_sap_transactions()
     return result
 
@@ -568,6 +677,26 @@ def parse_optional_decimal(value):
     if not text:
         return None
     return parse_decimal(value)
+
+
+def to_monto_aplicado_cents(value) -> int:
+    return int(round(float(value or 0) * 100))
+
+
+def normalize_sap_fields(sap_payload: dict | None, fallback_amount=None) -> dict:
+    sap_doc = sap_payload if isinstance(sap_payload, dict) else {}
+    pago_num = str(sap_doc.get("pagoNum") or "").strip()
+    factura_num = str(sap_doc.get("facturaNum") or "").strip()
+    amount_raw = sap_doc.get("montoAplicado", fallback_amount)
+    amount_value = float(amount_raw or 0)
+    monto_aplicado = round(amount_value, 2)
+    monto_aplicado_cents = to_monto_aplicado_cents(monto_aplicado)
+    return {
+        "pagoNum": pago_num,
+        "facturaNum": factura_num,
+        "montoAplicado": monto_aplicado,
+        "montoAplicadoCents": monto_aplicado_cents,
+    }
 
 
 def compute_monto_sin_iva(tx: dict):
@@ -1543,7 +1672,8 @@ def run_sap_import(
             payment_date = parse_excel_date(row.get("FechaPago"))
             invoice_date = parse_excel_date(row.get("FechaFactura"))
             total_payment = parse_decimal(row.get("TotalPago"))
-            applied_amount = parse_decimal(row.get("MontoAplicado"))
+            applied_amount = float(parse_decimal(row.get("MontoAplicado")))
+            applied_amount_cents = to_monto_aplicado_cents(applied_amount)
 
             subtotal = parse_optional_decimal(row.get("subtotal"))
             iva = parse_optional_decimal(row.get("iva"))
@@ -1572,12 +1702,13 @@ def run_sap_import(
             line_records.append(
                 {
                     "rowNumber": idx,
-                    "paymentNum": payment_num,
-                    "invoiceNum": invoice_num,
+                    "paymentNum": str(payment_num).strip(),
+                    "invoiceNum": str(invoice_num).strip(),
                     "cardCode": card_code,
                     "paymentKey": payment_key,
                     "invoiceKey": invoice_key,
                     "appliedAmount": applied_amount,
+                    "appliedAmountCents": applied_amount_cents,
                     "paymentDate": payment_date,
                     "invoiceDate": invoice_date,
                     "currency": currency,
@@ -1693,7 +1824,7 @@ def run_sap_import(
                 "sourceDb": record["sourceDb"],
                 "sap.pagoNum": record["paymentNum"],
                 "sap.facturaNum": record["invoiceNum"],
-                "sap.montoAplicado": record["appliedAmount"],
+                "sap.montoAplicadoCents": record["appliedAmountCents"],
             }
             existing_tx = db.transactions.find_one(tx_filter, {"categoryId": 1, "category_id": 1})
             existing_category_id = None
@@ -1721,9 +1852,10 @@ def run_sap_import(
                 "sourceDb": record["sourceDb"],
                 "tax": record["tax"],
                 "sap": {
-                    "pagoNum": record["paymentNum"],
-                    "facturaNum": record["invoiceNum"],
-                    "montoAplicado": record["appliedAmount"],
+                    "pagoNum": str(record["paymentNum"]).strip(),
+                    "facturaNum": str(record["invoiceNum"]).strip(),
+                    "montoAplicado": float(record["appliedAmount"]),
+                    "montoAplicadoCents": record["appliedAmountCents"],
                     "cardCode": record["cardCode"],
                 },
             }
@@ -1986,6 +2118,11 @@ def summary_expenses_by_supplier(
 
     output.sort(key=lambda item: (item["supplierName"] or "").lower())
     return output
+@app.post("/api/admin/sap/dedupe-migration")
+def admin_run_sap_dedupe_migration(_: dict = Depends(require_admin)):
+    return run_sap_manual_migration_and_dedupe()
+
+
 @app.post("/api/admin/backfill/suppliers-to-vendors")
 def backfill_suppliers_to_vendors(project: str = "CALDERON DE LA BARCA", _: dict = Depends(require_admin)):
     project_id = get_or_create_project_id(project)
