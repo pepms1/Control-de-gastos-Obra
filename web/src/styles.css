@@ -33,6 +33,8 @@ a{color:inherit}
 .grid2{grid-template-columns: 1fr; }
 @media (min-width: 860px){ .grid2{grid-template-columns: 1fr 1fr;} }
 .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
+.search-toolbar{display:flex; gap:10px; flex-wrap:wrap; align-items:center;}
+.search-toolbar button{background:linear-gradient(135deg, var(--primary-dark), var(--primary)); box-shadow:0 6px 18px rgba(18,48,95,.25);}
 .date-filter-inline{
   display:grid;
   grid-template-columns:1fr 1fr;
