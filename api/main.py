@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from io import BytesIO
 from urllib.parse import urlparse
 from urllib.request import urlopen
+import boto3
 import re
 import csv
 import openpyxl
@@ -1228,6 +1229,73 @@ def build_supplier_auto_category_map(supplier_ids: list[str]) -> dict[str, str]:
     }
 
 
+def downloadFromS3(key: str) -> bytes:
+    region = (os.getenv("AWS_REGION") or "").strip()
+    bucket = (os.getenv("S3_BUCKET") or "").strip()
+
+    if not region:
+        raise HTTPException(status_code=500, detail="Missing AWS_REGION env var")
+    if not bucket:
+        raise HTTPException(status_code=500, detail="Missing S3_BUCKET env var")
+
+    s3_client = boto3.client("s3", region_name=region)
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    return response["Body"].read()
+
+
+def build_s3_key(filename: str) -> str:
+    prefix = (os.getenv("S3_PREFIX") or "").strip().strip("/")
+    if not prefix:
+        return filename
+    return f"{prefix}/{filename}"
+
+
+def importCsv(
+    file_bytes: bytes,
+    sourceDb: str,
+    project: str = "CALDERON DE LA BARCA",
+    force: int = 0,
+    source: str = "sap-latest",
+    mode: str = "upsert",
+):
+    normalized_source_db = (sourceDb or "").strip().upper() or "SAP"
+    file_name = f"latest_{normalized_source_db}.csv"
+    return run_sap_import(
+        file_name=file_name,
+        file_bytes=file_bytes,
+        project=project,
+        force=force,
+        source=source,
+        mode=mode,
+        source_db_override=normalized_source_db,
+    )
+
+
+def run_s3_latest_sap_import(
+    project: str = "CALDERON DE LA BARCA",
+    force: int = 0,
+    mode: str = "upsert",
+    source: str = "sap-latest",
+):
+    iva_key = build_s3_key("latest_IVA.csv")
+    efectivo_key = build_s3_key("latest_EFECTIVO.csv")
+
+    iva_bytes = downloadFromS3(iva_key)
+    efectivo_bytes = downloadFromS3(efectivo_key)
+
+    iva_summary = importCsv(iva_bytes, sourceDb="IVA", project=project, force=force, source=source, mode=mode)
+    efectivo_summary = importCsv(
+        efectivo_bytes,
+        sourceDb="EFECTIVO",
+        project=project,
+        force=force,
+        source=source,
+        mode=mode,
+    )
+
+    return {"iva": iva_summary, "efectivo": efectivo_summary}
+
+
 def run_sap_import(
     file_name: str,
     file_bytes: bytes,
@@ -1237,6 +1305,7 @@ def run_sap_import(
     mode: str = "upsert",
     confirm_rebuild: int = 0,
     allow_rebuild: bool = False,
+    source_db_override: str | None = None,
 ):
     file_hash = sha256(file_bytes).hexdigest()
 
@@ -1337,7 +1406,7 @@ def run_sap_import(
             iva = parse_optional_decimal(row.get("iva"))
             retenciones = parse_optional_decimal(row.get("retenciones"))
             total_factura = parse_optional_decimal(row.get("totalfactura"))
-            source_db = str(row.get("sourceDb") or "").strip() or "SAP"
+            source_db = source_db_override or str(row.get("sourceDb") or "").strip() or "SAP"
 
             if card_code not in existing_cardcodes and card_code not in created_cardcodes:
                 suppliers_created += 1
@@ -1601,6 +1670,16 @@ async def import_sap_payments(
     )
 
 
+@app.post("/api/admin/import/sap-latest")
+def admin_import_sap_latest(
+    project: str = "CALDERON DE LA BARCA",
+    force: int = 0,
+    mode: str = "upsert",
+    _: dict = Depends(require_admin),
+):
+    return run_s3_latest_sap_import(project=project, force=force, mode=mode, source="sap-latest-admin")
+
+
 @app.post("/api/cron/import/sap-payments")
 def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int = 0, mode: str = "upsert"):
     sap_import_url = (os.getenv("SAP_IMPORT_URL") or "").strip()
@@ -1655,6 +1734,35 @@ def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int =
         ) from exc
 
     return run_sap_import(file_name, file_bytes, project, force, source="sap-payments-cron", mode=mode)
+
+
+@app.post("/api/cron/import/sap-latest")
+def cron_import_sap_latest(project: str = "CALDERON DE LA BARCA", force: int = 0, mode: str = "upsert"):
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        result = run_s3_latest_sap_import(project=project, force=force, mode=mode, source="sap-latest-cron")
+        print(f"sap_latest_cron ok iva={result['iva']} efectivo={result['efectivo']}")
+        return result
+    except Exception as exc:
+        error_hash = sha256(f"sap_latest_cron_error:{now}:{str(exc)}".encode("utf-8")).hexdigest()
+        import_run_id = db.importRuns.insert_one(
+            {
+                "sha256": error_hash,
+                "fileName": None,
+                "source": "sap-latest-cron",
+                "projectId": None,
+                "rowsTotal": 0,
+                "rowsOk": 0,
+                "rowsSkipped": 0,
+                "rowsError": 1,
+                "status": "failed",
+                "startedAt": now,
+                "finishedAt": datetime.now(timezone.utc).isoformat(),
+                "errorsSample": [{"error": str(exc)}],
+            }
+        ).inserted_id
+        print(f"sap_latest_cron failed importRunId={import_run_id} error={str(exc)}")
+        raise
 
 
 @app.get("/api/expenses/summary-by-supplier")
