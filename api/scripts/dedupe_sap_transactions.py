@@ -19,6 +19,14 @@ def infer_source_db(doc: dict) -> str:
         return "UNKNOWN"
 
 
+def infer_source_db_for_backfill(doc: dict) -> str:
+    iva_value = ((doc.get("tax") or {}).get("iva"))
+    try:
+        return "IVA" if Decimal(str(iva_value)) > 0 else "EFECTIVO"
+    except (InvalidOperation, ValueError, TypeError):
+        return "EFECTIVO"
+
+
 def to_cents(amount) -> int:
     return int(round(float(amount or 0) * 100))
 
@@ -57,24 +65,27 @@ def main():
     txs = db.transactions
 
     backfill_ops = []
-    for tx in txs.find({"$or": [{"source": "sap"}, {"sap": {"$exists": True}}]}, {"source": 1, "sourceDb": 1, "tax": 1, "amount": 1, "sap": 1}):
+    for tx in txs.find({"$or": [{"source": "sap"}, {"sap": {"$exists": True}}]}, {"source": 1, "sourceDb": 1, "sourceDbInferred": 1, "tax": 1, "amount": 1, "sap": 1}):
         if not isinstance(tx.get("sap"), dict):
             continue
         normalized = normalize_sap_fields(tx)
-        source_db = infer_source_db(tx)
+        current_source_db = str(tx.get("sourceDb") or "").strip().upper()
+        source_db_was_missing = not current_source_db
+        source_db = current_source_db or infer_source_db_for_backfill(tx)
+        set_payload = {
+            "source": "sap",
+            "sourceDb": source_db,
+            "sap.pagoNum": normalized["pagoNum"],
+            "sap.facturaNum": normalized["facturaNum"],
+            "sap.montoAplicado": normalized["montoAplicado"],
+            "sap.montoAplicadoCents": normalized["montoAplicadoCents"],
+        }
+        if source_db_was_missing:
+            set_payload["sourceDbInferred"] = True
         backfill_ops.append(
             UpdateOne(
                 {"_id": tx["_id"]},
-                {
-                    "$set": {
-                        "source": "sap",
-                        "sourceDb": source_db,
-                        "sap.pagoNum": normalized["pagoNum"],
-                        "sap.facturaNum": normalized["facturaNum"],
-                        "sap.montoAplicado": normalized["montoAplicado"],
-                        "sap.montoAplicadoCents": normalized["montoAplicadoCents"],
-                    }
-                },
+                {"$set": set_payload},
             )
         )
 

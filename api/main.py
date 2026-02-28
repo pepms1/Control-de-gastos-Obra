@@ -389,6 +389,15 @@ def infer_sap_source_db(tx: dict) -> str:
     return "EFECTIVO"
 
 
+def infer_sap_source_db_for_backfill(tx: dict) -> str:
+    tax = tx.get("tax") or {}
+    iva_value = tax.get("iva")
+    try:
+        return "IVA" if Decimal(str(iva_value)) > 0 else "EFECTIVO"
+    except (InvalidOperation, ValueError, TypeError):
+        return "EFECTIVO"
+
+
 def backfill_sap_transactions_metadata():
     query = {
         "$or": [
@@ -400,6 +409,7 @@ def backfill_sap_transactions_metadata():
     projection = {
         "source": 1,
         "sourceDb": 1,
+        "sourceDbInferred": 1,
         "tax": 1,
         "amount": 1,
         "sap": 1,
@@ -410,7 +420,10 @@ def backfill_sap_transactions_metadata():
             continue
 
         normalized_sap = normalize_sap_fields(sap_doc, fallback_amount=tx.get("amount"))
-        normalized_source_db = infer_sap_source_db(tx)
+        current_source_db = str(tx.get("sourceDb") or "").strip().upper()
+        source_db_was_missing = not current_source_db
+        normalized_source_db = current_source_db or infer_sap_source_db_for_backfill(tx)
+        inferred_flag_missing = source_db_was_missing and tx.get("sourceDbInferred") is not True
 
         current_pago_num = str(sap_doc.get("pagoNum") or "").strip()
         current_factura_num = str(sap_doc.get("facturaNum") or "").strip()
@@ -420,7 +433,8 @@ def backfill_sap_transactions_metadata():
         requires_update = any(
             [
                 tx.get("source") != "sap",
-                str(tx.get("sourceDb") or "").strip().upper() != normalized_source_db,
+                current_source_db != normalized_source_db,
+                inferred_flag_missing,
                 current_pago_num != normalized_sap["pagoNum"],
                 current_factura_num != normalized_sap["facturaNum"],
                 current_amount != normalized_sap["montoAplicado"],
@@ -430,18 +444,22 @@ def backfill_sap_transactions_metadata():
         if not requires_update:
             continue
 
+        set_values = {
+            "source": "sap",
+            "sourceDb": normalized_source_db,
+            "sap.pagoNum": normalized_sap["pagoNum"],
+            "sap.facturaNum": normalized_sap["facturaNum"],
+            "sap.montoAplicado": normalized_sap["montoAplicado"],
+            "sap.montoAplicadoCents": normalized_sap["montoAplicadoCents"],
+        }
+        if source_db_was_missing:
+            set_values["sourceDbInferred"] = True
+
         ops.append(
             UpdateOne(
                 {"_id": tx["_id"]},
                 {
-                    "$set": {
-                        "source": "sap",
-                        "sourceDb": normalized_source_db,
-                        "sap.pagoNum": normalized_sap["pagoNum"],
-                        "sap.facturaNum": normalized_sap["facturaNum"],
-                        "sap.montoAplicado": normalized_sap["montoAplicado"],
-                        "sap.montoAplicadoCents": normalized_sap["montoAplicadoCents"],
-                    }
+                    "$set": set_values
                 },
             )
         )
