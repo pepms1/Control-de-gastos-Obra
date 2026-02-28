@@ -1184,8 +1184,18 @@ function SearchTransactions({ cats, vendors }) {
       .finally(() => setLoading(false));
   }, [page, query]);
 
+  const getAmountWithoutIva = (row) => {
+    const totalAmount = Number(row.amount) || 0;
+    const ivaAmount = Number(row.tax?.iva ?? row.iva);
+    const subtotalAmount = Number(row.tax?.subtotal);
+
+    if (Number.isFinite(subtotalAmount)) return subtotalAmount;
+    if (Number.isFinite(ivaAmount)) return totalAmount - ivaAmount;
+    return totalAmount;
+  };
+
   const filteredTotal = useMemo(
-    () => rows.reduce((acc, r) => acc + (Number(r.amount) || 0), 0),
+    () => rows.reduce((acc, r) => acc + getAmountWithoutIva(r), 0),
     [rows],
   );
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * limit + 1;
@@ -1197,8 +1207,6 @@ function SearchTransactions({ cats, vendors }) {
 
     try {
       let filteredTotalWithoutIva = 0;
-      let filteredTotalWithIva = 0;
-      let hasAnyIva = false;
 
       const printableRows = rows
         .map((r) => {
@@ -1208,16 +1216,9 @@ function SearchTransactions({ cats, vendors }) {
           const ivaAmount = Number(r.tax?.iva ?? r.iva);
           const hasIva = Number.isFinite(ivaAmount) && Math.abs(ivaAmount) > 0;
           const totalAmount = Number(r.amount) || 0;
-          const subtotalAmount = Number(r.tax?.subtotal);
-          const safeSubtotal = Number.isFinite(subtotalAmount)
-            ? subtotalAmount
-            : hasIva
-              ? totalAmount - ivaAmount
-              : totalAmount;
+          const safeSubtotal = getAmountWithoutIva(r);
 
           filteredTotalWithoutIva += safeSubtotal;
-          filteredTotalWithIva += totalAmount;
-          if (hasIva) hasAnyIva = true;
 
           const ivaBreakdown = hasIva
             ? `Subtotal: $${formatMoney(safeSubtotal)} + IVA: $${formatMoney(ivaAmount)}`
@@ -1230,22 +1231,17 @@ function SearchTransactions({ cats, vendors }) {
               <td>${concept}</td>
               <td>${category}</td>
               <td>${ivaBreakdown}</td>
-              <td class="amount">$${formatMoney(totalAmount)}</td>
+              <td class="amount">$${formatMoney(safeSubtotal)}</td>
             </tr>`;
         })
         .join('');
 
-      const amountSummaryCards = hasAnyIva
-        ? `
-                <div class="summary-card"><div class="label">MONTO SIN IVA</div><div class="value">$${formatMoney(filteredTotalWithoutIva)}</div></div>
-                <div class="summary-card"><div class="label">MONTO CON IVA</div><div class="value">$${formatMoney(filteredTotalWithIva)}</div></div>
-          `
-        : `
+      const amountSummaryCards = `
                 <div class="summary-card"><div class="label">MONTO SIN IVA</div><div class="value">$${formatMoney(filteredTotalWithoutIva)}</div></div>
           `;
 
-      const footerTotalLabel = hasAnyIva ? 'Total filtrado con IVA' : 'Total filtrado sin IVA';
-      const footerTotalAmount = hasAnyIva ? filteredTotalWithIva : filteredTotalWithoutIva;
+      const footerTotalLabel = 'Total filtrado sin IVA';
+      const footerTotalAmount = filteredTotalWithoutIva;
 
       const popup = window.open('', '_blank', 'width=1200,height=800');
       if (!popup) return;
@@ -1335,7 +1331,7 @@ function SearchTransactions({ cats, vendors }) {
         <table>
           <thead>
             <tr>
-              <th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Monto</th>
+              <th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Monto sin IVA</th>
             </tr>
           </thead>
           <tbody>
@@ -1345,7 +1341,7 @@ function SearchTransactions({ cats, vendors }) {
                 <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                 <td>{r.description || r.concept || ''}</td>
                 <td>{r.category_name || (r.category_id ? catMap[r.category_id] || '' : '')}</td>
-                <td>${formatMoney(r.amount)}</td>
+                <td>${formatMoney(getAmountWithoutIva(r))}</td>
               </tr>
             ))}
             {!rows.length && !loading && (
@@ -1354,7 +1350,7 @@ function SearchTransactions({ cats, vendors }) {
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} style={{ textAlign: 'right', fontWeight: 700 }}>Total filtrado</td>
+              <td colSpan={4} style={{ textAlign: 'right', fontWeight: 700 }}>Total filtrado sin IVA</td>
               <td style={{ fontWeight: 700 }}>${formatMoney(filteredTotal)}</td>
             </tr>
           </tfoot>
