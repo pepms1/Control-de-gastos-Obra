@@ -1153,6 +1153,7 @@ function SearchTransactions({ cats, vendors }) {
   const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [error, setError] = useState('');
   const limit = 50;
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
@@ -1190,15 +1191,107 @@ function SearchTransactions({ cats, vendors }) {
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * limit + 1;
   const rangeEnd = Math.min(page * limit, totalCount);
 
+  function exportSearchResultsToPdf() {
+    if (!rows.length) return;
+    setExportingPdf(true);
+
+    try {
+      const printableRows = rows
+        .map((r) => {
+          const provider = r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—';
+          const concept = r.description || r.concept || '—';
+          const category = r.category_name || (r.category_id ? catMap[r.category_id] || '—' : '—');
+          return `
+            <tr>
+              <td>${r.date || '—'}</td>
+              <td>${provider}</td>
+              <td>${concept}</td>
+              <td>${category}</td>
+              <td class="amount">$${formatMoney(r.amount)}</td>
+            </tr>`;
+        })
+        .join('');
+
+      const popup = window.open('', '_blank', 'width=1200,height=800');
+      if (!popup) return;
+
+      popup.document.write(`
+        <!doctype html>
+        <html lang="es">
+          <head>
+            <meta charset="UTF-8" />
+            <title>Reporte de búsqueda</title>
+            <style>
+              :root { --primary:#1f4d96; --primary-dark:#12305f; --soft:#e3ebf8; --gray:#334155; --line:#e2e8f0; }
+              * { box-sizing: border-box; }
+              body { margin: 0; font-family: 'Segoe UI', Arial, sans-serif; color: var(--gray); background: #f8fafc; }
+              .sheet { margin: 24px; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: #fff; }
+              .header { background: linear-gradient(135deg, var(--primary-dark), var(--primary)); color: #fff; padding: 26px 28px; }
+              .header h1 { margin: 0; font-size: 26px; letter-spacing: .02em; }
+              .header p { margin: 8px 0 0; font-size: 13px; opacity: .95; }
+              .summary { display: flex; gap: 12px; flex-wrap: wrap; padding: 16px 24px; background: var(--soft); border-bottom: 1px solid var(--line); }
+              .summary-card { background: #fff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 10px 14px; min-width: 200px; }
+              .summary-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; }
+              .summary-card .value { margin-top: 4px; font-size: 18px; font-weight: 700; color: var(--primary-dark); }
+              .table-wrap { padding: 14px 24px 24px; }
+              table { width: 100%; border-collapse: collapse; }
+              th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; }
+              thead th { background: #f1f5f9; color: var(--primary-dark); font-weight: 700; }
+              .amount { text-align: right; font-weight: 700; color: var(--primary-dark); }
+              .footer-total { text-align: right; padding: 14px 24px 22px; font-size: 18px; font-weight: 800; color: var(--primary-dark); }
+              @media print {
+                body { background: #fff; }
+                .sheet { margin: 0; border: 0; border-radius: 0; }
+              }
+            </style>
+          </head>
+          <body>
+            <section class="sheet">
+              <header class="header">
+                <h1>Grupo MDI · Reporte de búsqueda</h1>
+                <p>Generado: ${new Date().toLocaleString('es-MX')} · Consulta: ${query.trim() || 'Sin filtro de texto'}</p>
+              </header>
+              <div class="summary">
+                <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${rows.length}</div></div>
+                <div class="summary-card"><div class="label">Resultados totales</div><div class="value">${totalCount}</div></div>
+                <div class="summary-card"><div class="label">Monto filtrado</div><div class="value">$${formatMoney(filteredTotal)}</div></div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th style="text-align:right">Monto</th></tr>
+                  </thead>
+                  <tbody>${printableRows}</tbody>
+                </table>
+              </div>
+              <div class="footer-total">Total filtrado: $${formatMoney(filteredTotal)}</div>
+            </section>
+          </body>
+        </html>
+      `);
+      popup.document.close();
+      popup.focus();
+      popup.print();
+    } finally {
+      setExportingPdf(false);
+    }
+  }
+
+
   return (
     <div className="card">
       <h2 style={{ marginTop: 0 }}>Buscar movimientos</h2>
-      <input
-        placeholder="Buscar por proveedor, concepto o categoría"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        style={{ maxWidth: 420 }}
-      />
+      <div className="search-toolbar">
+        <input
+          placeholder="Buscar por proveedor, concepto o categoría"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{ maxWidth: 420 }}
+        />
+        <button type="button" onClick={exportSearchResultsToPdf} disabled={loading || exportingPdf || !rows.length}>
+          {exportingPdf ? 'Exportando...' : 'Exportar PDF'}
+        </button>
+      </div>
       <div className="small" style={{ marginTop: 8 }}>
         {loading ? 'Buscando...' : `${totalCount} resultados en egresos${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''}`}
       </div>
