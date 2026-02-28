@@ -1348,6 +1348,34 @@ def health():
     return {"ok": True}
 
 
+@app.get("/api/version")
+def api_version():
+    commit_sha = (
+        env_get("RENDER_GIT_COMMIT")
+        or env_get("GIT_COMMIT")
+        or env_get("COMMIT_SHA")
+        or env_get("VERCEL_GIT_COMMIT_SHA")
+        or env_get("RAILWAY_GIT_COMMIT_SHA")
+        or env_get("SOURCE_VERSION")
+    )
+
+    route_paths = {route.path for route in app.routes}
+    cleanup_route = "/api/admin/sap/cleanup-iva-duplicates"
+
+    return {
+        "commitSha": commit_sha,
+        "routes": {
+            "cleanupEndpointRegistered": cleanup_route in route_paths,
+            "key": [
+                "/health",
+                "/api/version",
+                "/api/transactions",
+                cleanup_route,
+            ],
+        },
+    }
+
+
 @app.head("/health")
 def health_head():
     return Response(status_code=200)
