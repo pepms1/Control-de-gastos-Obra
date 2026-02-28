@@ -17,6 +17,7 @@ import re
 import csv
 import openpyxl
 import os
+import logging
 
 app = FastAPI(title="Control de Obra API")
 
@@ -40,6 +41,7 @@ JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
 client = MongoClient(MONGO_URL)
 db = client[DB_NAME]
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+logger = logging.getLogger(__name__)
 
 
 # ---------- helpers ----------
@@ -296,6 +298,26 @@ def ensure_default_users():
     users.update_many({"active": {"$exists": False}}, {"$set": {"active": True}})
 
 
+def to_monto_aplicado_cents(value) -> int:
+    return int(round(float(value or 0) * 100))
+
+
+def normalize_sap_fields(sap_payload: dict | None, fallback_amount=None) -> dict:
+    sap_doc = sap_payload if isinstance(sap_payload, dict) else {}
+    pago_num = str(sap_doc.get("pagoNum") or "").strip()
+    factura_num = str(sap_doc.get("facturaNum") or "").strip()
+    amount_raw = sap_doc.get("montoAplicado", fallback_amount)
+    amount_value = float(amount_raw or 0)
+    monto_aplicado = round(amount_value, 2)
+    monto_aplicado_cents = to_monto_aplicado_cents(monto_aplicado)
+    return {
+        "pagoNum": pago_num,
+        "facturaNum": factura_num,
+        "montoAplicado": monto_aplicado,
+        "montoAplicadoCents": monto_aplicado_cents,
+    }
+
+
 def ensure_indexes():
     db.users.create_index("username", unique=True)
     db.suppliers.create_index("cardCode", unique=True)
@@ -305,7 +327,10 @@ def ensure_indexes():
     db.apInvoices.create_index([("projectId", 1), ("sapInvoiceNum", 1)], unique=True)
     db.paymentLines.create_index([("paymentId", 1), ("apInvoiceId", 1), ("appliedAmount", 1)], unique=True)
     db.importRuns.create_index("sha256", unique=True)
-    backfill_sap_transactions_metadata()
+    try:
+        backfill_sap_transactions_metadata()
+    except Exception:
+        logger.exception("SAP metadata backfill failed during startup; continuing without blocking server startup")
     dedupe_sap_transactions_for_unique_index()
     db.transactions.create_index(
         [
@@ -704,11 +729,6 @@ def create_token(username: str, role: str, display_name: str):
     payload = {"sub": username, "role": role, "displayName": display_name, "name": display_name, "exp": exp}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-
-ensure_indexes()
-ensure_default_users()
-
-
 def normalizeDate(value):
     if value is None:
         return None
@@ -781,26 +801,6 @@ def parse_optional_decimal(value):
     if not text:
         return None
     return parse_decimal(value)
-
-
-def to_monto_aplicado_cents(value) -> int:
-    return int(round(float(value or 0) * 100))
-
-
-def normalize_sap_fields(sap_payload: dict | None, fallback_amount=None) -> dict:
-    sap_doc = sap_payload if isinstance(sap_payload, dict) else {}
-    pago_num = str(sap_doc.get("pagoNum") or "").strip()
-    factura_num = str(sap_doc.get("facturaNum") or "").strip()
-    amount_raw = sap_doc.get("montoAplicado", fallback_amount)
-    amount_value = float(amount_raw or 0)
-    monto_aplicado = round(amount_value, 2)
-    monto_aplicado_cents = to_monto_aplicado_cents(monto_aplicado)
-    return {
-        "pagoNum": pago_num,
-        "facturaNum": factura_num,
-        "montoAplicado": monto_aplicado,
-        "montoAplicadoCents": monto_aplicado_cents,
-    }
 
 
 def compute_monto_sin_iva(tx: dict):
@@ -2865,3 +2865,7 @@ def spend_by_category(
             }
         )
     return {"total_expenses": round(total, 2), "rows": out}
+
+
+ensure_indexes()
+ensure_default_users()
