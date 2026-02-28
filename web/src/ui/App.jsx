@@ -1196,21 +1196,56 @@ function SearchTransactions({ cats, vendors }) {
     setExportingPdf(true);
 
     try {
+      let filteredTotalWithoutIva = 0;
+      let filteredTotalWithIva = 0;
+      let hasAnyIva = false;
+
       const printableRows = rows
         .map((r) => {
           const provider = r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—';
           const concept = r.description || r.concept || '—';
           const category = r.category_name || (r.category_id ? catMap[r.category_id] || '—' : '—');
+          const ivaAmount = Number(r.tax?.iva ?? r.iva);
+          const hasIva = Number.isFinite(ivaAmount) && Math.abs(ivaAmount) > 0;
+          const totalAmount = Number(r.amount) || 0;
+          const subtotalAmount = Number(r.tax?.subtotal);
+          const safeSubtotal = Number.isFinite(subtotalAmount)
+            ? subtotalAmount
+            : hasIva
+              ? totalAmount - ivaAmount
+              : totalAmount;
+
+          filteredTotalWithoutIva += safeSubtotal;
+          filteredTotalWithIva += totalAmount;
+          if (hasIva) hasAnyIva = true;
+
+          const ivaBreakdown = hasIva
+            ? `Subtotal: $${formatMoney(safeSubtotal)} + IVA: $${formatMoney(ivaAmount)}`
+            : '—';
+
           return `
             <tr>
               <td>${r.date || '—'}</td>
               <td>${provider}</td>
               <td>${concept}</td>
               <td>${category}</td>
-              <td class="amount">$${formatMoney(r.amount)}</td>
+              <td>${ivaBreakdown}</td>
+              <td class="amount">$${formatMoney(totalAmount)}</td>
             </tr>`;
         })
         .join('');
+
+      const amountSummaryCards = hasAnyIva
+        ? `
+                <div class="summary-card"><div class="label">MONTO SIN IVA</div><div class="value">$${formatMoney(filteredTotalWithoutIva)}</div></div>
+                <div class="summary-card"><div class="label">MONTO CON IVA</div><div class="value">$${formatMoney(filteredTotalWithIva)}</div></div>
+          `
+        : `
+                <div class="summary-card"><div class="label">MONTO SIN IVA</div><div class="value">$${formatMoney(filteredTotalWithoutIva)}</div></div>
+          `;
+
+      const footerTotalLabel = hasAnyIva ? 'Total filtrado con IVA' : 'Total filtrado sin IVA';
+      const footerTotalAmount = hasAnyIva ? filteredTotalWithIva : filteredTotalWithoutIva;
 
       const popup = window.open('', '_blank', 'width=1200,height=800');
       if (!popup) return;
@@ -1220,7 +1255,7 @@ function SearchTransactions({ cats, vendors }) {
         <html lang="es">
           <head>
             <meta charset="UTF-8" />
-            <title>Reporte de búsqueda</title>
+            <title>CALDERON DE LA BARCA - REPORTE DE EGRESOS</title>
             <style>
               :root { --primary:#1f4d96; --primary-dark:#12305f; --soft:#e3ebf8; --gray:#334155; --line:#e2e8f0; }
               * { box-sizing: border-box; }
@@ -1248,23 +1283,23 @@ function SearchTransactions({ cats, vendors }) {
           <body>
             <section class="sheet">
               <header class="header">
-                <h1>Grupo MDI · Reporte de búsqueda</h1>
+                <h1>CALDERON DE LA BARCA - REPORTE DE EGRESOS</h1>
                 <p>Generado: ${new Date().toLocaleString('es-MX')} · Consulta: ${query.trim() || 'Sin filtro de texto'}</p>
               </header>
               <div class="summary">
                 <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${rows.length}</div></div>
                 <div class="summary-card"><div class="label">Resultados totales</div><div class="value">${totalCount}</div></div>
-                <div class="summary-card"><div class="label">Monto filtrado</div><div class="value">$${formatMoney(filteredTotal)}</div></div>
+                ${amountSummaryCards}
               </div>
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th style="text-align:right">Monto</th></tr>
+                    <tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Desglose IVA</th><th style="text-align:right">Monto</th></tr>
                   </thead>
                   <tbody>${printableRows}</tbody>
                 </table>
               </div>
-              <div class="footer-total">Total filtrado: $${formatMoney(filteredTotal)}</div>
+              <div class="footer-total">${footerTotalLabel}: $${formatMoney(footerTotalAmount)}</div>
             </section>
           </body>
         </html>
