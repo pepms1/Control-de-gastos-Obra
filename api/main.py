@@ -505,6 +505,87 @@ def run_sap_manual_migration_and_dedupe():
         "backfill": backfill_result,
         "dedupe": dedupe_result,
     }
+    result = dedupe_sap_transactions()
+    return result
+
+
+def dedupe_sap_transactions() -> dict:
+    duplicates = list(
+        db.transactions.aggregate(
+            [
+                {"$match": {"source": "sap", "sap": {"$exists": True}}},
+                {
+                    "$addFields": {
+                        "_dedupeSourceDb": {"$ifNull": ["$sourceDb", ""]},
+                        "_dedupePagoNum": {"$toString": {"$ifNull": ["$sap.pagoNum", ""]}},
+                        "_dedupeFacturaNum": {"$toString": {"$ifNull": ["$sap.facturaNum", ""]}},
+                        "_dedupeMontoCents": {
+                            "$round": [
+                                {
+                                    "$multiply": [
+                                        {
+                                            "$convert": {
+                                                "input": "$sap.montoAplicado",
+                                                "to": "double",
+                                                "onError": 0,
+                                                "onNull": 0,
+                                            }
+                                        },
+                                        100,
+                                    ]
+                                },
+                                0,
+                            ]
+                        },
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": {
+                            "projectId": "$projectId",
+                            "sourceDb": "$_dedupeSourceDb",
+                            "pagoNum": "$_dedupePagoNum",
+                            "facturaNum": "$_dedupeFacturaNum",
+                            "montoCents": "$_dedupeMontoCents",
+                        },
+                        "ids": {"$push": "$_id"},
+                        "count": {"$sum": 1},
+                    }
+                },
+                {"$match": {"count": {"$gt": 1}}},
+            ]
+        )
+    )
+    if not duplicates:
+        return {"groupsCount": 0, "deletedCount": 0}
+
+    ids_to_delete = []
+    for duplicate_group in duplicates:
+        ids = duplicate_group.get("ids") or []
+        if len(ids) <= 1:
+            continue
+
+        docs = list(
+            db.transactions.find(
+                {"_id": {"$in": ids}},
+                {"categoryId": 1, "category_id": 1},
+            ).sort("_id", -1)
+        )
+        if not docs:
+            continue
+
+        docs_with_category = [
+            doc for doc in docs if str(doc.get("categoryId") or doc.get("category_id") or "").strip()
+        ]
+        keep_doc = docs_with_category[0] if docs_with_category else docs[0]
+
+        ids_to_delete.extend([doc["_id"] for doc in docs if doc["_id"] != keep_doc["_id"]])
+
+    deleted_count = 0
+    if ids_to_delete:
+        deleted_count = db.transactions.delete_many({"_id": {"$in": ids_to_delete}}).deleted_count
+
+    return {"groupsCount": len(duplicates), "deletedCount": deleted_count}
 
 
 def drop_legacy_sap_unique_index():
@@ -2156,6 +2237,11 @@ def backfill_supplier_name(_: dict = Depends(require_admin)):
             updated += 1
 
     return {"scanned": scanned, "updated": updated}
+
+
+@app.post("/api/admin/dedupe/sap-transactions")
+def dedupe_sap_transactions_endpoint(_: dict = Depends(require_admin)):
+    return dedupe_sap_transactions()
 
 
 # ---------- seed categories ----------
