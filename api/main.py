@@ -2611,6 +2611,11 @@ def create_transaction(payload: dict, _: dict = Depends(require_admin)):
 
     category_id = payload.get("category_id")
     vendor_id = payload.get("vendor_id")
+    source_db = payload.get("sourceDb")
+    if source_db is not None:
+        source_db = str(source_db).strip().upper() or None
+        if source_db not in ("IVA", "EFECTIVO"):
+            raise HTTPException(status_code=400, detail="sourceDb must be IVA or EFECTIVO")
 
     if ttype == "EXPENSE":
         if not category_id or not vendor_id:
@@ -2628,6 +2633,7 @@ def create_transaction(payload: dict, _: dict = Depends(require_admin)):
         "vendor_id": vendor_id,
         "description": payload.get("description"),
         "reference": payload.get("reference"),
+        "sourceDb": source_db,
         "created_at": datetime.utcnow().isoformat(),
     }
     _id = db.transactions.insert_one(doc).inserted_id
@@ -2680,6 +2686,16 @@ def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(req
     for field in ("description", "reference"):
         if field in payload:
             updates[field] = payload.get(field)
+
+    if "sourceDb" in payload:
+        source_db = payload.get("sourceDb")
+        if source_db is None:
+            updates["sourceDb"] = None
+        else:
+            normalized_source_db = str(source_db).strip().upper()
+            if normalized_source_db not in ("IVA", "EFECTIVO"):
+                raise HTTPException(status_code=400, detail="sourceDb must be IVA or EFECTIVO")
+            updates["sourceDb"] = normalized_source_db
 
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
