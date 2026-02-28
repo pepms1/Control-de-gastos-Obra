@@ -1529,9 +1529,11 @@ def importCsv(
     force: int = 0,
     source: str = "sap-latest",
     mode: str = "upsert",
+    source_file: str | None = None,
+    source_sbo: str | None = None,
 ):
     normalized_source_db = (sourceDb or "").strip().upper() or "SAP"
-    file_name = f"latest_{normalized_source_db}.csv"
+    file_name = source_file or f"latest_{normalized_source_db}.csv"
     return run_sap_import(
         file_name=file_name,
         file_bytes=file_bytes,
@@ -1540,6 +1542,8 @@ def importCsv(
         source=source,
         mode=mode,
         source_db_override=normalized_source_db,
+        source_file=source_file,
+        source_sbo=source_sbo,
     )
 
 
@@ -1555,7 +1559,16 @@ def run_s3_latest_sap_import(
     iva_bytes = downloadFromS3(iva_key)
     efectivo_bytes = downloadFromS3(efectivo_key)
 
-    iva_summary = importCsv(iva_bytes, sourceDb="IVA", project=project, force=force, source=source, mode=mode)
+    iva_summary = importCsv(
+        iva_bytes,
+        sourceDb="IVA",
+        project=project,
+        force=force,
+        source=source,
+        mode=mode,
+        source_file="latest_IVA.csv",
+        source_sbo="SBO_GMDI",
+    )
     efectivo_summary = importCsv(
         efectivo_bytes,
         sourceDb="EFECTIVO",
@@ -1563,6 +1576,8 @@ def run_s3_latest_sap_import(
         force=force,
         source=source,
         mode=mode,
+        source_file="latest_EFECTIVO.csv",
+        source_sbo="SBO_RAFAEL",
     )
 
     return {"iva": iva_summary, "efectivo": efectivo_summary}
@@ -1578,7 +1593,11 @@ def run_sap_import(
     confirm_rebuild: int = 0,
     allow_rebuild: bool = False,
     source_db_override: str | None = None,
+    source_file: str | None = None,
+    source_sbo: str | None = None,
 ):
+    source_file_value = (source_file or file_name or "").strip() or None
+    source_sbo_value = (source_sbo or "").strip() or None
     file_hash = sha256(file_bytes).hexdigest()
 
     existing_run = db.importRuns.find_one({"sha256": file_hash})
@@ -1607,6 +1626,8 @@ def run_sap_import(
     import_run_doc = {
         "sha256": file_hash,
         "fileName": file_name,
+        "sourceFile": source_file_value,
+        "sourceSbo": source_sbo_value,
         "source": source,
         "projectId": project_id,
         "rowsTotal": 0,
