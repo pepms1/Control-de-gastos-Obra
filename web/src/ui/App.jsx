@@ -704,6 +704,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
   const [newVendorName, setNewVendorName] = useState('');
   const [description, setDescription] = useState('');
   const [reference, setReference] = useState('');
+  const [sourceDb, setSourceDb] = useState('EFECTIVO');
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
@@ -742,6 +743,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
         vendor_id: kind === 'EXPENSE' ? finalVendorId : null,
         description,
         reference,
+        sourceDb,
       });
       onDone(kind === 'EXPENSE' ? 'Egreso guardado' : 'Ingreso guardado');
     } catch (e) {
@@ -807,6 +809,13 @@ function TxnForm({ kind, cats, vendors, onDone }) {
           <label>Referencia</label>
           <input value={reference} onChange={(e) => setReference(e.target.value)} placeholder="Factura/nota (opcional)" />
         </div>
+        <div>
+          <label>Base</label>
+          <select value={sourceDb} onChange={(e) => setSourceDb(e.target.value)}>
+            <option value="IVA">IVA</option>
+            <option value="EFECTIVO">EFECTIVO</option>
+          </select>
+        </div>
 
         {err && <div style={{ gridColumn: '1/-1', color: '#334155' }}>{err}</div>}
 
@@ -858,6 +867,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   const [filter, setFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
   const [supplierFilter, setSupplierFilter] = useState('ALL');
+  const [sourceDbFilter, setSourceDbFilter] = useState('ALL');
   const [searchFilter, setSearchFilter] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -884,6 +894,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
         type: filter === 'ALL' ? '' : filter,
         category_id: categoryFilter === 'ALL' ? '' : categoryFilter,
         supplierId: supplierFilter === 'ALL' ? '' : supplierFilter,
+        sourceDb: sourceDbFilter === 'ALL' ? '' : sourceDbFilter,
         q: searchFilter.trim(),
         from: dateFrom,
         to: dateTo,
@@ -904,7 +915,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     setPage(1);
     setRows([]);
     load(1);
-  }, [filter, categoryFilter, supplierFilter, searchFilter, dateFrom, dateTo]);
+  }, [filter, categoryFilter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo]);
 
   useEffect(() => {
     api.suppliers()
@@ -1084,6 +1095,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
               <option key={id} value={id}>{name}</option>
             ))}
           </select>
+          <select value={sourceDbFilter} onChange={(e) => { setPage(1); setSourceDbFilter(e.target.value); }}>
+            <option value="ALL">Todas las bases</option>
+            <option value="IVA">Base IVA</option>
+            <option value="EFECTIVO">Base EFECTIVO</option>
+          </select>
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
             <option value="date_desc">Fecha (más reciente)</option>
             <option value="supplier_asc">Proveedor (A-Z)</option>
@@ -1134,6 +1150,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                 <th>Fecha</th>
                 <th>Tipo</th>
                 <th>Origen</th>
+                <th>Base</th>
                 <th>Descripción</th>
                 <th>Categoría</th>
                 <th>Proveedor</th>
@@ -1147,7 +1164,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             <tbody>
               {isAdmin && (
                 <tr>
-                  <td colSpan={isAdmin ? 11 : 9} style={{ textAlign: 'right' }}>
+                  <td colSpan={isAdmin ? 12 : 10} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (página actual)
@@ -1160,6 +1177,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
                   <td>{r.date}</td>
                   <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
                   <td>{r.source === 'sap' ? <span className="badge">SAP</span> : ''}</td>
+                  <td>{r.sourceDb ? <span className="badge">{String(r.sourceDb).toUpperCase()}</span> : '—'}</td>
                   <td>{r.description || r.concept || ''}</td>
                   <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
@@ -1201,13 +1219,12 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={6} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (dataset filtrado):</td>
+                <td colSpan={7} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (dataset filtrado):</td>
                 <td style={{ fontWeight: 800 }}>
                   ${formatMoney(backendTotals.incomeGross)} / ${formatMoney(backendTotals.expensesGross)}
                 </td>
                 <td style={{ fontWeight: 700 }}>—</td>
                 <td style={{ fontWeight: 700 }}>—</td>
-                <td style={{ fontWeight: 800 }}>—</td>
                 {isAdmin && <td style={{ fontWeight: 700 }}>Neto: ${formatMoney(backendTotals.net)}</td>}
                 {isAdmin && <td />}
               </tr>
