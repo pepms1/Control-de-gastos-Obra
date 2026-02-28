@@ -318,6 +318,15 @@ def normalize_sap_fields(sap_payload: dict | None, fallback_amount=None) -> dict
     }
 
 
+def normalize_source_file_key(source_file: str | None, file_name: str | None = None) -> str:
+    source_file_value = (source_file or file_name or "").strip()
+    return source_file_value
+
+
+def normalize_source_db_value(source_db: str | None) -> str:
+    return (source_db or "").strip().upper()
+
+
 def ensure_indexes():
     db.users.create_index("username", unique=True)
     db.suppliers.create_index("cardCode", unique=True)
@@ -552,83 +561,95 @@ def run_sap_manual_migration_and_dedupe():
     return result
 
 
-def dedupe_sap_transactions() -> dict:
-    duplicates = list(
-        db.transactions.aggregate(
-            [
-                {"$match": {"source": "sap", "sap": {"$exists": True}}},
-                {
-                    "$addFields": {
-                        "_dedupeSourceDb": {"$ifNull": ["$sourceDb", ""]},
-                        "_dedupePagoNum": {"$toString": {"$ifNull": ["$sap.pagoNum", ""]}},
-                        "_dedupeFacturaNum": {"$toString": {"$ifNull": ["$sap.facturaNum", ""]}},
-                        "_dedupeMontoCents": {
-                            "$round": [
-                                {
-                                    "$multiply": [
-                                        {
-                                            "$convert": {
-                                                "input": "$sap.montoAplicado",
-                                                "to": "double",
-                                                "onError": 0,
-                                                "onNull": 0,
-                                            }
-                                        },
-                                        100,
-                                    ]
-                                },
-                                0,
-                            ]
-                        },
-                    }
-                },
-                {
-                    "$group": {
-                        "_id": {
-                            "projectId": "$projectId",
-                            "sourceDb": "$_dedupeSourceDb",
-                            "pagoNum": "$_dedupePagoNum",
-                            "facturaNum": "$_dedupeFacturaNum",
-                            "montoCents": "$_dedupeMontoCents",
-                        },
-                        "ids": {"$push": "$_id"},
-                        "count": {"$sum": 1},
-                    }
-                },
-                {"$match": {"count": {"$gt": 1}}},
-            ]
-        )
-    )
-    if not duplicates:
-        return {"groupsCount": 0, "deletedCount": 0}
+def dedupe_sap_transactions(project_id: str | None = None, dry_run: bool = True) -> dict:
+    query = {"source": "sap", "sap": {"$exists": True}}
+    if project_id:
+        query["projectId"] = project_id
 
+    projection = {
+        "projectId": 1,
+        "sourceDb": 1,
+        "sap": 1,
+        "amount": 1,
+        "categoryId": 1,
+        "category_id": 1,
+    }
+
+    grouped = {}
+    for tx in db.transactions.find(query, projection):
+        normalized_sap = normalize_sap_fields(tx.get("sap"), fallback_amount=tx.get("amount"))
+        group_key = (
+            str(tx.get("projectId") or "").strip(),
+            normalize_source_db_value(tx.get("sourceDb")),
+            normalized_sap["pagoNum"],
+            normalized_sap["facturaNum"],
+            normalized_sap["montoAplicadoCents"],
+        )
+        grouped.setdefault(group_key, []).append(tx)
+
+    groups_found = 0
+    docs_deleted = 0
+    categories_copied = 0
+
+    updates = []
     ids_to_delete = []
-    for duplicate_group in duplicates:
-        ids = duplicate_group.get("ids") or []
-        if len(ids) <= 1:
-            continue
 
-        docs = list(
-            db.transactions.find(
-                {"_id": {"$in": ids}},
-                {"categoryId": 1, "category_id": 1},
-            ).sort("_id", -1)
+    for docs in grouped.values():
+        if len(docs) <= 1:
+            continue
+        groups_found += 1
+
+        winner_candidates = sorted(
+            docs,
+            key=lambda doc: (
+                1 if _has_category(doc) else 0,
+                str(doc.get("_id") or ""),
+            ),
+            reverse=True,
         )
-        if not docs:
-            continue
+        winner = winner_candidates[0]
 
-        docs_with_category = [
-            doc for doc in docs if str(doc.get("categoryId") or doc.get("category_id") or "").strip()
-        ]
-        keep_doc = docs_with_category[0] if docs_with_category else docs[0]
+        if not _has_category(winner):
+            source_category = None
+            for candidate in winner_candidates[1:]:
+                if str(candidate.get("categoryId") or "").strip():
+                    source_category = {
+                        "categoryId": candidate.get("categoryId"),
+                        "category_id": candidate.get("categoryId"),
+                    }
+                    break
+                if str(candidate.get("category_id") or "").strip():
+                    source_category = {
+                        "categoryId": candidate.get("category_id"),
+                        "category_id": candidate.get("category_id"),
+                    }
+                    break
 
-        ids_to_delete.extend([doc["_id"] for doc in docs if doc["_id"] != keep_doc["_id"]])
+            if source_category:
+                categories_copied += 1
+                updates.append(UpdateOne({"_id": winner["_id"]}, {"$set": source_category}))
 
-    deleted_count = 0
-    if ids_to_delete:
-        deleted_count = db.transactions.delete_many({"_id": {"$in": ids_to_delete}}).deleted_count
+        for candidate in docs:
+            if candidate["_id"] == winner["_id"]:
+                continue
+            ids_to_delete.append(candidate["_id"])
 
-    return {"groupsCount": len(duplicates), "deletedCount": deleted_count}
+    docs_deleted = len(ids_to_delete)
+
+    if not dry_run:
+        if updates:
+            db.transactions.bulk_write(updates, ordered=False)
+        if ids_to_delete:
+            db.transactions.delete_many({"_id": {"$in": ids_to_delete}})
+
+    return {
+        "mode": "bySapKey",
+        "projectId": project_id,
+        "dryRun": dry_run,
+        "groupsFound": groups_found,
+        "docsDeleted": docs_deleted,
+        "categoriesCopied": categories_copied,
+    }
 
 
 def _has_category(tx: dict) -> bool:
@@ -1746,18 +1767,33 @@ def run_sap_import(
     source_file: str | None = None,
     source_sbo: str | None = None,
 ):
-    source_file_value = (source_file or file_name or "").strip() or None
+    project_id = get_or_create_project_id(project)
+    source_file_key = normalize_source_file_key(source_file=source_file, file_name=file_name)
+    source_file_value = source_file_key or None
     source_sbo_value = (source_sbo or "").strip() or None
+    source_db_value = normalize_source_db_value(source_db_override)
     file_hash = sha256(file_bytes).hexdigest()
 
     existing_run = db.importRuns.find_one({"sha256": file_hash})
     existing_ok_run = existing_run and existing_run.get("status") == "ok"
 
-    if existing_ok_run and force != 1:
-        return {"already_imported": True, "importRunId": str(existing_run["_id"])}
+    existing_source_key_run = None
+    is_automated_import_source = source in {"sap-latest", "sap-latest-admin", "sap-latest-cron", "sap-payments-cron"}
+    if is_automated_import_source and source_file_value and source_db_value:
+        existing_source_key_run = db.importRuns.find_one(
+            {
+                "projectId": project_id,
+                "sourceDb": source_db_value,
+                "sourceFile": source_file_value,
+                "status": "ok",
+            }
+        )
+
+    if (existing_ok_run or existing_source_key_run) and force != 1:
+        run_doc = existing_source_key_run or existing_run
+        return {"already_imported": True, "importRunId": str(run_doc["_id"])}
 
     now = datetime.now(timezone.utc).isoformat()
-    project_id = get_or_create_project_id(project)
     import_mode = (mode or "upsert").strip().lower()
 
     if import_mode not in ("upsert", "rebuild"):
@@ -1778,6 +1814,8 @@ def run_sap_import(
         "fileName": file_name,
         "sourceFile": source_file_value,
         "sourceSbo": source_sbo_value,
+        "sourceDb": source_db_value,
+        "importKey": f"{source_db_value}:{source_file_value or file_name}",
         "source": source,
         "projectId": project_id,
         "rowsTotal": 0,
@@ -1790,11 +1828,21 @@ def run_sap_import(
         "errorsSample": [],
     }
 
-    should_reuse_existing_run = existing_run and (force == 1 or not existing_ok_run or (existing_run.get("rowsOk") or 0) == 0)
+    reusable_run = existing_run
+    if existing_source_key_run and (
+        force == 1
+        or existing_source_key_run.get("status") != "ok"
+        or (existing_source_key_run.get("rowsOk") or 0) == 0
+    ):
+        reusable_run = existing_source_key_run
+
+    should_reuse_existing_run = reusable_run and (
+        force == 1 or reusable_run.get("status") != "ok" or (reusable_run.get("rowsOk") or 0) == 0
+    )
 
     if should_reuse_existing_run:
-        db.importRuns.update_one({"_id": existing_run["_id"]}, {"$set": import_run_doc})
-        import_run_id = existing_run["_id"]
+        db.importRuns.update_one({"_id": reusable_run["_id"]}, {"$set": import_run_doc})
+        import_run_id = reusable_run["_id"]
     else:
         import_run_id = db.importRuns.insert_one(import_run_doc).inserted_id
 
@@ -2021,6 +2069,8 @@ def run_sap_import(
                 "vendor_id": None,
                 "source": "sap",
                 "sourceDb": record["sourceDb"],
+                "sourceFile": source_file_value,
+                "importRunId": str(import_run_id),
                 "tax": record["tax"],
                 "sap": {
                     "pagoNum": str(record["paymentNum"]).strip(),
@@ -2039,6 +2089,8 @@ def run_sap_import(
                             "categoryId": inferred_category_id,
                             "category_id": inferred_category_id,
                             "created_at": datetime.now(timezone.utc).isoformat(),
+                            "sourceFile": source_file_value,
+                            "importRunId": str(import_run_id),
                         },
                     },
                     upsert=True,
@@ -2412,7 +2464,20 @@ def backfill_supplier_name(_: dict = Depends(require_admin)):
 
 @app.post("/api/admin/dedupe/sap-transactions")
 def dedupe_sap_transactions_endpoint(_: dict = Depends(require_admin)):
-    return dedupe_sap_transactions()
+    return dedupe_sap_transactions(dry_run=False)
+
+
+@app.post("/api/admin/sap/dedupe")
+def admin_dedupe_sap_transactions(
+    projectId: str = Query(..., min_length=1),
+    mode: str = "bySapKey",
+    dryRun: bool = True,
+    _: dict = Depends(require_admin),
+):
+    normalized_mode = (mode or "").strip()
+    if normalized_mode != "bySapKey":
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'bySapKey'.")
+    return dedupe_sap_transactions(project_id=projectId, dry_run=dryRun)
 
 
 @app.post("/api/admin/sap/cleanup-iva-duplicates")
