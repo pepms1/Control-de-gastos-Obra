@@ -588,6 +588,110 @@ def dedupe_sap_transactions() -> dict:
     return {"groupsCount": len(duplicates), "deletedCount": deleted_count}
 
 
+def _has_category(tx: dict) -> bool:
+    return bool(str(tx.get("categoryId") or tx.get("category_id") or "").strip())
+
+
+def _build_iva_duplicate_key(tx: dict):
+    amount_value = round(float(tx.get("amount") or 0), 2)
+    return (
+        str(tx.get("projectId") or "").strip(),
+        str(tx.get("date") or "").strip(),
+        amount_value,
+        str(tx.get("supplierCardCode") or "").strip(),
+        str(tx.get("concept") or "").strip(),
+    )
+
+
+def cleanup_sap_iva_duplicates(project_id: str, dry_run: bool = True):
+    projection = {
+        "projectId": 1,
+        "date": 1,
+        "amount": 1,
+        "supplierCardCode": 1,
+        "concept": 1,
+        "source": 1,
+        "sourceDb": 1,
+        "categoryId": 1,
+        "category_id": 1,
+    }
+    query = {
+        "projectId": project_id,
+        "source": "sap",
+        "sourceDb": {"$in": ["IVA", "EFECTIVO"]},
+    }
+
+    transactions = list(db.transactions.find(query, projection))
+    grouped = {}
+    for tx in transactions:
+        key = _build_iva_duplicate_key(tx)
+        grouped.setdefault(key, {"IVA": [], "EFECTIVO": []})
+        source_db = str(tx.get("sourceDb") or "").strip().upper()
+        if source_db in grouped[key]:
+            grouped[key][source_db].append(tx)
+
+    pair_examples = []
+    iva_ids_to_delete = []
+    updates_to_apply = []
+    categories_copied = 0
+    pairs_found = 0
+
+    for key, buckets in grouped.items():
+        iva_docs = sorted(buckets["IVA"], key=lambda doc: str(doc.get("_id")))
+        efectivo_docs = sorted(buckets["EFECTIVO"], key=lambda doc: str(doc.get("_id")))
+        if not iva_docs or not efectivo_docs:
+            continue
+
+        pair_count = min(len(iva_docs), len(efectivo_docs))
+        pairs_found += pair_count
+
+        for idx in range(pair_count):
+            iva_doc = iva_docs[idx]
+            efectivo_doc = efectivo_docs[idx]
+            iva_ids_to_delete.append(iva_doc["_id"])
+
+            should_copy_category = _has_category(iva_doc) and not _has_category(efectivo_doc)
+            if should_copy_category:
+                category_update = {}
+                if str(iva_doc.get("categoryId") or "").strip():
+                    category_update["categoryId"] = iva_doc.get("categoryId")
+                if str(iva_doc.get("category_id") or "").strip():
+                    category_update["category_id"] = iva_doc.get("category_id")
+
+                if category_update:
+                    categories_copied += 1
+                    updates_to_apply.append(UpdateOne({"_id": efectivo_doc["_id"]}, {"$set": category_update}))
+
+            if len(pair_examples) < 20:
+                pair_examples.append(
+                    {
+                        "ivaId": str(iva_doc["_id"]),
+                        "efectivoId": str(efectivo_doc["_id"]),
+                        "projectId": key[0],
+                        "date": key[1],
+                        "amount": key[2],
+                        "supplierCardCode": key[3],
+                        "concept": key[4],
+                        "categoryCopied": should_copy_category,
+                    }
+                )
+
+    if not dry_run:
+        if updates_to_apply:
+            db.transactions.bulk_write(updates_to_apply, ordered=False)
+        if iva_ids_to_delete:
+            db.transactions.delete_many({"_id": {"$in": iva_ids_to_delete}})
+
+    return {
+        "pairsFound": pairs_found,
+        "ivaDeleted": 0 if dry_run else len(iva_ids_to_delete),
+        "categoriesCopied": categories_copied,
+        "examples": pair_examples,
+        "dryRun": dry_run,
+        "projectId": project_id,
+    }
+
+
 def drop_legacy_sap_unique_index():
     legacy_index_name = "projectId_1_sap.pagoNum_1_sap.facturaNum_1_sap.montoAplicado_1"
     current_indexes = {idx.get("name"): idx for idx in db.transactions.list_indexes()}
@@ -2263,6 +2367,15 @@ def backfill_supplier_name(_: dict = Depends(require_admin)):
 @app.post("/api/admin/dedupe/sap-transactions")
 def dedupe_sap_transactions_endpoint(_: dict = Depends(require_admin)):
     return dedupe_sap_transactions()
+
+
+@app.post("/api/admin/sap/cleanup-iva-duplicates")
+def admin_cleanup_sap_iva_duplicates(
+    projectId: str = Query(..., min_length=1),
+    dryRun: bool = True,
+    _: dict = Depends(require_admin),
+):
+    return cleanup_sap_iva_duplicates(project_id=projectId, dry_run=dryRun)
 
 
 # ---------- seed categories ----------
