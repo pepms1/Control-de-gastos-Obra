@@ -475,6 +475,26 @@ def tg_answer_callback_query(callback_query_id: str, text: str | None = None) ->
         return False
 
 
+def tg_edit_message(chat_id: int | str, message_id: int | str, text: str, reply_markup: dict | None = None) -> bool:
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        logger.info("Telegram edit skipped: TELEGRAM_BOT_TOKEN is not configured")
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/editMessageText"
+    body = {"chat_id": chat_id, "message_id": message_id, "text": text}
+    if reply_markup:
+        body["reply_markup"] = reply_markup
+    payload = json.dumps(body).encode("utf-8")
+    req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=15) as response:
+            return response.status < 400
+    except Exception:
+        logger.exception("Telegram editMessageText failed chat_id=%s message_id=%s", chat_id, message_id)
+        return False
+
+
 def get_telegram_admin_chat_id() -> str:
     return (os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "13875693").strip()
 
@@ -622,6 +642,277 @@ def _telegram_handle_access_callback(callback_query: dict) -> dict:
     return {"ok": True, "result": "rejected", "chat_id": target_chat_id}
 
 
+def _telegram_current_month_token() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _telegram_month_bounds(month_token: str) -> tuple[str, str] | None:
+    if not re.fullmatch(r"\d{4}-\d{2}", month_token or ""):
+        return None
+    year, month = month_token.split("-", 1)
+    month_int = int(month)
+    if month_int < 1 or month_int > 12:
+        return None
+    start_date = f"{year}-{month_int:02d}-01"
+    next_year = int(year) + (1 if month_int == 12 else 0)
+    next_month = 1 if month_int == 12 else month_int + 1
+    end_date = f"{next_year:04d}-{next_month:02d}-01"
+    return start_date, end_date
+
+
+def _telegram_recent_months(limit: int = 12) -> list[str]:
+    now = datetime.now(timezone.utc)
+    year = now.year
+    month = now.month
+    values = []
+    for _ in range(limit):
+        values.append(f"{year:04d}-{month:02d}")
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    return values
+
+
+def _telegram_state_collection():
+    return db.telegram_state
+
+
+def _telegram_get_state(chat_id: int | str) -> dict | None:
+    return _telegram_state_collection().find_one({"chat_id": _telegram_normalize_chat_id(chat_id)})
+
+
+def _telegram_save_state(chat_id: int | str, payload: dict) -> None:
+    normalized_chat_id = _telegram_normalize_chat_id(chat_id)
+    data = {
+        "chat_id": normalized_chat_id,
+        "mode": payload.get("mode"),
+        "supplierId": payload.get("supplierId"),
+        "categoryId": payload.get("categoryId"),
+        "month": payload.get("month") or _telegram_current_month_token(),
+        "page": _telegram_parse_page(str(payload.get("page") or 1)),
+        "limit": _telegram_parse_limit(str(payload.get("limit") or 25), default=25, maximum=50),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _telegram_state_collection().update_one({"chat_id": normalized_chat_id}, {"$set": data}, upsert=True)
+
+
+def _telegram_clear_state(chat_id: int | str) -> None:
+    _telegram_state_collection().delete_one({"chat_id": _telegram_normalize_chat_id(chat_id)})
+
+
+def _telegram_search_suppliers_keyboard(raw_text: str) -> tuple[str, dict | None]:
+    args = _telegram_parse_command_args(raw_text)
+    text = " ".join(args[1:]).strip() if len(args) > 1 else ""
+    if not text:
+        return "Uso: /prov <texto>", None
+
+    escaped = re.escape(text)
+    rows = list(
+        db.suppliers.find(
+            {"$or": [{"name": {"$regex": escaped, "$options": "i"}}, {"cardCode": {"$regex": escaped, "$options": "i"}}]},
+            {"name": 1, "cardCode": 1},
+        )
+        .sort([("name", 1), ("_id", 1)])
+        .limit(8)
+    )
+    if not rows:
+        return "Sin resultados de proveedores.", None
+
+    keyboard_rows = []
+    for row in rows:
+        supplier_id = str(row.get("_id"))
+        supplier_name = (row.get("name") or "(sin nombre)").strip()
+        card_code = (row.get("cardCode") or "-").strip()
+        keyboard_rows.append([{"text": f"{supplier_name} ({card_code})", "callback_data": f"provSel:{supplier_id}"}])
+    return "Selecciona un proveedor:", {"inline_keyboard": keyboard_rows}
+
+
+def _telegram_search_categories_keyboard(raw_text: str) -> tuple[str, dict | None]:
+    args = _telegram_parse_command_args(raw_text)
+    text = " ".join(args[1:]).strip() if len(args) > 1 else ""
+    if not text:
+        return "Uso: /cat <texto>", None
+
+    escaped = re.escape(text)
+    rows = list(db.categories.find({"name": {"$regex": escaped, "$options": "i"}}, {"name": 1}).sort([("name", 1)]).limit(8))
+    if not rows:
+        return "Sin resultados de categorías.", None
+
+    keyboard_rows = []
+    for row in rows:
+        category_id = str(row.get("_id"))
+        name = (row.get("name") or "(sin nombre)").strip()
+        keyboard_rows.append([{"text": name, "callback_data": f"catSel:{category_id}"}])
+    return "Selecciona una categoría:", {"inline_keyboard": keyboard_rows}
+
+
+def _telegram_build_transaction_message(state: dict) -> tuple[str, dict]:
+    mode = str(state.get("mode") or "").strip()
+    month_token = str(state.get("month") or _telegram_current_month_token())
+    page = _telegram_parse_page(str(state.get("page") or 1))
+    limit = _telegram_parse_limit(str(state.get("limit") or 25), default=25, maximum=50)
+    bounds = _telegram_month_bounds(month_token)
+    if not bounds:
+        month_token = _telegram_current_month_token()
+        bounds = _telegram_month_bounds(month_token)
+    start_date, end_date = bounds if bounds else ("1900-01-01", "2999-12-31")
+    project_id = _resolve_default_project_id() or "699f9b894678d62c8d69f86d"
+
+    query: dict = {"projectId": project_id, "date": {"$gte": start_date, "$lt": end_date}}
+    title = ""
+    if mode == "prov":
+        supplier_id = str(state.get("supplierId") or "").strip()
+        query["$or"] = [{"supplierId": supplier_id}, {"supplier_id": supplier_id}]
+        supplier = db.suppliers.find_one({"_id": ObjectId(supplier_id)}) if ObjectId.is_valid(supplier_id) else None
+        supplier_name = (supplier or {}).get("name") or "Proveedor"
+        title = f"Proveedor: {supplier_name}"
+    elif mode == "cat":
+        category_id = str(state.get("categoryId") or "").strip()
+        query["$or"] = [{"categoryId": category_id}, {"category_id": category_id}]
+        category = db.categories.find_one({"_id": ObjectId(category_id)}) if ObjectId.is_valid(category_id) else None
+        category_name = (category or {}).get("name") or "Categoría"
+        title = f"Categoría: {category_name}"
+
+    skip = (page - 1) * limit
+    projection = {"date": 1, "amount": 1, "tax": 1, "concept": 1, "description": 1, "supplierName": 1, "sourceDb": 1}
+    rows = list(db.transactions.find(query, projection).sort([("date", -1), ("_id", -1)]).skip(skip).limit(limit))
+
+    lines = [title, f"Periodo: {month_token}", ""]
+    if not rows:
+        lines.append("Sin movimientos para el período seleccionado.")
+    else:
+        for tx in rows:
+            source_db = str(tx.get("sourceDb") or "").strip().upper()
+            amount = float(tx.get("amount") or 0)
+            tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else {}
+            subtotal = float(tax.get("subtotal") or 0)
+            shown_amount = subtotal if source_db == "IVA" else amount
+            date_value = str(tx.get("date") or "?")[:10]
+            concept = str(tx.get("concept") or tx.get("description") or "(sin concepto)")
+            lines.append(f"{date_value} | {_telegram_format_currency(shown_amount)} | {concept}")
+    lines.extend(["", f"Página {page} · límite {limit}"])
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = f"{text[:3940].rstrip()}\n\nTexto truncado, usa Next."
+
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "⬅️ Prev", "callback_data": "nav:prev"}, {"text": "➡️ Next", "callback_data": "nav:next"}],
+            [{"text": "📅 Mes", "callback_data": "monthPicker"}, {"text": "🧾 Total", "callback_data": "total"}, {"text": "❌ Cerrar", "callback_data": "close"}],
+        ]
+    }
+    return text, keyboard
+
+
+def _telegram_build_month_picker() -> dict:
+    rows = []
+    for month_token in _telegram_recent_months(12):
+        rows.append([{"text": month_token, "callback_data": f"setMonth:{month_token}"}])
+    rows.append([{"text": "❌ Cerrar", "callback_data": "close"}])
+    return {"inline_keyboard": rows}
+
+
+def _telegram_compute_total_for_state(state: dict) -> float:
+    mode = str(state.get("mode") or "").strip()
+    month_token = str(state.get("month") or _telegram_current_month_token())
+    bounds = _telegram_month_bounds(month_token)
+    if not bounds:
+        return 0.0
+    start_date, end_date = bounds
+    project_id = _resolve_default_project_id() or "699f9b894678d62c8d69f86d"
+    query: dict = {"projectId": project_id, "date": {"$gte": start_date, "$lt": end_date}}
+    if mode == "prov":
+        supplier_id = str(state.get("supplierId") or "").strip()
+        query["$or"] = [{"supplierId": supplier_id}, {"supplier_id": supplier_id}]
+    else:
+        category_id = str(state.get("categoryId") or "").strip()
+        query["$or"] = [{"categoryId": category_id}, {"category_id": category_id}]
+
+    total = 0.0
+    for tx in db.transactions.find(query, {"amount": 1, "tax": 1, "sourceDb": 1}):
+        source_db = str(tx.get("sourceDb") or "").strip().upper()
+        amount = float(tx.get("amount") or 0)
+        tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else {}
+        subtotal = float(tax.get("subtotal") or 0)
+        total += subtotal if source_db == "IVA" else amount
+    return total
+
+
+def _telegram_handle_callback(callback_query: dict) -> dict:
+    callback_query_id = str(callback_query.get("id") or "")
+    data = str(callback_query.get("data") or "").strip()
+    message = callback_query.get("message") if isinstance(callback_query.get("message"), dict) else {}
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    chat_id = chat.get("id")
+    message_id = message.get("message_id")
+
+    if data.startswith("approve:") or data.startswith("reject:"):
+        return _telegram_handle_access_callback(callback_query)
+
+    if not _telegram_is_chat_approved(chat_id):
+        tg_answer_callback_query(callback_query_id, "No autorizado")
+        return {"ok": True, "ignored": "chat_id_not_approved"}
+
+    normalized_chat_id = _telegram_normalize_chat_id(chat_id)
+
+    if data.startswith("provSel:"):
+        supplier_id = data.split(":", 1)[1].strip()
+        state = {"mode": "prov", "supplierId": supplier_id, "categoryId": None, "month": _telegram_current_month_token(), "page": 1, "limit": 25}
+        _telegram_save_state(normalized_chat_id, state)
+        text, keyboard = _telegram_build_transaction_message(state)
+        tg_edit_message(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard)
+        tg_answer_callback_query(callback_query_id)
+        return {"ok": True}
+
+    if data.startswith("catSel:"):
+        category_id = data.split(":", 1)[1].strip()
+        state = {"mode": "cat", "supplierId": None, "categoryId": category_id, "month": _telegram_current_month_token(), "page": 1, "limit": 25}
+        _telegram_save_state(normalized_chat_id, state)
+        text, keyboard = _telegram_build_transaction_message(state)
+        tg_edit_message(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard)
+        tg_answer_callback_query(callback_query_id)
+        return {"ok": True}
+
+    state = _telegram_get_state(normalized_chat_id)
+    if not state:
+        tg_answer_callback_query(callback_query_id, "Expiró selección")
+        return {"ok": True, "ignored": "missing_state"}
+
+    if data == "nav:prev":
+        state["page"] = max(1, _telegram_parse_page(str(state.get("page") or 1)) - 1)
+    elif data == "nav:next":
+        state["page"] = _telegram_parse_page(str(state.get("page") or 1)) + 1
+    elif data == "monthPicker":
+        tg_edit_message(chat_id=chat_id, message_id=message_id, text="Selecciona mes:", reply_markup=_telegram_build_month_picker())
+        tg_answer_callback_query(callback_query_id)
+        return {"ok": True}
+    elif data.startswith("setMonth:"):
+        month_token = data.split(":", 1)[1].strip()
+        if _telegram_month_bounds(month_token):
+            state["month"] = month_token
+            state["page"] = 1
+    elif data == "total":
+        total = _telegram_compute_total_for_state(state)
+        tg_answer_callback_query(callback_query_id, f"Total período: {_telegram_format_currency(total)}")
+        return {"ok": True}
+    elif data == "close":
+        _telegram_clear_state(normalized_chat_id)
+        tg_edit_message(chat_id=chat_id, message_id=message_id, text="Consulta cerrada.")
+        tg_answer_callback_query(callback_query_id)
+        return {"ok": True}
+    else:
+        tg_answer_callback_query(callback_query_id, "Acción inválida")
+        return {"ok": True, "ignored": "invalid_callback_data"}
+
+    _telegram_save_state(normalized_chat_id, state)
+    text, keyboard = _telegram_build_transaction_message(state)
+    tg_edit_message(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard)
+    tg_answer_callback_query(callback_query_id)
+    return {"ok": True}
+
+
 def _resolve_default_project_id() -> str | None:
     default_project_id = (os.getenv("DEFAULT_PROJECT_ID") or "").strip()
     if default_project_id:
@@ -706,13 +997,13 @@ def _telegram_help_text() -> str:
         "/import_status - estado de última importación\n"
         "/count - contar transacciones del proyecto por defecto\n"
         "/sum YYYY-MM - sumar egresos del mes (sin IVA)\n"
-        "/prov <texto> [limit] [page] - buscar por proveedor\n"
-        "/cat <texto> [limit] - buscar categoría por nombre\n"
+        "/prov <texto> - buscar proveedor con botones\n"
+        "/cat <texto> - buscar categoría con botones\n"
         "/catid <categoryId> [limit] [page] - buscar por categoría\n"
         "/find <texto> [limit] [page] - buscar en concepto/descripción\n"
         "/chatid - mostrar y registrar este chat\n\n"
         "Ejemplos:\n"
-        "/sum 2025-01\n"
+        "/prov cementos\n"
         "/ping"
     )
 
@@ -983,6 +1274,8 @@ def ensure_indexes():
     db.settings.create_index("key", unique=True)
     db.telegram_users.create_index("chat_id", unique=True)
     db.telegram_users.create_index([("approved", 1), ("requested_at", -1)])
+    db.telegram_state.create_index("chat_id", unique=True)
+    db.telegram_state.create_index([("updated_at", -1)])
     try:
         backfill_sap_transactions_metadata()
     except Exception:
@@ -2412,7 +2705,7 @@ async def telegram_webhook(
 
     callback_query = update.get("callback_query") if isinstance(update, dict) else None
     if isinstance(callback_query, dict):
-        return _telegram_handle_access_callback(callback_query)
+        return _telegram_handle_callback(callback_query)
 
     message = update.get("message") if isinstance(update, dict) else None
     chat = message.get("chat") if isinstance(message, dict) else None
@@ -2459,11 +2752,13 @@ async def telegram_webhook(
         _, _, month_token = text.partition(" ")
         send_telegram_to_chat(_telegram_sum_expenses(month_token=month_token.strip(), include_iva=False), chat_id=chat_id)
     elif text.startswith("/prov"):
-        send_telegram_to_chat(_telegram_search_supplier(text), chat_id=chat_id)
+        response_text, keyboard = _telegram_search_suppliers_keyboard(text)
+        tg_send(chat_id=chat_id, text=response_text, reply_markup=keyboard)
     elif text.startswith("/catid"):
         send_telegram_to_chat(_telegram_search_category_id(text), chat_id=chat_id)
     elif text.startswith("/cat"):
-        send_telegram_to_chat(_telegram_search_category_name(text), chat_id=chat_id)
+        response_text, keyboard = _telegram_search_categories_keyboard(text)
+        tg_send(chat_id=chat_id, text=response_text, reply_markup=keyboard)
     elif text.startswith("/find"):
         send_telegram_to_chat(_telegram_search_find(text), chat_id=chat_id)
     elif text.startswith("/chatid"):
