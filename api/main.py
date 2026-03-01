@@ -411,6 +411,72 @@ def tg_send(chat_id: int | str, text: str) -> bool:
         return False
 
 
+def send_telegram(text: str) -> bool:
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+
+    if not chat_id:
+        default_chat_id = get_telegram_default_chat_id()
+        chat_id = str(default_chat_id) if default_chat_id is not None else ""
+
+    if not token or not chat_id:
+        logger.info("Telegram send skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured")
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+    req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+
+    try:
+        with urlopen(req, timeout=15) as response:
+            if response.status >= 400:
+                body = response.read().decode("utf-8")
+                logger.error("Telegram send failed for chat_id=%s body=%s", chat_id, body)
+                return False
+            logger.info("Telegram message sent to chat_id=%s status=%s", chat_id, response.status)
+            return True
+    except Exception as exc:
+        logger.exception("Telegram send failed for chat_id=%s: %s", chat_id, exc)
+        return False
+
+
+def _format_import_bucket(summary: dict | None) -> str:
+    bucket = summary if isinstance(summary, dict) else {}
+    return f"{bucket.get('already_imported', False)}/{bucket.get('rowsOk', 0)}/{bucket.get('duplicatesSkipped', 0)}"
+
+
+def _summarize_error(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        detail = exc.detail
+        if isinstance(detail, dict):
+            values = [str(detail.get(k) or "") for k in ("status", "error", "detail")]
+            message = " ".join(value for value in values if value).strip() or str(detail)
+        else:
+            message = str(detail)
+    else:
+        message = str(exc)
+    return (message or exc.__class__.__name__).replace("\n", " ").strip()[:300]
+
+
+def notify_sap_latest_import_success(project: str, result: dict):
+    message = (
+        f"✅ SAP import OK ({project})\n"
+        f"IVA: {_format_import_bucket(result.get('iva'))}\n"
+        f"EFECTIVO: {_format_import_bucket(result.get('efectivo'))}\n"
+        f"Fecha: {datetime.now(timezone.utc).isoformat()}"
+    )
+    send_telegram(message)
+
+
+def notify_sap_latest_import_failure(project: str, exc: Exception):
+    message = (
+        f"❌ SAP import FAIL ({project})\n"
+        f"Error: {_summarize_error(exc)}\n"
+        f"Fecha: {datetime.now(timezone.utc).isoformat()}"
+    )
+    send_telegram(message)
+
+
 def notify_import(summary: dict):
     chat_id = get_telegram_default_chat_id()
     if chat_id is None:
@@ -2350,7 +2416,13 @@ def admin_import_sap_latest(
     mode: str = "upsert",
     _: dict = Depends(require_admin),
 ):
-    return run_s3_latest_sap_import(project=project, force=force, mode=mode, source="sap-latest-admin")
+    try:
+        result = run_s3_latest_sap_import(project=project, force=force, mode=mode, source="sap-latest-admin")
+        notify_sap_latest_import_success(project=project, result=result)
+        return result
+    except Exception as exc:
+        notify_sap_latest_import_failure(project=project, exc=exc)
+        raise
 
 
 @app.post("/api/cron/import/sap-payments")
@@ -2414,9 +2486,11 @@ def cron_import_sap_latest(project: str = "CALDERON DE LA BARCA", force: int = 0
     now = datetime.now(timezone.utc).isoformat()
     try:
         result = run_s3_latest_sap_import(project=project, force=force, mode=mode, source="sap-latest-cron")
+        notify_sap_latest_import_success(project=project, result=result)
         print(f"sap_latest_cron ok iva={result['iva']} efectivo={result['efectivo']}")
         return result
     except Exception as exc:
+        notify_sap_latest_import_failure(project=project, exc=exc)
         error_hash = sha256(f"sap_latest_cron_error:{now}:{str(exc)}".encode("utf-8")).hexdigest()
         import_run_id = db.importRuns.insert_one(
             {
