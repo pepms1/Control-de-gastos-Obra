@@ -1399,21 +1399,10 @@ def _telegram_keyword_synonyms(keyword: str) -> tuple[str, list[str]]:
     return (fallback or "general", [fallback or "gasto"])
 
 
-def _telegram_default_month_range() -> tuple[str, str]:
-    today = date.today()
-    start = today.replace(day=1)
-    if start.month == 12:
-        end = start.replace(year=start.year + 1, month=1)
-    else:
-        end = start.replace(month=start.month + 1)
-    return start.isoformat(), end.isoformat()
-
-
 def _telegram_ask_transactions(text: str) -> str:
     action = _telegram_classify_ask_action(text)
     raw_keyword = _telegram_detect_ask_keyword(text)
     keyword, synonyms = _telegram_keyword_synonyms(raw_keyword)
-    start_date, end_date = _telegram_default_month_range()
     project_id = _resolve_default_project_id()
     if not project_id:
         return "No encontré el proyecto por defecto"
@@ -1434,7 +1423,6 @@ def _telegram_ask_transactions(text: str) -> str:
     base_match = {
         "projectId": project_id,
         "type": "EXPENSE",
-        "date": {"$gte": start_date, "$lt": end_date},
     }
 
     search_or: list[dict] = [
@@ -1463,8 +1451,8 @@ def _telegram_ask_transactions(text: str) -> str:
         ]
         rows = list(db.transactions.aggregate(pipeline))
         if not rows:
-            return f"Sin resultados para '{keyword}' en {start_date[:7]}"
-        lines = [f"Top proveedores '{keyword}' ({start_date[:7]}):"]
+            return f"Sin resultados para '{keyword}'"
+        lines = [f"Top proveedores '{keyword}' (global):"]
         grand_total = 0.0
         for idx, row in enumerate(rows, start=1):
             total = round(float(row.get("total") or 0), 2)
@@ -1484,9 +1472,9 @@ def _telegram_ask_transactions(text: str) -> str:
     )
 
     if not rows:
-        return f"Sin resultados para '{keyword}' en {start_date[:7]}"
+        return f"Sin resultados para '{keyword}'"
 
-    header = f"Consulta '{keyword}' ({action}) | rango {start_date} a {end_date}"
+    header = f"Consulta '{keyword}' ({action}) | rango global"
     body = _telegram_build_transactions_list(rows, limit_used=25, page=1)
     return f"{header}\n\n{body}"
 
