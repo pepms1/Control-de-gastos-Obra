@@ -704,18 +704,12 @@ def _telegram_clear_state(chat_id: int | str) -> None:
 def _telegram_search_suppliers_keyboard(raw_text: str) -> tuple[str, dict | None]:
     args = _telegram_parse_command_args(raw_text)
     text = " ".join(args[1:]).strip() if len(args) > 1 else ""
-    if not text:
-        return "Uso: /prov <texto>", None
+    query: dict = {}
+    if text:
+        escaped = re.escape(text)
+        query = {"$or": [{"name": {"$regex": escaped, "$options": "i"}}, {"cardCode": {"$regex": escaped, "$options": "i"}}]}
 
-    escaped = re.escape(text)
-    rows = list(
-        db.suppliers.find(
-            {"$or": [{"name": {"$regex": escaped, "$options": "i"}}, {"cardCode": {"$regex": escaped, "$options": "i"}}]},
-            {"name": 1, "cardCode": 1},
-        )
-        .sort([("name", 1), ("_id", 1)])
-        .limit(8)
-    )
+    rows = list(db.suppliers.find(query, {"name": 1, "cardCode": 1}).sort([("name", 1), ("_id", 1)]).limit(25))
     if not rows:
         return "Sin resultados de proveedores.", None
 
@@ -725,17 +719,19 @@ def _telegram_search_suppliers_keyboard(raw_text: str) -> tuple[str, dict | None
         supplier_name = (row.get("name") or "(sin nombre)").strip()
         card_code = (row.get("cardCode") or "-").strip()
         keyboard_rows.append([{"text": f"{supplier_name} ({card_code})", "callback_data": f"provSel:{supplier_id}"}])
-    return "Selecciona un proveedor:", {"inline_keyboard": keyboard_rows}
+    title = "Selecciona un proveedor:" if text else "Proveedores disponibles:"
+    return title, {"inline_keyboard": keyboard_rows}
 
 
 def _telegram_search_categories_keyboard(raw_text: str) -> tuple[str, dict | None]:
     args = _telegram_parse_command_args(raw_text)
     text = " ".join(args[1:]).strip() if len(args) > 1 else ""
-    if not text:
-        return "Uso: /cat <texto>", None
+    query: dict = {}
+    if text:
+        escaped = re.escape(text)
+        query = {"name": {"$regex": escaped, "$options": "i"}}
 
-    escaped = re.escape(text)
-    rows = list(db.categories.find({"name": {"$regex": escaped, "$options": "i"}}, {"name": 1}).sort([("name", 1)]).limit(8))
+    rows = list(db.categories.find(query, {"name": 1}).sort([("name", 1), ("_id", 1)]).limit(25))
     if not rows:
         return "Sin resultados de categorías.", None
 
@@ -744,7 +740,8 @@ def _telegram_search_categories_keyboard(raw_text: str) -> tuple[str, dict | Non
         category_id = str(row.get("_id"))
         name = (row.get("name") or "(sin nombre)").strip()
         keyboard_rows.append([{"text": name, "callback_data": f"catSel:{category_id}"}])
-    return "Selecciona una categoría:", {"inline_keyboard": keyboard_rows}
+    title = "Selecciona una categoría:" if text else "Categorías disponibles:"
+    return title, {"inline_keyboard": keyboard_rows}
 
 
 def _telegram_build_transaction_message(state: dict) -> tuple[str, dict]:
@@ -997,8 +994,8 @@ def _telegram_help_text() -> str:
         "/import_status - estado de última importación\n"
         "/count - contar transacciones del proyecto por defecto\n"
         "/sum YYYY-MM - sumar egresos del mes (sin IVA)\n"
-        "/prov <texto> - buscar proveedor con botones\n"
-        "/cat <texto> - buscar categoría con botones\n"
+        "/prov [texto] - listar o buscar proveedor con botones\n"
+        "/cat [texto] - listar o buscar categoría con botones\n"
         "/catid <categoryId> [limit] [page] - buscar por categoría\n"
         "/find <texto> [limit] [page] - buscar en concepto/descripción\n"
         "/chatid - mostrar y registrar este chat\n\n"
