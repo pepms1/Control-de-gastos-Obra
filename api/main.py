@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 TELEGRAM_SETTINGS_KEY = "telegram_default_chat_id"
+TELEGRAM_ACCESS_REQUEST_WINDOW_HOURS = 24
 
 
 # ---------- helpers ----------
@@ -392,14 +393,17 @@ def get_telegram_default_chat_id() -> int | None:
         return None
 
 
-def tg_send(chat_id: int | str, text: str) -> bool:
+def tg_send(chat_id: int | str, text: str, reply_markup: dict | None = None) -> bool:
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     if not token:
         logger.info("Telegram send skipped: TELEGRAM_BOT_TOKEN is not configured")
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+    body = {"chat_id": chat_id, "text": text}
+    if reply_markup:
+        body["reply_markup"] = reply_markup
+    payload = json.dumps(body).encode("utf-8")
     req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
 
     try:
@@ -449,6 +453,173 @@ def send_telegram_to_chat(text: str, chat_id: int | str | None = None) -> bool:
     except Exception as exc:
         logger.exception("Telegram send failed for chat_id=%s: %s", resolved_chat_id, exc)
         return False
+
+
+def tg_answer_callback_query(callback_query_id: str, text: str | None = None) -> bool:
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token or not callback_query_id:
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/answerCallbackQuery"
+    body = {"callback_query_id": callback_query_id}
+    if text:
+        body["text"] = text
+        body["show_alert"] = False
+    payload = json.dumps(body).encode("utf-8")
+    req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=15) as response:
+            return response.status < 400
+    except Exception:
+        logger.exception("Telegram answerCallbackQuery failed callback_query_id=%s", callback_query_id)
+        return False
+
+
+def get_telegram_admin_chat_id() -> str:
+    return (os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "13875693").strip()
+
+
+def _telegram_normalize_chat_id(chat_id: int | str | None) -> str:
+    return str(chat_id).strip() if chat_id is not None else ""
+
+
+def _telegram_extract_user_data(from_user: dict | None) -> tuple[str | None, str | None, str | None]:
+    if not isinstance(from_user, dict):
+        return None, None, None
+    username = (from_user.get("username") or "").strip() or None
+    first_name = (from_user.get("first_name") or "").strip() or None
+    last_name = (from_user.get("last_name") or "").strip() or None
+    return username, first_name, last_name
+
+
+def _telegram_is_chat_approved(chat_id: int | str | None) -> bool:
+    normalized_chat_id = _telegram_normalize_chat_id(chat_id)
+    if not normalized_chat_id:
+        return False
+    if normalized_chat_id == get_telegram_admin_chat_id():
+        return True
+
+    user_doc = db.telegram_users.find_one({"chat_id": normalized_chat_id}, {"approved": 1})
+    return bool(user_doc and user_doc.get("approved") is True)
+
+
+def _telegram_has_recent_pending_request(chat_id: int | str | None) -> bool:
+    normalized_chat_id = _telegram_normalize_chat_id(chat_id)
+    if not normalized_chat_id:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=TELEGRAM_ACCESS_REQUEST_WINDOW_HOURS)
+    pending_doc = db.telegram_users.find_one(
+        {
+            "chat_id": normalized_chat_id,
+            "approved": False,
+            "requested_at": {"$gte": cutoff.isoformat()},
+            "$or": [{"approved_by": None}, {"approved_by": {"$exists": False}}],
+        },
+        {"_id": 1},
+    )
+    return pending_doc is not None
+
+
+def _telegram_register_access_request(chat_id: int | str, from_user: dict | None) -> None:
+    normalized_chat_id = _telegram_normalize_chat_id(chat_id)
+    username, first_name, last_name = _telegram_extract_user_data(from_user)
+    db.telegram_users.update_one(
+        {"chat_id": normalized_chat_id},
+        {
+            "$set": {
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "approved": False,
+                "approved_at": None,
+                "approved_by": None,
+            }
+        },
+        upsert=True,
+    )
+
+
+def _telegram_notify_admin_access_request(chat_id: int | str, from_user: dict | None, text: str, date_value: str | None) -> None:
+    normalized_chat_id = _telegram_normalize_chat_id(chat_id)
+    username, first_name, last_name = _telegram_extract_user_data(from_user)
+    admin_chat_id = get_telegram_admin_chat_id()
+    message = (
+        "🔐 Solicitud de acceso Telegram\n"
+        f"chat_id: {normalized_chat_id}\n"
+        f"username: @{username if username else '-'}\n"
+        f"nombre: {(first_name or '')} {(last_name or '')}".strip()
+        + "\n"
+        f"texto: {text or '-'}\n"
+        f"fecha: {date_value or datetime.now(timezone.utc).isoformat()}"
+    )
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "✅ Autorizar", "callback_data": f"approve:{normalized_chat_id}"},
+                {"text": "❌ Rechazar", "callback_data": f"reject:{normalized_chat_id}"},
+            ]
+        ]
+    }
+    tg_send(chat_id=admin_chat_id, text=message, reply_markup=keyboard)
+
+
+def _telegram_handle_access_callback(callback_query: dict) -> dict:
+    callback_query_id = str(callback_query.get("id") or "")
+    data = str(callback_query.get("data") or "").strip()
+    callback_from = callback_query.get("from") if isinstance(callback_query, dict) else None
+    callback_chat = callback_query.get("message", {}).get("chat") if isinstance(callback_query.get("message"), dict) else None
+    actor_chat_id = _telegram_normalize_chat_id(callback_chat.get("id") if isinstance(callback_chat, dict) else None)
+    admin_chat_id = get_telegram_admin_chat_id()
+
+    if actor_chat_id != admin_chat_id:
+        tg_answer_callback_query(callback_query_id, "Solo el admin puede usar esta acción")
+        return {"ok": True, "ignored": "callback_not_admin"}
+
+    if ":" not in data:
+        tg_answer_callback_query(callback_query_id, "Acción inválida")
+        return {"ok": True, "ignored": "invalid_callback_data"}
+
+    action, target_chat_id = data.split(":", 1)
+    target_chat_id = _telegram_normalize_chat_id(target_chat_id)
+    if action not in {"approve", "reject"} or not target_chat_id:
+        tg_answer_callback_query(callback_query_id, "Acción inválida")
+        return {"ok": True, "ignored": "invalid_callback_data"}
+
+    admin_from_chat_id = _telegram_normalize_chat_id(callback_from.get("id") if isinstance(callback_from, dict) else actor_chat_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if action == "approve":
+        db.telegram_users.update_one(
+            {"chat_id": target_chat_id},
+            {
+                "$set": {
+                    "approved": True,
+                    "approved_at": now_iso,
+                    "approved_by": admin_from_chat_id,
+                }
+            },
+            upsert=True,
+        )
+        send_telegram_to_chat(f"Aprobado chat_id={target_chat_id}", chat_id=admin_chat_id)
+        send_telegram_to_chat("✅ Ya estás autorizado. Escribe /help", chat_id=target_chat_id)
+        tg_answer_callback_query(callback_query_id, "Usuario aprobado")
+        return {"ok": True, "result": "approved", "chat_id": target_chat_id}
+
+    db.telegram_users.update_one(
+        {"chat_id": target_chat_id},
+        {
+            "$set": {
+                "approved": False,
+                "approved_at": now_iso,
+                "approved_by": admin_from_chat_id,
+            }
+        },
+        upsert=True,
+    )
+    send_telegram_to_chat(f"Rechazado chat_id={target_chat_id}", chat_id=admin_chat_id)
+    send_telegram_to_chat("❌ Tu solicitud fue rechazada por el admin.", chat_id=target_chat_id)
+    tg_answer_callback_query(callback_query_id, "Usuario rechazado")
+    return {"ok": True, "result": "rejected", "chat_id": target_chat_id}
 
 
 def _resolve_default_project_id() -> str | None:
@@ -810,6 +981,8 @@ def ensure_indexes():
     db.paymentLines.create_index([("paymentId", 1), ("apInvoiceId", 1), ("appliedAmount", 1)], unique=True)
     db.importRuns.create_index("sha256", unique=True)
     db.settings.create_index("key", unique=True)
+    db.telegram_users.create_index("chat_id", unique=True)
+    db.telegram_users.create_index([("approved", 1), ("requested_at", -1)])
     try:
         backfill_sap_transactions_metadata()
     except Exception:
@@ -2237,12 +2410,17 @@ async def telegram_webhook(
     if configured_secret and x_telegram_bot_api_secret_token != configured_secret:
         raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
 
+    callback_query = update.get("callback_query") if isinstance(update, dict) else None
+    if isinstance(callback_query, dict):
+        return _telegram_handle_access_callback(callback_query)
+
     message = update.get("message") if isinstance(update, dict) else None
     chat = message.get("chat") if isinstance(message, dict) else None
     chat_id = chat.get("id") if isinstance(chat, dict) else None
     from_user = message.get("from") if isinstance(message, dict) else None
-    username = from_user.get("username") if isinstance(from_user, dict) else None
+    username, first_name, last_name = _telegram_extract_user_data(from_user)
     text = (message.get("text") or "").strip() if isinstance(message, dict) else ""
+    date_value = str(message.get("date") or "") if isinstance(message, dict) else ""
 
     logger.info(
         "Telegram webhook received update_id=%s chat_id=%s username=%s text=%s",
@@ -2255,10 +2433,19 @@ async def telegram_webhook(
     if chat_id is None:
         return {"ok": True, "ignored": "no_message_or_chat_id"}
 
-    allowed_chat_ids = get_allowed_telegram_chat_ids()
-    if allowed_chat_ids is not None and int(chat_id) not in allowed_chat_ids:
-        send_telegram_to_chat(text="❌ no autorizado", chat_id=chat_id)
-        return {"ok": True, "ignored": "chat_id_not_allowed"}
+    if not _telegram_is_chat_approved(chat_id):
+        send_telegram_to_chat("No autorizado. Envié solicitud al admin.", chat_id=chat_id)
+        if not _telegram_has_recent_pending_request(chat_id):
+            _telegram_register_access_request(chat_id=chat_id, from_user=from_user)
+            _telegram_notify_admin_access_request(
+                chat_id=chat_id,
+                from_user=from_user,
+                text=text,
+                date_value=date_value,
+            )
+        else:
+            logger.info("Telegram access request throttled for chat_id=%s", chat_id)
+        return {"ok": True, "ignored": "chat_id_not_approved", "username": username, "first_name": first_name, "last_name": last_name}
 
     if text.startswith("/start") or text.startswith("/help"):
         send_telegram_to_chat(_telegram_help_text(), chat_id=chat_id)
