@@ -3036,6 +3036,8 @@ async def telegram_webhook(
     elif text.startswith("/chatid"):
         set_setting(TELEGRAM_SETTINGS_KEY, str(chat_id))
         send_telegram_to_chat(f"chat_id registrado: {chat_id}", chat_id=chat_id)
+    elif text and not text.startswith("/"):
+        send_telegram_to_chat(_telegram_ask_transactions(text), chat_id=chat_id)
 
     return {"ok": True}
 
