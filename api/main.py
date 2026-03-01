@@ -347,18 +347,27 @@ def set_setting(key: str, value):
 
 
 def get_allowed_telegram_chat_ids() -> set[int] | None:
+    single_chat_id = (os.getenv("TELEGRAM_ALLOWED_CHAT_ID") or "").strip()
     raw = (os.getenv("TELEGRAM_ALLOWED_CHAT_IDS") or "").strip()
-    if not raw:
+    if not raw and not single_chat_id:
         return None
 
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, list):
-            return {int(item) for item in parsed}
-    except Exception:
-        pass
-
     values = set()
+    if single_chat_id:
+        try:
+            values.add(int(single_chat_id))
+        except ValueError:
+            logger.warning("Ignoring invalid TELEGRAM_ALLOWED_CHAT_ID value: %s", single_chat_id)
+
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                values.update(int(item) for item in parsed)
+                return values or None
+        except Exception:
+            pass
+
     for item in raw.split(","):
         stripped = item.strip()
         if not stripped:
@@ -412,32 +421,118 @@ def tg_send(chat_id: int | str, text: str) -> bool:
 
 
 def send_telegram(text: str) -> bool:
+    return send_telegram_to_chat(text=text)
+
+
+def send_telegram_to_chat(text: str, chat_id: int | str | None = None) -> bool:
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    resolved_chat_id = str(chat_id).strip() if chat_id is not None else ""
 
-    if not chat_id:
+    if not resolved_chat_id:
+        resolved_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+
+    if not resolved_chat_id:
         default_chat_id = get_telegram_default_chat_id()
-        chat_id = str(default_chat_id) if default_chat_id is not None else ""
+        resolved_chat_id = str(default_chat_id) if default_chat_id is not None else ""
 
-    if not token or not chat_id:
+    if not token or not resolved_chat_id:
         logger.info("Telegram send skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured")
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+    payload = json.dumps({"chat_id": resolved_chat_id, "text": text}).encode("utf-8")
     req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
 
     try:
         with urlopen(req, timeout=15) as response:
             if response.status >= 400:
                 body = response.read().decode("utf-8")
-                logger.error("Telegram send failed for chat_id=%s body=%s", chat_id, body)
+                logger.error("Telegram send failed for chat_id=%s body=%s", resolved_chat_id, body)
                 return False
-            logger.info("Telegram message sent to chat_id=%s status=%s", chat_id, response.status)
+            logger.info("Telegram message sent to chat_id=%s status=%s", resolved_chat_id, response.status)
             return True
     except Exception as exc:
-        logger.exception("Telegram send failed for chat_id=%s: %s", chat_id, exc)
+        logger.exception("Telegram send failed for chat_id=%s: %s", resolved_chat_id, exc)
         return False
+
+
+def _resolve_default_project_id() -> str | None:
+    default_project_id = (os.getenv("DEFAULT_PROJECT_ID") or "").strip()
+    if default_project_id:
+        return default_project_id
+
+    project_name = "CALDERON DE LA BARCA"
+    project_doc = db.projects.find_one({"name": project_name}, {"_id": 1})
+    if not project_doc:
+        return None
+    return str(project_doc["_id"])
+
+
+def _telegram_import_status_summary() -> str:
+    cursor = db.importRuns.find({}, {"sourceDb": 1, "importRunId": 1, "_id": 1, "finishedAt": 1}).sort(
+        [("finishedAt", -1), ("_id", -1)]
+    )
+    latest_by_source = {}
+    for run in cursor:
+        source_db = str(run.get("sourceDb") or "").strip().upper()
+        if source_db not in {"IVA", "EFECTIVO"}:
+            continue
+        latest_by_source.setdefault(source_db, run)
+        if len(latest_by_source) >= 2:
+            break
+
+    if not latest_by_source:
+        return "Sin importRuns recientes de IVA/EFECTIVO"
+
+    lines = ["📦 Import status"]
+    for source_db in ("IVA", "EFECTIVO"):
+        run = latest_by_source.get(source_db)
+        if not run:
+            lines.append(f"{source_db}: sin datos")
+            continue
+        run_id = str(run.get("_id"))
+        finished_at = str(run.get("finishedAt") or "n/a")
+        lines.append(f"{source_db}: importRunId={run_id} fecha={finished_at}")
+    return "\n".join(lines)
+
+
+def _telegram_count_transactions() -> str:
+    project_id = _resolve_default_project_id()
+    if not project_id:
+        return "No encontré el proyecto por defecto"
+
+    total = db.transactions.count_documents({"projectId": project_id})
+    return f"Total transactions projectId={project_id}: {total}"
+
+
+def _telegram_sum_expenses(month_token: str, include_iva: bool = False) -> str:
+    if not re.fullmatch(r"\d{4}-\d{2}", month_token or ""):
+        return "Uso: /sum YYYY-MM"
+
+    project_id = _resolve_default_project_id()
+    if not project_id:
+        return "No encontré el proyecto por defecto"
+
+    year, month = month_token.split("-", 1)
+    start_date = f"{year}-{month}-01"
+    month_int = int(month)
+    next_year = int(year) + (1 if month_int == 12 else 0)
+    next_month = 1 if month_int == 12 else month_int + 1
+    end_date = f"{next_year:04d}-{next_month:02d}-01"
+
+    movements = db.transactions.find(
+        {"type": "EXPENSE", "projectId": project_id, "date": {"$gte": start_date, "$lt": end_date}},
+        {"amount": 1, "tax": 1},
+    )
+
+    total = 0.0
+    count = 0
+    for tx in movements:
+        count += 1
+        amount_value = float(tx.get("amount") or 0)
+        total += amount_value if include_iva else compute_monto_sin_iva(tx)
+
+    return f"Egresos {month_token} (include_iva={str(include_iva).lower()}): {round(total, 2)} en {count} tx"
 
 
 def _format_import_bucket(summary: dict | None) -> str:
@@ -1927,17 +2022,20 @@ async def telegram_webhook(
 ):
     configured_secret = (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
     if configured_secret and x_telegram_bot_api_secret_token != configured_secret:
-        raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
+        raise HTTPException(status_code=401, detail="Invalid Telegram webhook secret")
 
     message = update.get("message") if isinstance(update, dict) else None
     chat = message.get("chat") if isinstance(message, dict) else None
     chat_id = chat.get("id") if isinstance(chat, dict) else None
+    from_user = message.get("from") if isinstance(message, dict) else None
+    username = from_user.get("username") if isinstance(from_user, dict) else None
     text = (message.get("text") or "").strip() if isinstance(message, dict) else ""
 
     logger.info(
-        "Telegram webhook received update_id=%s chat_id=%s text=%s",
+        "Telegram webhook received update_id=%s chat_id=%s username=%s text=%s",
         update.get("update_id") if isinstance(update, dict) else None,
         chat_id,
+        username,
         text,
     )
 
@@ -1946,18 +2044,26 @@ async def telegram_webhook(
 
     allowed_chat_ids = get_allowed_telegram_chat_ids()
     if allowed_chat_ids is not None and int(chat_id) not in allowed_chat_ids:
-        raise HTTPException(status_code=403, detail="chat_id not allowed")
+        send_telegram_to_chat(text="❌ no autorizado", chat_id=chat_id)
+        return {"ok": True, "ignored": "chat_id_not_allowed"}
 
     if text.startswith("/start"):
-        tg_send(
-            chat_id,
+        send_telegram_to_chat(
             "Hola 👋\nComandos disponibles:\n/ping - prueba conectividad\n/chatid - mostrar y registrar este chat",
+            chat_id=chat_id,
         )
     elif text.startswith("/ping"):
-        tg_send(chat_id, "pong ✅")
+        send_telegram_to_chat("pong", chat_id=chat_id)
+    elif text.startswith("/import_status"):
+        send_telegram_to_chat(_telegram_import_status_summary(), chat_id=chat_id)
+    elif text.startswith("/count"):
+        send_telegram_to_chat(_telegram_count_transactions(), chat_id=chat_id)
+    elif text.startswith("/sum"):
+        _, _, month_token = text.partition(" ")
+        send_telegram_to_chat(_telegram_sum_expenses(month_token=month_token.strip(), include_iva=False), chat_id=chat_id)
     elif text.startswith("/chatid"):
         set_setting(TELEGRAM_SETTINGS_KEY, str(chat_id))
-        tg_send(chat_id, f"chat_id registrado: {chat_id}")
+        send_telegram_to_chat(f"chat_id registrado: {chat_id}", chat_id=chat_id)
 
     return {"ok": True}
 
