@@ -19,6 +19,7 @@ import csv
 import openpyxl
 import os
 import logging
+import unicodedata
 
 app = FastAPI(title="Control de Obra API")
 
@@ -1120,6 +1121,7 @@ def _telegram_help_text() -> str:
         "/cat [texto] - listar o buscar categoría con botones\n"
         "/catid <categoryId> [limit] [page] - buscar por categoría\n"
         "/find <texto> [limit] [page] - buscar en concepto/descripción\n"
+        "/ask <texto> - consulta natural simple (sin LLM)\n"
         "/chatid - mostrar y registrar este chat\n\n"
         "Ejemplos:\n"
         "/prov cementos\n"
@@ -1327,6 +1329,166 @@ def _telegram_search_category_id(raw_text: str) -> str:
         limit=limit,
         page=page,
     )
+
+
+def _telegram_normalize_nlp_text(text: str) -> str:
+    lowered = (text or "").strip().lower()
+    normalized = unicodedata.normalize("NFD", lowered)
+    return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+
+def _telegram_classify_ask_action(text: str) -> str:
+    normalized = _telegram_normalize_nlp_text(text)
+    if "top" in normalized:
+        return "top_suppliers"
+    if any(token in normalized for token in ["cuanto", "total", "suma", "gastado"]):
+        return "sum+list"
+    if any(token in normalized for token in ["lista", "dame", "muestrame"]):
+        return "list"
+    return "sum+list"
+
+
+def _telegram_detect_ask_keyword(text: str) -> str:
+    normalized = _telegram_normalize_nlp_text(text)
+    if " en " in f" {normalized}":
+        after_en = normalized.rsplit(" en ", 1)[-1]
+        phrase = re.split(r"\b(este|esta|mes|hoy|ayer|ultimos|ultimas|dias|de|del|por|para)\b", after_en, maxsplit=1)[0]
+        candidate = " ".join(part for part in phrase.strip().split() if part)
+        if candidate:
+            return candidate
+
+    stopwords = {
+        "cuanto",
+        "total",
+        "suma",
+        "gastado",
+        "lista",
+        "dame",
+        "muestrame",
+        "top",
+        "proveedores",
+        "proveedor",
+        "este",
+        "esta",
+        "mes",
+        "de",
+        "del",
+        "en",
+    }
+    words = [word for word in re.findall(r"[a-z0-9]+", normalized) if len(word) > 2 and word not in stopwords]
+    return words[-1] if words else ""
+
+
+def _telegram_keyword_synonyms(keyword: str) -> tuple[str, list[str]]:
+    synonym_map = {
+        "madera": ["madera", "carpinter", "mdf", "triplay", "melamina", "pino", "tablero", "cimbra"],
+        "electricidad": ["electricidad", "electr", "cable", "apagador", "contacto", "cfe", "centro de carga"],
+        "cemento": ["cemento", "concreto", "mortero", "block", "varilla", "acero"],
+        "pintura": ["pintura", "esmalte", "sellador", "impermeabilizante"],
+        "plomeria": ["plomeria", "tuberia", "hidraul", "sanitari", "wc", "llave"],
+    }
+
+    normalized_keyword = _telegram_normalize_nlp_text(keyword)
+    for canonical, synonyms in synonym_map.items():
+        for synonym in synonyms:
+            normalized_synonym = _telegram_normalize_nlp_text(synonym)
+            if normalized_keyword == normalized_synonym or normalized_synonym in normalized_keyword or normalized_keyword in normalized_synonym:
+                return canonical, synonyms
+
+    fallback = normalized_keyword.strip()
+    return (fallback or "general", [fallback or "gasto"])
+
+
+def _telegram_default_month_range() -> tuple[str, str]:
+    today = date.today()
+    start = today.replace(day=1)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start.isoformat(), end.isoformat()
+
+
+def _telegram_ask_transactions(text: str) -> str:
+    action = _telegram_classify_ask_action(text)
+    raw_keyword = _telegram_detect_ask_keyword(text)
+    keyword, synonyms = _telegram_keyword_synonyms(raw_keyword)
+    start_date, end_date = _telegram_default_month_range()
+    project_id = _resolve_default_project_id()
+    if not project_id:
+        return "No encontré el proyecto por defecto"
+
+    regex_terms = [re.escape(term) for term in synonyms if term]
+    if not regex_terms:
+        regex_terms = [re.escape(keyword)]
+    keyword_regex = "|".join(regex_terms)
+
+    category_matches = list(
+        db.categories.find(
+            {"name": {"$regex": keyword_regex, "$options": "i"}},
+            {"_id": 1},
+        ).limit(200)
+    )
+    category_ids = [str(row.get("_id")) for row in category_matches if row.get("_id") is not None]
+
+    base_match = {
+        "projectId": project_id,
+        "type": "EXPENSE",
+        "date": {"$gte": start_date, "$lt": end_date},
+    }
+
+    search_or: list[dict] = [
+        {"concept": {"$regex": keyword_regex, "$options": "i"}},
+        {"description": {"$regex": keyword_regex, "$options": "i"}},
+        {"supplierName": {"$regex": keyword_regex, "$options": "i"}},
+    ]
+    if category_ids:
+        search_or.append({"categoryId": {"$in": category_ids}})
+        search_or.append({"category_id": {"$in": category_ids}})
+
+    query = {**base_match, "$or": search_or}
+
+    if action == "top_suppliers":
+        pipeline = [
+            {"$match": query},
+            {
+                "$group": {
+                    "_id": {"$ifNull": ["$supplierName", "(sin proveedor)"]},
+                    "total": {"$sum": {"$ifNull": ["$amount", 0]}},
+                    "count": {"$sum": 1},
+                }
+            },
+            {"$sort": {"total": -1}},
+            {"$limit": 10},
+        ]
+        rows = list(db.transactions.aggregate(pipeline))
+        if not rows:
+            return f"Sin resultados para '{keyword}' en {start_date[:7]}"
+        lines = [f"Top proveedores '{keyword}' ({start_date[:7]}):"]
+        grand_total = 0.0
+        for idx, row in enumerate(rows, start=1):
+            total = round(float(row.get("total") or 0), 2)
+            grand_total += total
+            lines.append(f"{idx}. {row.get('_id') or '(sin proveedor)'} | {_telegram_format_currency(total)} | {row.get('count', 0)} tx")
+        lines.append("")
+        lines.append(f"Total top: {_telegram_format_currency(grand_total)}")
+        return "\n".join(lines)
+
+    rows = list(
+        db.transactions.find(
+            query,
+            {"date": 1, "amount": 1, "tax": 1, "concept": 1, "description": 1, "supplierName": 1, "sourceDb": 1},
+        )
+        .sort([("date", -1), ("_id", -1)])
+        .limit(25)
+    )
+
+    if not rows:
+        return f"Sin resultados para '{keyword}' en {start_date[:7]}"
+
+    header = f"Consulta '{keyword}' ({action}) | rango {start_date} a {end_date}"
+    body = _telegram_build_transactions_list(rows, limit_used=25, page=1)
+    return f"{header}\n\n{body}"
 
 
 def _format_import_bucket(summary: dict | None) -> str:
@@ -2880,6 +3042,9 @@ async def telegram_webhook(
         tg_send(chat_id=chat_id, text=response_text, reply_markup=keyboard)
     elif text.startswith("/find"):
         send_telegram_to_chat(_telegram_search_find(text), chat_id=chat_id)
+    elif text.startswith("/ask"):
+        _, _, ask_text = text.partition(" ")
+        send_telegram_to_chat(_telegram_ask_transactions(ask_text.strip()), chat_id=chat_id)
     elif text.startswith("/chatid"):
         set_setting(TELEGRAM_SETTINGS_KEY, str(chat_id))
         send_telegram_to_chat(f"chat_id registrado: {chat_id}", chat_id=chat_id)
