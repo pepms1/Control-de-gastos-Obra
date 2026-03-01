@@ -8,7 +8,7 @@
   "theme_color": "#022B75",
   "icons": [
     {
-      "src": "/logo-grupo-mdi.svg",
+      "src": "/logo-grupo-mdi-circle.svg",
       "type": "image/svg+xml",
       "sizes": "any",
       "purpose": "any maskable"
