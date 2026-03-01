@@ -701,15 +701,44 @@ def _telegram_clear_state(chat_id: int | str) -> None:
     _telegram_state_collection().delete_one({"chat_id": _telegram_normalize_chat_id(chat_id)})
 
 
-def _telegram_search_suppliers_keyboard(raw_text: str) -> tuple[str, dict | None]:
-    args = _telegram_parse_command_args(raw_text)
-    text = " ".join(args[1:]).strip() if len(args) > 1 else ""
+def _telegram_get_picker_state(chat_id: int | str) -> dict:
+    state = _telegram_get_state(chat_id) or {}
+    picker = state.get("picker")
+    return picker if isinstance(picker, dict) else {}
+
+
+def _telegram_save_picker_state(chat_id: int | str, mode: str, search_text: str, page: int, limit: int = 10) -> dict:
+    normalized_chat_id = _telegram_normalize_chat_id(chat_id)
+    picker = {
+        "mode": mode,
+        "searchText": str(search_text or "").strip(),
+        "page": _telegram_parse_page(str(page)),
+        "limit": _telegram_parse_limit(str(limit), default=10, maximum=25),
+    }
+    _telegram_state_collection().update_one(
+        {"chat_id": normalized_chat_id},
+        {"$set": {"chat_id": normalized_chat_id, "picker": picker, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return picker
+
+
+def _telegram_build_suppliers_keyboard(search_text: str, page: int = 1, limit: int = 10) -> tuple[str, dict | None, dict]:
+    clean_search = str(search_text or "").strip()
+    current_page = _telegram_parse_page(str(page))
+    effective_limit = _telegram_parse_limit(str(limit), default=10, maximum=25)
+
     query: dict = {}
-    if text:
-        escaped = re.escape(text)
+    if clean_search:
+        escaped = re.escape(clean_search)
         query = {"$or": [{"name": {"$regex": escaped, "$options": "i"}}, {"cardCode": {"$regex": escaped, "$options": "i"}}]}
 
-    rows = list(db.suppliers.find(query, {"name": 1, "cardCode": 1}).sort([("name", 1), ("_id", 1)]).limit(25))
+    total = db.suppliers.count_documents(query)
+    last_page = max(1, (total + effective_limit - 1) // effective_limit)
+    current_page = min(current_page, last_page)
+    skip = (current_page - 1) * effective_limit
+
+    rows = list(db.suppliers.find(query, {"name": 1, "cardCode": 1}).sort([("name", 1), ("_id", 1)]).skip(skip).limit(effective_limit))
     if not rows:
         return "Sin resultados de proveedores.", None, {"mode": "prov", "searchText": clean_search, "page": 1, "limit": effective_limit}
 
@@ -719,8 +748,6 @@ def _telegram_search_suppliers_keyboard(raw_text: str) -> tuple[str, dict | None
         supplier_name = (row.get("name") or "(sin nombre)").strip()
         card_code = (row.get("cardCode") or "-").strip()
         keyboard_rows.append([{"text": f"{supplier_name} ({card_code})", "callback_data": f"provSel:{supplier_id}"}])
-    title = "Selecciona un proveedor:" if text else "Proveedores disponibles:"
-    return title, {"inline_keyboard": keyboard_rows}
 
     nav_row = [
         {"text": "⬅️ Prev", "callback_data": "provPick:prev"},
@@ -730,15 +757,26 @@ def _telegram_search_suppliers_keyboard(raw_text: str) -> tuple[str, dict | None
     keyboard_rows.append(nav_row)
     keyboard_rows.append([{"text": "❌ Cerrar", "callback_data": "close"}])
 
-def _telegram_search_categories_keyboard(raw_text: str) -> tuple[str, dict | None]:
-    args = _telegram_parse_command_args(raw_text)
-    text = " ".join(args[1:]).strip() if len(args) > 1 else ""
+    title = "Selecciona un proveedor:" if clean_search else "Proveedores disponibles:"
+    return title, {"inline_keyboard": keyboard_rows}, {"mode": "prov", "searchText": clean_search, "page": current_page, "limit": effective_limit}
+
+
+def _telegram_build_categories_keyboard(search_text: str, page: int = 1, limit: int = 10) -> tuple[str, dict | None, dict]:
+    clean_search = str(search_text or "").strip()
+    current_page = _telegram_parse_page(str(page))
+    effective_limit = _telegram_parse_limit(str(limit), default=10, maximum=25)
+
     query: dict = {}
-    if text:
-        escaped = re.escape(text)
+    if clean_search:
+        escaped = re.escape(clean_search)
         query = {"name": {"$regex": escaped, "$options": "i"}}
 
-    rows = list(db.categories.find(query, {"name": 1}).sort([("name", 1), ("_id", 1)]).limit(25))
+    total = db.categories.count_documents(query)
+    last_page = max(1, (total + effective_limit - 1) // effective_limit)
+    current_page = min(current_page, last_page)
+    skip = (current_page - 1) * effective_limit
+
+    rows = list(db.categories.find(query, {"name": 1}).sort([("name", 1), ("_id", 1)]).skip(skip).limit(effective_limit))
     if not rows:
         return "Sin resultados de categorías.", None, {"mode": "cat", "searchText": clean_search, "page": 1, "limit": effective_limit}
 
@@ -747,8 +785,81 @@ def _telegram_search_categories_keyboard(raw_text: str) -> tuple[str, dict | Non
         category_id = str(row.get("_id"))
         name = (row.get("name") or "(sin nombre)").strip()
         keyboard_rows.append([{"text": name, "callback_data": f"catSel:{category_id}"}])
-    title = "Selecciona una categoría:" if text else "Categorías disponibles:"
-    return title, {"inline_keyboard": keyboard_rows}
+
+    nav_row = [
+        {"text": "⬅️ Prev", "callback_data": "catPick:prev"},
+        {"text": f"{current_page}/{last_page}", "callback_data": "noop"},
+        {"text": "➡️ Next", "callback_data": "catPick:next"},
+    ]
+    keyboard_rows.append(nav_row)
+    keyboard_rows.append([{"text": "❌ Cerrar", "callback_data": "close"}])
+
+    title = "Selecciona una categoría:" if clean_search else "Categorías disponibles:"
+    return title, {"inline_keyboard": keyboard_rows}, {"mode": "cat", "searchText": clean_search, "page": current_page, "limit": effective_limit}
+
+
+def _telegram_search_suppliers_keyboard(chat_id: int | str, raw_text: str) -> tuple[str, dict | None]:
+    args = _telegram_parse_command_args(raw_text)
+    text = " ".join(args[1:]).strip() if len(args) > 1 else ""
+    picker_state = _telegram_get_picker_state(chat_id)
+
+    if text:
+        picker = _telegram_save_picker_state(chat_id=chat_id, mode="prov", search_text=text, page=1, limit=10)
+    else:
+        if str(picker_state.get("mode") or "").strip() == "prov":
+            picker = _telegram_save_picker_state(
+                chat_id=chat_id,
+                mode="prov",
+                search_text=str(picker_state.get("searchText") or ""),
+                page=_telegram_parse_page(str(picker_state.get("page") or 1)),
+                limit=_telegram_parse_limit(str(picker_state.get("limit") or 10), default=10, maximum=25),
+            )
+        else:
+            picker = _telegram_save_picker_state(chat_id=chat_id, mode="prov", search_text="", page=1, limit=10)
+
+    response_text, keyboard, picker = _telegram_build_suppliers_keyboard(
+        search_text=picker.get("searchText") or "", page=picker.get("page") or 1, limit=picker.get("limit") or 10
+    )
+    _telegram_save_picker_state(
+        chat_id=chat_id,
+        mode=picker.get("mode") or "prov",
+        search_text=picker.get("searchText") or "",
+        page=picker.get("page") or 1,
+        limit=picker.get("limit") or 10,
+    )
+    return response_text, keyboard
+
+
+def _telegram_search_categories_keyboard(chat_id: int | str, raw_text: str) -> tuple[str, dict | None]:
+    args = _telegram_parse_command_args(raw_text)
+    text = " ".join(args[1:]).strip() if len(args) > 1 else ""
+    picker_state = _telegram_get_picker_state(chat_id)
+
+    if text:
+        picker = _telegram_save_picker_state(chat_id=chat_id, mode="cat", search_text=text, page=1, limit=10)
+    else:
+        if str(picker_state.get("mode") or "").strip() == "cat":
+            picker = _telegram_save_picker_state(
+                chat_id=chat_id,
+                mode="cat",
+                search_text=str(picker_state.get("searchText") or ""),
+                page=_telegram_parse_page(str(picker_state.get("page") or 1)),
+                limit=_telegram_parse_limit(str(picker_state.get("limit") or 10), default=10, maximum=25),
+            )
+        else:
+            picker = _telegram_save_picker_state(chat_id=chat_id, mode="cat", search_text="", page=1, limit=10)
+
+    response_text, keyboard, picker = _telegram_build_categories_keyboard(
+        search_text=picker.get("searchText") or "", page=picker.get("page") or 1, limit=picker.get("limit") or 10
+    )
+    _telegram_save_picker_state(
+        chat_id=chat_id,
+        mode=picker.get("mode") or "cat",
+        search_text=picker.get("searchText") or "",
+        page=picker.get("page") or 1,
+        limit=picker.get("limit") or 10,
+    )
+    return response_text, keyboard
 
 
 def _telegram_build_transaction_message(state: dict) -> tuple[str, dict]:
