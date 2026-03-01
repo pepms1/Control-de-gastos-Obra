@@ -535,6 +535,23 @@ def _telegram_sum_expenses(month_token: str, include_iva: bool = False) -> str:
     return f"Egresos {month_token} (include_iva={str(include_iva).lower()}): {round(total, 2)} en {count} tx"
 
 
+def _telegram_help_text() -> str:
+    return (
+        "Hola 👋\n"
+        "Comandos soportados:\n"
+        "/help - mostrar esta ayuda\n"
+        "/start - mostrar esta ayuda\n"
+        "/ping - prueba de conectividad\n"
+        "/import_status - estado de última importación\n"
+        "/count - contar transacciones del proyecto por defecto\n"
+        "/sum YYYY-MM - sumar egresos del mes (sin IVA)\n"
+        "/chatid - mostrar y registrar este chat\n\n"
+        "Ejemplos:\n"
+        "/sum 2025-01\n"
+        "/ping"
+    )
+
+
 def _format_import_bucket(summary: dict | None) -> str:
     bucket = summary if isinstance(summary, dict) else {}
     return f"{bucket.get('already_imported', False)}/{bucket.get('rowsOk', 0)}/{bucket.get('duplicatesSkipped', 0)}"
@@ -2047,11 +2064,8 @@ async def telegram_webhook(
         send_telegram_to_chat(text="❌ no autorizado", chat_id=chat_id)
         return {"ok": True, "ignored": "chat_id_not_allowed"}
 
-    if text.startswith("/start"):
-        send_telegram_to_chat(
-            "Hola 👋\nComandos disponibles:\n/ping - prueba conectividad\n/chatid - mostrar y registrar este chat",
-            chat_id=chat_id,
-        )
+    if text.startswith("/start") or text.startswith("/help"):
+        send_telegram_to_chat(_telegram_help_text(), chat_id=chat_id)
     elif text.startswith("/ping"):
         send_telegram_to_chat("pong", chat_id=chat_id)
     elif text.startswith("/import_status"):
