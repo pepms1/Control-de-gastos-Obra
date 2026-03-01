@@ -2714,6 +2714,13 @@ def admin_cleanup_sap_iva_duplicates(
     return cleanup_sap_iva_duplicates(project_id=projectId, dry_run=dryRun)
 
 
+@app.post("/api/admin/telegram/test")
+def admin_test_telegram(user: dict = Depends(require_admin)):
+    sent = send_telegram("✅ test telegram desde backend")
+    logger.info("Admin telegram test requested by %s sent=%s", user.get("username"), sent)
+    return {"sent": sent}
+
+
 # ---------- seed categories ----------
 DEFAULT_CATEGORIES = [
     "Albañilería",
