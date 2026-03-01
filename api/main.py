@@ -361,21 +361,16 @@ def get_allowed_telegram_chat_ids() -> set[int] | None:
 
     if raw:
         try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                values.update(int(item) for item in parsed)
-                return values or None
-        except Exception:
-            pass
-
-    for item in raw.split(","):
-        stripped = item.strip()
-        if not stripped:
-            continue
-        try:
-            values.add(int(stripped))
+            values.update(set(int(item.strip()) for item in raw.split(",") if item.strip()))
         except ValueError:
-            logger.warning("Ignoring invalid TELEGRAM_ALLOWED_CHAT_IDS value: %s", stripped)
+            for item in raw.split(","):
+                stripped = item.strip()
+                if not stripped:
+                    continue
+                try:
+                    values.add(int(stripped))
+                except ValueError:
+                    logger.warning("Ignoring invalid TELEGRAM_ALLOWED_CHAT_IDS value: %s", stripped)
     return values or None
 
 
