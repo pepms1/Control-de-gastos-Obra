@@ -947,6 +947,15 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   }, [allSuppliers, rows, vendorMap]);
 
   const shown = [...rows].sort((a, b) => {
+    if (sortBy === 'created_desc') {
+      const aCreatedAt = a.created_at || '';
+      const bCreatedAt = b.created_at || '';
+      if (aCreatedAt !== bCreatedAt) return bCreatedAt.localeCompare(aCreatedAt);
+
+      if (a.date === b.date) return 0;
+      return b.date.localeCompare(a.date);
+    }
+
     if (sortBy === 'supplier_asc') {
       const aSupplier = (a.proveedorNombre || a.supplierName || vendorMap[a.vendor_id] || a.proveedor?.name || '').toLowerCase();
       const bSupplier = (b.proveedorNombre || b.supplierName || vendorMap[b.vendor_id] || b.proveedor?.name || '').toLowerCase();
@@ -1102,6 +1111,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
           </select>
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
             <option value="date_desc">Fecha (más reciente)</option>
+            <option value="created_desc">Fecha de añadido (más reciente)</option>
             <option value="supplier_asc">Proveedor (A-Z)</option>
           </select>
           <button className="secondary" onClick={() => load(page)}>Refrescar</button>
