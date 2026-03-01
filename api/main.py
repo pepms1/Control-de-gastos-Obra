@@ -10,8 +10,9 @@ from passlib.context import CryptContext
 from hashlib import sha256
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
+import json
 from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 import boto3
 import re
 import csv
@@ -42,6 +43,9 @@ client = MongoClient(MONGO_URL)
 db = client[DB_NAME]
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 logger = logging.getLogger(__name__)
+
+
+TELEGRAM_SETTINGS_KEY = "telegram_default_chat_id"
 
 
 # ---------- helpers ----------
@@ -327,6 +331,101 @@ def normalize_source_db_value(source_db: str | None) -> str:
     return (source_db or "").strip().upper()
 
 
+def get_setting(key: str, default=None):
+    doc = db.settings.find_one({"key": key})
+    if not doc:
+        return default
+    return doc.get("value", default)
+
+
+def set_setting(key: str, value):
+    db.settings.update_one(
+        {"key": key},
+        {"$set": {"value": value, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+
+
+def get_allowed_telegram_chat_ids() -> set[int] | None:
+    raw = (os.getenv("TELEGRAM_ALLOWED_CHAT_IDS") or "").strip()
+    if not raw:
+        return None
+
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return {int(item) for item in parsed}
+    except Exception:
+        pass
+
+    values = set()
+    for item in raw.split(","):
+        stripped = item.strip()
+        if not stripped:
+            continue
+        try:
+            values.add(int(stripped))
+        except ValueError:
+            logger.warning("Ignoring invalid TELEGRAM_ALLOWED_CHAT_IDS value: %s", stripped)
+    return values or None
+
+
+def get_telegram_default_chat_id() -> int | None:
+    env_chat_id = (os.getenv("TELEGRAM_DEFAULT_CHAT_ID") or "").strip()
+    if env_chat_id:
+        try:
+            return int(env_chat_id)
+        except ValueError:
+            logger.warning("TELEGRAM_DEFAULT_CHAT_ID is not a valid integer: %s", env_chat_id)
+
+    stored_chat_id = get_setting(TELEGRAM_SETTINGS_KEY)
+    if stored_chat_id is None:
+        return None
+    try:
+        return int(stored_chat_id)
+    except (TypeError, ValueError):
+        logger.warning("Stored telegram_default_chat_id is invalid: %s", stored_chat_id)
+        return None
+
+
+def tg_send(chat_id: int | str, text: str) -> bool:
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not token:
+        logger.info("Telegram send skipped: TELEGRAM_BOT_TOKEN is not configured")
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({"chat_id": chat_id, "text": text}).encode("utf-8")
+    req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+
+    try:
+        with urlopen(req, timeout=15) as response:
+            body = response.read().decode("utf-8")
+            logger.info("Telegram message sent to chat_id=%s status=%s", chat_id, response.status)
+            if response.status >= 400:
+                logger.error("Telegram send failed for chat_id=%s body=%s", chat_id, body)
+                return False
+            return True
+    except Exception as exc:
+        logger.exception("Telegram send failed for chat_id=%s: %s", chat_id, exc)
+        return False
+
+
+def notify_import(summary: dict):
+    chat_id = get_telegram_default_chat_id()
+    if chat_id is None:
+        logger.info("SAP import notification skipped: no Telegram chat_id configured")
+        return False
+
+    message = (
+        "📦 Import SAP finalizado\n"
+        f"Rows OK: {summary.get('rowsOk', 0)}\n"
+        f"Duplicados: {summary.get('duplicates', 0)}\n"
+        f"Errores: {summary.get('errors', 0)}"
+    )
+    return tg_send(chat_id=chat_id, text=message)
+
+
 def ensure_indexes():
     db.users.create_index("username", unique=True)
     db.suppliers.create_index("cardCode", unique=True)
@@ -336,6 +435,7 @@ def ensure_indexes():
     db.apInvoices.create_index([("projectId", 1), ("sapInvoiceNum", 1)], unique=True)
     db.paymentLines.create_index([("paymentId", 1), ("apInvoiceId", 1), ("appliedAmount", 1)], unique=True)
     db.importRuns.create_index("sha256", unique=True)
+    db.settings.create_index("key", unique=True)
     try:
         backfill_sap_transactions_metadata()
     except Exception:
@@ -1754,6 +1854,48 @@ def run_s3_latest_sap_import(
     return {"iva": iva_summary, "efectivo": efectivo_summary}
 
 
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(
+    update: dict,
+    x_telegram_bot_api_secret_token: str | None = Header(default=None),
+):
+    configured_secret = (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
+    if configured_secret and x_telegram_bot_api_secret_token != configured_secret:
+        raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
+
+    message = update.get("message") if isinstance(update, dict) else None
+    chat = message.get("chat") if isinstance(message, dict) else None
+    chat_id = chat.get("id") if isinstance(chat, dict) else None
+    text = (message.get("text") or "").strip() if isinstance(message, dict) else ""
+
+    logger.info(
+        "Telegram webhook received update_id=%s chat_id=%s text=%s",
+        update.get("update_id") if isinstance(update, dict) else None,
+        chat_id,
+        text,
+    )
+
+    if chat_id is None:
+        return {"ok": True, "ignored": "no_message_or_chat_id"}
+
+    allowed_chat_ids = get_allowed_telegram_chat_ids()
+    if allowed_chat_ids is not None and int(chat_id) not in allowed_chat_ids:
+        raise HTTPException(status_code=403, detail="chat_id not allowed")
+
+    if text.startswith("/start"):
+        tg_send(
+            chat_id,
+            "Hola 👋\nComandos disponibles:\n/ping - prueba conectividad\n/chatid - mostrar y registrar este chat",
+        )
+    elif text.startswith("/ping"):
+        tg_send(chat_id, "pong ✅")
+    elif text.startswith("/chatid"):
+        set_setting(TELEGRAM_SETTINGS_KEY, str(chat_id))
+        tg_send(chat_id, f"chat_id registrado: {chat_id}")
+
+    return {"ok": True}
+
+
 def run_sap_import(
     file_name: str,
     file_bytes: bytes,
@@ -2150,7 +2292,7 @@ def run_sap_import(
         },
     )
 
-    return {
+    summary = {
         "already_imported": False,
         "rowsTotal": rows_total,
         "rowsOk": rows_ok,
@@ -2165,9 +2307,18 @@ def run_sap_import(
         "categoryPreservedCount": category_preserved_count,
         "categoryWouldHaveChangedCount": category_would_have_changed_count,
         "duplicatesSkipped": duplicates_skipped,
+        "rowsError": rows_error,
         "errorsSample": errors_sample[:50],
         "importRunId": str(import_run_id),
     }
+    notify_import(
+        {
+            "rowsOk": summary.get("rowsOk", 0),
+            "duplicates": summary.get("duplicatesSkipped", 0),
+            "errors": summary.get("rowsError", 0),
+        }
+    )
+    return summary
 
 
 @app.post("/api/import/sap-payments")
