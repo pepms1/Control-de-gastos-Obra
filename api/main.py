@@ -455,12 +455,7 @@ def _resolve_default_project_id() -> str | None:
     default_project_id = (os.getenv("DEFAULT_PROJECT_ID") or "").strip()
     if default_project_id:
         return default_project_id
-
-    project_name = "CALDERON DE LA BARCA"
-    project_doc = db.projects.find_one({"name": project_name}, {"_id": 1})
-    if not project_doc:
-        return None
-    return str(project_doc["_id"])
+    return "699f9b894678d62c8d69f86d"
 
 
 def _telegram_import_status_summary() -> str:
@@ -540,10 +535,216 @@ def _telegram_help_text() -> str:
         "/import_status - estado de última importación\n"
         "/count - contar transacciones del proyecto por defecto\n"
         "/sum YYYY-MM - sumar egresos del mes (sin IVA)\n"
+        "/prov <texto> [limit] [page] - buscar por proveedor\n"
+        "/cat <texto> [limit] - buscar categoría por nombre\n"
+        "/catid <categoryId> [limit] [page] - buscar por categoría\n"
+        "/find <texto> [limit] [page] - buscar en concepto/descripción\n"
         "/chatid - mostrar y registrar este chat\n\n"
         "Ejemplos:\n"
         "/sum 2025-01\n"
         "/ping"
+    )
+
+
+def _telegram_parse_limit(value: str | None, default: int = 25, maximum: int = 50) -> int:
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return default
+    if parsed <= 0:
+        return default
+    return min(parsed, maximum)
+
+
+def _telegram_parse_page(value: str | None) -> int:
+    if value is None or str(value).strip() == "":
+        return 1
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return 1
+    return parsed if parsed > 0 else 1
+
+
+def _telegram_parse_command_args(text: str) -> list[str]:
+    return [token.strip() for token in (text or "").split() if token.strip()]
+
+
+def _telegram_parse_search_params(raw_text: str) -> tuple[str, int, int]:
+    args = _telegram_parse_command_args(raw_text)
+    if len(args) < 2:
+        return "", 25, 1
+
+    tokens = args[1:]
+    page = 1
+    limit = 25
+    if tokens and re.fullmatch(r"\d+", tokens[-1]):
+        page = _telegram_parse_page(tokens[-1])
+        tokens = tokens[:-1]
+    if tokens and re.fullmatch(r"\d+", tokens[-1]):
+        limit = _telegram_parse_limit(tokens[-1])
+        tokens = tokens[:-1]
+
+    search_text = " ".join(tokens).strip()
+    return search_text, limit, page
+
+
+def _telegram_format_currency(amount: float) -> str:
+    return f"${round(float(amount or 0), 2):,.2f}"
+
+
+def _telegram_monto_principal(tx: dict) -> tuple[float, float | None, float | None]:
+    source_db = str(tx.get("sourceDb") or "").strip().upper()
+    amount = round(float(tx.get("amount") or 0), 2)
+    tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else {}
+    tax_subtotal = tax.get("subtotal")
+    tax_iva = tax.get("iva")
+    tax_total_factura = tax.get("totalFactura")
+
+    subtotal_value = None
+    iva_value = None
+    total_factura_value = None
+    try:
+        if tax_subtotal is not None:
+            subtotal_value = round(float(tax_subtotal), 2)
+    except (TypeError, ValueError):
+        subtotal_value = None
+    try:
+        if tax_iva is not None:
+            iva_value = round(float(tax_iva), 2)
+    except (TypeError, ValueError):
+        iva_value = None
+    try:
+        if tax_total_factura is not None:
+            total_factura_value = round(float(tax_total_factura), 2)
+    except (TypeError, ValueError):
+        total_factura_value = None
+
+    if source_db == "IVA":
+        return (subtotal_value if subtotal_value is not None else amount), iva_value, total_factura_value
+    return amount, iva_value, total_factura_value
+
+
+def _telegram_build_transactions_list(transactions: list[dict], limit_used: int, page: int) -> str:
+    if not transactions:
+        return f"Sin resultados. limit usados: {limit_used}, page: {page}"
+
+    lines: list[str] = []
+    total_principal = 0.0
+    for tx in transactions:
+        principal, iva_value, total_factura_value = _telegram_monto_principal(tx)
+        total_principal += principal
+        date_value = str(tx.get("date") or "").strip()[:10] or "(sin fecha)"
+        concept = str(tx.get("concept") or tx.get("description") or "").strip() or "(sin concepto)"
+        supplier_name = str(tx.get("supplierName") or "").strip() or "(sin proveedor)"
+        source_db = str(tx.get("sourceDb") or "").strip().upper() or "N/A"
+
+        line = f"{date_value} | {_telegram_format_currency(principal)} | {concept} | {supplier_name} | {source_db}"
+        if source_db == "IVA":
+            iva_text = _telegram_format_currency(iva_value or 0)
+            total_factura_text = _telegram_format_currency(total_factura_value or 0)
+            line += f" | IVA: {iva_text} | totalFactura: {total_factura_text}"
+        lines.append(line)
+
+    lines.append("")
+    lines.append(f"Total listado: {_telegram_format_currency(total_principal)}")
+    lines.append(f"limit usados: {limit_used}")
+    lines.append(f"page: {page}")
+
+    full_text = "\n".join(lines)
+    if len(full_text) <= 3500:
+        return full_text
+
+    truncated = full_text[:3450].rstrip()
+    return f"{truncated}\n\nTruncado, usa page {page + 1}"
+
+
+def _telegram_query_transactions(query: dict, limit: int, page: int) -> str:
+    project_id = _resolve_default_project_id() or "699f9b894678d62c8d69f86d"
+    effective_query = {"projectId": project_id, **query}
+    skip = (page - 1) * limit
+    projection = {
+        "date": 1,
+        "amount": 1,
+        "tax": 1,
+        "concept": 1,
+        "description": 1,
+        "supplierName": 1,
+        "sourceDb": 1,
+    }
+    rows = list(db.transactions.find(effective_query, projection).sort([("date", -1), ("_id", -1)]).skip(skip).limit(limit))
+    return _telegram_build_transactions_list(rows, limit_used=limit, page=page)
+
+
+def _telegram_search_supplier(raw_text: str) -> str:
+    text, limit, page = _telegram_parse_search_params(raw_text)
+    if not text:
+        return "Uso: /prov <texto> [limit] [page]"
+    escaped = re.escape(text)
+    query = {
+        "$or": [
+            {"supplierName": {"$regex": escaped, "$options": "i"}},
+            {"supplierCardCode": {"$regex": escaped, "$options": "i"}},
+        ]
+    }
+    return _telegram_query_transactions(query=query, limit=limit, page=page)
+
+
+def _telegram_search_find(raw_text: str) -> str:
+    text, limit, page = _telegram_parse_search_params(raw_text)
+    if not text:
+        return "Uso: /find <texto> [limit] [page]"
+    escaped = re.escape(text)
+    query = {
+        "$or": [
+            {"concept": {"$regex": escaped, "$options": "i"}},
+            {"description": {"$regex": escaped, "$options": "i"}},
+        ]
+    }
+    return _telegram_query_transactions(query=query, limit=limit, page=page)
+
+
+def _telegram_search_category_name(raw_text: str) -> str:
+    text, limit, _ = _telegram_parse_search_params(raw_text)
+    if not text:
+        return "Uso: /cat <texto> [limit]"
+    escaped = re.escape(text)
+    matches = list(
+        db.categories.find({"name": {"$regex": escaped, "$options": "i"}}, {"name": 1}).sort([("name", 1)]).limit(20)
+    )
+
+    if not matches:
+        return "No encontré categorías con ese nombre"
+    if len(matches) == 1:
+        category_id = str(matches[0]["_id"])
+        return _telegram_query_transactions(
+            query={"$or": [{"categoryId": category_id}, {"category_id": category_id}]},
+            limit=limit,
+            page=1,
+        )
+
+    lines = ["Coincidencias de categoría:"]
+    for index, row in enumerate(matches, start=1):
+        lines.append(f"{index}. {row.get('name') or '(sin nombre)'} | id: {row.get('_id')}")
+    lines.append("")
+    lines.append(f"elige: /catid <id> [{limit}]")
+    return "\n".join(lines)
+
+
+def _telegram_search_category_id(raw_text: str) -> str:
+    args = _telegram_parse_command_args(raw_text)
+    if len(args) < 2:
+        return "Uso: /catid <categoryId> [limit] [page]"
+
+    category_id = args[1]
+    limit = _telegram_parse_limit(args[2] if len(args) > 2 else None)
+    page = _telegram_parse_page(args[3] if len(args) > 3 else None)
+    return _telegram_query_transactions(
+        query={"$or": [{"categoryId": category_id}, {"category_id": category_id}]},
+        limit=limit,
+        page=page,
     )
 
 
@@ -2070,6 +2271,14 @@ async def telegram_webhook(
     elif text.startswith("/sum"):
         _, _, month_token = text.partition(" ")
         send_telegram_to_chat(_telegram_sum_expenses(month_token=month_token.strip(), include_iva=False), chat_id=chat_id)
+    elif text.startswith("/prov"):
+        send_telegram_to_chat(_telegram_search_supplier(text), chat_id=chat_id)
+    elif text.startswith("/catid"):
+        send_telegram_to_chat(_telegram_search_category_id(text), chat_id=chat_id)
+    elif text.startswith("/cat"):
+        send_telegram_to_chat(_telegram_search_category_name(text), chat_id=chat_id)
+    elif text.startswith("/find"):
+        send_telegram_to_chat(_telegram_search_find(text), chat_id=chat_id)
     elif text.startswith("/chatid"):
         set_setting(TELEGRAM_SETTINGS_KEY, str(chat_id))
         send_telegram_to_chat(f"chat_id registrado: {chat_id}", chat_id=chat_id)
