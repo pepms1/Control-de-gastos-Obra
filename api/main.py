@@ -1380,6 +1380,37 @@ def _telegram_detect_ask_keyword(text: str) -> str:
 
 
 def _telegram_keyword_synonyms(keyword: str) -> tuple[str, list[str]]:
+    normalized_keyword = _telegram_normalize_nlp_text(keyword).strip()
+
+    # Preferir categorías reales para que /ask siga la lógica del catálogo vivo.
+    category_rows = list(db.categories.find({"active": {"$ne": False}}, {"name": 1}).limit(5000))
+    category_candidates: list[tuple[str, str, list[str]]] = []
+    for row in category_rows:
+        raw_name = str(row.get("name") or "").strip()
+        if not raw_name:
+            continue
+
+        normalized_name = _telegram_normalize_nlp_text(raw_name)
+        tokens = [token for token in re.findall(r"[a-z0-9]+", normalized_name) if len(token) > 2]
+        terms = [raw_name, normalized_name, *tokens]
+        deduped_terms = [term for term in dict.fromkeys(term.strip() for term in terms if term and term.strip())]
+        category_candidates.append((raw_name, normalized_name, deduped_terms))
+
+    if normalized_keyword:
+        for canonical_name, normalized_name, terms in category_candidates:
+            if normalized_keyword == normalized_name:
+                return canonical_name, terms
+
+        for canonical_name, normalized_name, terms in category_candidates:
+            if normalized_keyword in normalized_name or normalized_name in normalized_keyword:
+                return canonical_name, terms
+
+        keyword_tokens = [token for token in re.findall(r"[a-z0-9]+", normalized_keyword) if len(token) > 2]
+        for canonical_name, _, terms in category_candidates:
+            normalized_terms = {_telegram_normalize_nlp_text(term) for term in terms}
+            if any(token in normalized_terms for token in keyword_tokens):
+                return canonical_name, terms
+
     synonym_map = {
         "madera": ["madera", "carpinter", "mdf", "triplay", "melamina", "pino", "tablero", "cimbra"],
         "electricidad": ["electricidad", "electr", "cable", "apagador", "contacto", "cfe", "centro de carga"],
@@ -1388,7 +1419,6 @@ def _telegram_keyword_synonyms(keyword: str) -> tuple[str, list[str]]:
         "plomeria": ["plomeria", "tuberia", "hidraul", "sanitari", "wc", "llave"],
     }
 
-    normalized_keyword = _telegram_normalize_nlp_text(keyword)
     for canonical, synonyms in synonym_map.items():
         for synonym in synonyms:
             normalized_synonym = _telegram_normalize_nlp_text(synonym)
