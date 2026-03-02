@@ -1632,9 +1632,19 @@ def _telegram_ask_transactions(text: str) -> str:
     return f"{header}\n\n{body}"
 
 
-def _format_import_bucket(summary: dict | None) -> str:
+def _format_import_bucket(label: str, summary: dict | None) -> str:
     bucket = summary if isinstance(summary, dict) else {}
-    return f"{bucket.get('already_imported', False)}/{bucket.get('rowsOk', 0)}/{bucket.get('duplicatesSkipped', 0)}"
+    rows_ok = int(bucket.get("rowsOk", 0) or 0)
+    duplicates_skipped = int(bucket.get("duplicatesSkipped", 0) or 0)
+    new_rows = rows_ok - duplicates_skipped
+    import_run_id = bucket.get("importRunId")
+
+    line = f"{label}: new={new_rows} parsed={rows_ok} dup={duplicates_skipped}"
+    if new_rows == 0:
+        line += " | Sin cambios"
+    if import_run_id:
+        line += f" | importRunId={import_run_id}"
+    return line
 
 
 def _summarize_error(exc: Exception) -> str:
@@ -1653,8 +1663,8 @@ def _summarize_error(exc: Exception) -> str:
 def notify_sap_latest_import_success(project: str, result: dict):
     message = (
         f"✅ SAP import OK ({project})\n"
-        f"IVA: {_format_import_bucket(result.get('iva'))}\n"
-        f"EFECTIVO: {_format_import_bucket(result.get('efectivo'))}\n"
+        f"{_format_import_bucket('IVA', result.get('iva'))}\n"
+        f"{_format_import_bucket('EFECTIVO', result.get('efectivo'))}\n"
         f"Fecha: {datetime.now(timezone.utc).isoformat()}"
     )
     send_telegram(message)
