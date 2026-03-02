@@ -3514,7 +3514,6 @@ def run_sap_import(
                 "vendor_id": None,
                 "source": "sap",
                 "sourceDb": record["sourceDb"],
-                "sourceFile": source_file_value,
                 "importRunId": str(import_run_id),
                 "tax": record["tax"],
                 "sap": {
@@ -3523,6 +3522,8 @@ def run_sap_import(
                     "montoAplicado": float(record["appliedAmount"]),
                     "montoAplicadoCents": record["appliedAmountCents"],
                     "cardCode": record["cardCode"],
+                    "sourceFile": source_file_value,
+                    "sourceSbo": record["sourceDb"],
                 },
             }
             sap_expense_ops.append(
@@ -3535,7 +3536,6 @@ def run_sap_import(
                             "category_id": inferred_category_id,
                             "created_at": datetime.now(timezone.utc).isoformat(),
                             "sourceFile": source_file_value,
-                            "importRunId": str(import_run_id),
                         },
                     },
                     upsert=True,
