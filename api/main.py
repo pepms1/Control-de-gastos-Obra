@@ -1,12 +1,13 @@
-from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File, Query, Request as FastAPIRequest
-from fastapi import Header
+from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File, Query, Request as FastAPIRequest, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import BulkWriteError, OperationFailure
 from bson import ObjectId
 from datetime import date, datetime, timedelta, timezone
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from pydantic import BaseModel
 from hashlib import sha256
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -44,6 +45,7 @@ client = MongoClient(MONGO_URL)
 db = client[DB_NAME]
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 logger = logging.getLogger(__name__)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 TELEGRAM_SETTINGS_KEY = "telegram_default_chat_id"
@@ -196,10 +198,10 @@ def serialize_user(user):
     return user_doc
 
 
-def role_from_token(authorization: str | None = Header(default=None)):
-    if not authorization or not authorization.startswith("Bearer "):
+def role_from_token(credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme)):
+    if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="Missing Bearer token")
-    token = authorization.split(" ", 1)[1].strip()
+    token = credentials.credentials.strip()
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except JWTError:
@@ -2813,10 +2815,25 @@ def health_head():
 
 
 # ---------- auth ----------
-@app.post("/auth/login")
-def login(payload: dict):
-    username = (payload.get("username") or "").strip()
-    password = payload.get("password") or ""
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    token: str | None = None
+    role: str | None = None
+    username: str | None = None
+    displayName: str | None = None
+
+
+@app.post("/auth/login", response_model=LoginResponse)
+@app.post("/api/auth/login", response_model=LoginResponse)
+def login(payload: LoginRequest):
+    username = payload.username.strip()
+    password = payload.password
     if not username or not password:
         raise HTTPException(status_code=400, detail="username and password are required")
 
@@ -3701,7 +3718,12 @@ def admin_import_sap_latest(
 
 
 @app.post("/api/cron/import/sap-payments")
-def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int = 0, mode: str = "upsert"):
+def cron_import_sap_payments(
+    project: str = "CALDERON DE LA BARCA",
+    force: int = 0,
+    mode: str = "upsert",
+    _: dict = Depends(require_admin),
+):
     sap_import_url = (os.getenv("SAP_IMPORT_URL") or "").strip()
     now = datetime.now(timezone.utc).isoformat()
 
@@ -3757,7 +3779,12 @@ def cron_import_sap_payments(project: str = "CALDERON DE LA BARCA", force: int =
 
 
 @app.post("/api/cron/import/sap-latest")
-def cron_import_sap_latest(project: str = "CALDERON DE LA BARCA", force: int = 0, mode: str = "upsert"):
+def cron_import_sap_latest(
+    project: str = "CALDERON DE LA BARCA",
+    force: int = 0,
+    mode: str = "upsert",
+    _: dict = Depends(require_admin),
+):
     now = datetime.now(timezone.utc).isoformat()
     try:
         result = run_s3_latest_sap_import(project=project, force=force, mode=mode, source="sap-latest-cron")
