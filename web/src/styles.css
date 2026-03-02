@@ -19,6 +19,20 @@ html{
   text-size-adjust:100%;
 }
 body{margin:0; background:linear-gradient(180deg, var(--gray-25) 0%, var(--gray-50) 100%);}
+body.theme-dark{
+  color:#e2e8f0;
+  --primary:#60a5fa;
+  --primary-dark:#bfdbfe;
+  --primary-soft:#1e3a5f;
+  --accent:#334155;
+  --gray-25:#020617;
+  --gray-50:#0f172a;
+  --gray-100:#1e293b;
+  --gray-200:#334155;
+  --gray-400:#94a3b8;
+  --gray-500:#cbd5e1;
+  --gray-700:#e2e8f0;
+}
 a{color:inherit}
 .container{max-width:1100px; margin:0 auto; padding:16px;}
 .nav{display:grid; grid-template-columns:1fr auto; gap:12px 16px; align-items:end; padding:12px 16px; background:#fff; border-bottom:1px solid var(--gray-200); position:sticky; top:0; z-index:1000; box-shadow:0 2px 8px rgba(18,48,95,.08);}
@@ -30,6 +44,7 @@ a{color:inherit}
 .nav-items{display:flex; gap:12px; align-items:center; flex-wrap:wrap; grid-column:1 / -1; min-width:0;}
 .nav-user-actions{display:flex; align-items:center; gap:10px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end;}
 .nav-user{word-break:break-word; text-align:right;}
+.theme-toggle{min-width:130px;}
 .nav a{padding:8px 10px; border-radius:10px; text-decoration:none;}
 .nav a.active, .nav button.active{background:var(--primary-soft); color:var(--primary); font-weight:600; padding:8px 10px; border-radius:10px;}
 .card{background:#ffffff; border:1px solid var(--gray-200); border-radius:16px; padding:14px; box-shadow:0 6px 20px rgba(18,48,95,.08);}
@@ -107,6 +122,33 @@ th, td{padding:10px 8px; border-bottom:1px solid var(--gray-200); text-align:lef
 
 .modal-backdrop{position:fixed; inset:0; background:rgba(30,41,59,.38); display:flex; align-items:center; justify-content:center; z-index:999;}
 .modal{width:min(520px,90vw); background:#fff; border-radius:16px; padding:16px; border:1px solid var(--gray-200);}
+
+body.theme-dark .nav,
+body.theme-dark .card,
+body.theme-dark .dashboard-panel,
+body.theme-dark .modal,
+body.theme-dark .login-brand-image,
+body.theme-dark input,
+body.theme-dark select,
+body.theme-dark textarea,
+body.theme-dark .dashboard-gauge::after{
+  background:#0f172a;
+}
+body.theme-dark .card,
+body.theme-dark .dashboard-panel,
+body.theme-dark .login-brand-image,
+body.theme-dark .modal,
+body.theme-dark table th,
+body.theme-dark table td,
+body.theme-dark input,
+body.theme-dark select,
+body.theme-dark textarea{
+  border-color:#334155;
+}
+body.theme-dark .nav{box-shadow:0 2px 8px rgba(2,6,23,.6);}
+body.theme-dark .dashboard-kpi-card,
+body.theme-dark .dashboard-line-chart,
+body.theme-dark .dashboard-column-track{background:#1e293b;}
 
 @media (max-width: 680px){
   .container{padding:12px;}

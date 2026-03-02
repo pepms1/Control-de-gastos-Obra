@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession } from '../api.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 
+const THEME_STORAGE_KEY = 'mdi-theme-preference';
+
 const moneyFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
@@ -19,7 +21,7 @@ function parseMoneyInput(value) {
 }
 
 /* ================= NAV ================= */
-function Nav({ tab, setTab, role, username, displayName, onLogout }) {
+function Nav({ tab, setTab, role, username, displayName, onLogout, isDarkMode, onToggleTheme }) {
   const canSeeSettings = role !== 'VIEWER';
   const items = [
     ['dashboard', 'Dashboard', true],
@@ -67,6 +69,10 @@ function Nav({ tab, setTab, role, username, displayName, onLogout }) {
       </div>
 
       <div className="nav-user-actions">
+        <button className="secondary theme-toggle" type="button" onClick={onToggleTheme}>
+          {isDarkMode ? '☀️ Modo día' : '🌙 Modo noche'}
+        </button>
+
         <div className="small nav-user">
           {displayName || username} ({role})
         </div>
@@ -134,8 +140,83 @@ export default function App() {
   const [vendors, setVendors] = useState([]);
   const [toast, setToast] = useState('');
   const [session, setSession] = useState(getSession());
+  const [themePreference, setThemePreference] = useState(() => localStorage.getItem(THEME_STORAGE_KEY) || 'auto');
+  const [autoDarkMode, setAutoDarkMode] = useState(false);
 
   const isAdmin = session.role === 'ADMIN';
+  const isDarkMode = themePreference === 'dark' || (themePreference === 'auto' && autoDarkMode);
+
+  useEffect(() => {
+    document.body.classList.toggle('theme-dark', isDarkMode);
+  }, [isDarkMode]);
+
+  useEffect(() => {
+    localStorage.setItem(THEME_STORAGE_KEY, themePreference);
+  }, [themePreference]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fallbackAtSixPm = () => {
+      const hour = new Date().getHours();
+      return hour >= 18 || hour < 6;
+    };
+
+    async function detectNightBySunset() {
+      if (!('geolocation' in navigator)) {
+        setAutoDarkMode(fallbackAtSixPm());
+        return;
+      }
+
+      const position = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: false,
+          timeout: 5000,
+          maximumAge: 60 * 60 * 1000,
+        });
+      });
+
+      const lat = position.coords.latitude;
+      const lng = position.coords.longitude;
+      const today = new Date();
+      const date = today.toISOString().slice(0, 10);
+      const response = await fetch(
+        `https://api.sunrise-sunset.org/json?lat=${lat}&lng=${lng}&date=${date}&formatted=0`
+      );
+      if (!response.ok) throw new Error('No se pudo consultar el atardecer');
+
+      const payload = await response.json();
+      const sunsetUtc = payload?.results?.sunset;
+      if (!sunsetUtc) throw new Error('Respuesta inválida de atardecer');
+
+      const sunsetDate = new Date(sunsetUtc);
+      const now = new Date();
+      const isNight = now >= sunsetDate || now.getHours() < 6;
+      if (!cancelled) setAutoDarkMode(isNight);
+    }
+
+    detectNightBySunset().catch(() => {
+      if (!cancelled) setAutoDarkMode(fallbackAtSixPm());
+    });
+
+    const timer = window.setInterval(() => {
+      detectNightBySunset().catch(() => {
+        if (!cancelled) setAutoDarkMode(fallbackAtSixPm());
+      });
+    }, 15 * 60 * 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  function toggleTheme() {
+    setThemePreference((prev) => {
+      if (prev === 'auto') return autoDarkMode ? 'light' : 'dark';
+      return prev === 'dark' ? 'light' : 'dark';
+    });
+  }
 
   async function refreshCatalog() {
     const [c, v] = await Promise.all([api.categories(), api.vendors()]);
@@ -178,6 +259,8 @@ export default function App() {
         username={session.username}
         displayName={session.displayName}
         onLogout={logout}
+        isDarkMode={isDarkMode}
+        onToggleTheme={toggleTheme}
       />
 
       <div className="container grid" style={{ gap: 14 }}>
