@@ -513,15 +513,37 @@ def _telegram_extract_user_data(from_user: dict | None) -> tuple[str | None, str
     return username, first_name, last_name
 
 
+def _telegram_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _telegram_is_admin_chat(chat_id: int | str | None) -> bool:
+    normalized_chat_id = _telegram_normalize_chat_id(chat_id)
+    return bool(normalized_chat_id) and normalized_chat_id == get_telegram_admin_chat_id()
+
+
+def _telegram_compose_name(first_name: str | None, last_name: str | None) -> str:
+    return f"{first_name or ''} {last_name or ''}".strip() or "-"
+
+
+def _telegram_escape_regex_literal(value: str) -> str:
+    return re.escape((value or "").strip())
+
+
 def _telegram_is_chat_approved(chat_id: int | str | None) -> bool:
     normalized_chat_id = _telegram_normalize_chat_id(chat_id)
     if not normalized_chat_id:
         return False
-    if normalized_chat_id == get_telegram_admin_chat_id():
+    if _telegram_is_admin_chat(normalized_chat_id):
         return True
 
-    user_doc = db.telegram_users.find_one({"chat_id": normalized_chat_id}, {"approved": 1})
-    return bool(user_doc and user_doc.get("approved") is True)
+    user_doc = db.telegram_users.find_one({"chat_id": normalized_chat_id}, {"status": 1, "approved": 1})
+    if not user_doc:
+        return False
+    status = str(user_doc.get("status") or "").strip().lower()
+    if status:
+        return status == "approved"
+    return user_doc.get("approved") is True
 
 
 def _telegram_has_recent_pending_request(chat_id: int | str | None) -> bool:
@@ -532,9 +554,8 @@ def _telegram_has_recent_pending_request(chat_id: int | str | None) -> bool:
     pending_doc = db.telegram_users.find_one(
         {
             "chat_id": normalized_chat_id,
-            "approved": False,
+            "status": "pending",
             "requested_at": {"$gte": cutoff.isoformat()},
-            "$or": [{"approved_by": None}, {"approved_by": {"$exists": False}}],
         },
         {"_id": 1},
     )
@@ -544,6 +565,7 @@ def _telegram_has_recent_pending_request(chat_id: int | str | None) -> bool:
 def _telegram_register_access_request(chat_id: int | str, from_user: dict | None) -> None:
     normalized_chat_id = _telegram_normalize_chat_id(chat_id)
     username, first_name, last_name = _telegram_extract_user_data(from_user)
+    now_iso = _telegram_now_iso()
     db.telegram_users.update_one(
         {"chat_id": normalized_chat_id},
         {
@@ -551,14 +573,134 @@ def _telegram_register_access_request(chat_id: int | str, from_user: dict | None
                 "username": username,
                 "first_name": first_name,
                 "last_name": last_name,
-                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "requested_at": now_iso,
+                "status": "pending",
                 "approved": False,
                 "approved_at": None,
-                "approved_by": None,
+                "revoked_at": None,
+                "updated_at": now_iso,
             }
         },
         upsert=True,
     )
+
+
+def _telegram_upsert_user_status(chat_id: int | str, status: str, from_user: dict | None = None) -> tuple[str, str | None]:
+    normalized_chat_id = _telegram_normalize_chat_id(chat_id)
+    username, first_name, last_name = _telegram_extract_user_data(from_user)
+    now_iso = _telegram_now_iso()
+    update_set: dict = {
+        "status": status,
+        "updated_at": now_iso,
+    }
+    if username is not None:
+        update_set["username"] = username
+    if first_name is not None:
+        update_set["first_name"] = first_name
+    if last_name is not None:
+        update_set["last_name"] = last_name
+
+    if status == "approved":
+        update_set.update({"approved": True, "approved_at": now_iso, "revoked_at": None})
+    elif status == "revoked":
+        update_set.update({"approved": False, "revoked_at": now_iso})
+
+    db.telegram_users.update_one({"chat_id": normalized_chat_id}, {"$set": update_set, "$setOnInsert": {"requested_at": now_iso}}, upsert=True)
+    doc = db.telegram_users.find_one({"chat_id": normalized_chat_id}, {"username": 1})
+    return normalized_chat_id, (doc or {}).get("username")
+
+
+def _telegram_handle_admin_command(chat_id: int | str, text: str) -> bool:
+    if not (text.startswith("/users") or text.startswith("/user_find") or text.startswith("/user_add") or text.startswith("/user_remove")):
+        return False
+    if not _telegram_is_admin_chat(chat_id):
+        send_telegram_to_chat("No autorizado", chat_id=chat_id)
+        return True
+
+    args = _telegram_parse_command_args(text)
+    command = args[0] if args else ""
+
+    if command == "/users":
+        scope = (args[1] if len(args) > 1 else "approved").strip().lower()
+        status_filter = {"approved", "pending", "all"}
+        if scope not in status_filter:
+            send_telegram_to_chat("Uso: /users [approved|pending|all]", chat_id=chat_id)
+            return True
+        query = {} if scope == "all" else {"status": scope}
+        cursor = db.telegram_users.find(query, {"chat_id": 1, "username": 1, "first_name": 1, "last_name": 1, "status": 1, "updated_at": 1}).sort("updated_at", -1).limit(50)
+        rows = list(cursor)
+        if not rows:
+            send_telegram_to_chat("Sin resultados", chat_id=chat_id)
+            return True
+        lines = [f"Usuarios ({scope})"]
+        for row in rows:
+            lines.append(
+                f"{row.get('chat_id') or '-'} | @{row.get('username') or '-'} | {_telegram_compose_name(row.get('first_name'), row.get('last_name'))} | {row.get('status') or '-'} | {row.get('updated_at') or '-'}"
+            )
+        send_telegram_to_chat("\n".join(lines), chat_id=chat_id)
+        return True
+
+    if command == "/user_find":
+        query_text = " ".join(args[1:]).strip()
+        if not query_text:
+            send_telegram_to_chat("Uso: /user_find <texto>", chat_id=chat_id)
+            return True
+        regex = {"$regex": _telegram_escape_regex_literal(query_text), "$options": "i"}
+        cursor = db.telegram_users.find({"$or": [{"username": regex}, {"first_name": regex}, {"last_name": regex}]}, {"chat_id": 1, "username": 1, "first_name": 1, "last_name": 1, "status": 1, "updated_at": 1}).sort("updated_at", -1).limit(20)
+        rows = list(cursor)
+        if not rows:
+            send_telegram_to_chat("Sin resultados", chat_id=chat_id)
+            return True
+        lines = [f"Coincidencias ({len(rows)}):"]
+        for row in rows:
+            lines.append(
+                f"{row.get('chat_id') or '-'} | @{row.get('username') or '-'} | {_telegram_compose_name(row.get('first_name'), row.get('last_name'))} | {row.get('status') or '-'} | {row.get('updated_at') or '-'}"
+            )
+        send_telegram_to_chat("\n".join(lines), chat_id=chat_id)
+        return True
+
+    if command == "/user_add":
+        if len(args) < 2:
+            send_telegram_to_chat("Uso: /user_add <chat_id|@username>", chat_id=chat_id)
+            return True
+        target = args[1].strip()
+        if target.startswith("@"):
+            username = target[1:].strip()
+            if not username:
+                send_telegram_to_chat("Uso: /user_add @username", chat_id=chat_id)
+                return True
+            doc = db.telegram_users.find_one({"username": {"$regex": f"^{_telegram_escape_regex_literal(username)}$", "$options": "i"}}, {"chat_id": 1})
+            if not doc:
+                send_telegram_to_chat("No encontrado; el usuario debe enviar /start al bot primero", chat_id=chat_id)
+                return True
+            normalized_chat_id, resolved_username = _telegram_upsert_user_status(chat_id=doc.get("chat_id"), status="approved")
+            send_telegram_to_chat(f"Usuario aprobado: {normalized_chat_id} (@{resolved_username or username})", chat_id=chat_id)
+            return True
+
+        normalized_chat_id, _ = _telegram_upsert_user_status(chat_id=target, status="approved")
+        send_telegram_to_chat(f"Usuario aprobado: {normalized_chat_id}", chat_id=chat_id)
+        return True
+
+    if command == "/user_remove":
+        if len(args) < 2:
+            send_telegram_to_chat("Uso: /user_remove <chat_id|@username>", chat_id=chat_id)
+            return True
+        target = args[1].strip()
+        if target.startswith("@"):
+            username = target[1:].strip()
+            doc = db.telegram_users.find_one({"username": {"$regex": f"^{_telegram_escape_regex_literal(username)}$", "$options": "i"}}, {"chat_id": 1})
+            if not doc:
+                send_telegram_to_chat("No encontrado", chat_id=chat_id)
+                return True
+            normalized_chat_id, _ = _telegram_upsert_user_status(chat_id=doc.get("chat_id"), status="revoked")
+            send_telegram_to_chat(f"Usuario revocado: {normalized_chat_id}", chat_id=chat_id)
+            return True
+
+        normalized_chat_id, _ = _telegram_upsert_user_status(chat_id=target, status="revoked")
+        send_telegram_to_chat(f"Usuario revocado: {normalized_chat_id}", chat_id=chat_id)
+        return True
+
+    return False
 
 
 def _telegram_notify_admin_access_request(chat_id: int | str, from_user: dict | None, text: str, date_value: str | None) -> None:
@@ -588,7 +730,6 @@ def _telegram_notify_admin_access_request(chat_id: int | str, from_user: dict | 
 def _telegram_handle_access_callback(callback_query: dict) -> dict:
     callback_query_id = str(callback_query.get("id") or "")
     data = str(callback_query.get("data") or "").strip()
-    callback_from = callback_query.get("from") if isinstance(callback_query, dict) else None
     callback_chat = callback_query.get("message", {}).get("chat") if isinstance(callback_query.get("message"), dict) else None
     actor_chat_id = _telegram_normalize_chat_id(callback_chat.get("id") if isinstance(callback_chat, dict) else None)
     admin_chat_id = get_telegram_admin_chat_id()
@@ -607,36 +748,14 @@ def _telegram_handle_access_callback(callback_query: dict) -> dict:
         tg_answer_callback_query(callback_query_id, "Acción inválida")
         return {"ok": True, "ignored": "invalid_callback_data"}
 
-    admin_from_chat_id = _telegram_normalize_chat_id(callback_from.get("id") if isinstance(callback_from, dict) else actor_chat_id)
-    now_iso = datetime.now(timezone.utc).isoformat()
     if action == "approve":
-        db.telegram_users.update_one(
-            {"chat_id": target_chat_id},
-            {
-                "$set": {
-                    "approved": True,
-                    "approved_at": now_iso,
-                    "approved_by": admin_from_chat_id,
-                }
-            },
-            upsert=True,
-        )
+        _telegram_upsert_user_status(chat_id=target_chat_id, status="approved")
         send_telegram_to_chat(f"Aprobado chat_id={target_chat_id}", chat_id=admin_chat_id)
         send_telegram_to_chat("✅ Ya estás autorizado. Escribe /help", chat_id=target_chat_id)
         tg_answer_callback_query(callback_query_id, "Usuario aprobado")
         return {"ok": True, "result": "approved", "chat_id": target_chat_id}
 
-    db.telegram_users.update_one(
-        {"chat_id": target_chat_id},
-        {
-            "$set": {
-                "approved": False,
-                "approved_at": now_iso,
-                "approved_by": admin_from_chat_id,
-            }
-        },
-        upsert=True,
-    )
+    _telegram_upsert_user_status(chat_id=target_chat_id, status="revoked")
     send_telegram_to_chat(f"Rechazado chat_id={target_chat_id}", chat_id=admin_chat_id)
     send_telegram_to_chat("❌ Tu solicitud fue rechazada por el admin.", chat_id=target_chat_id)
     tg_answer_callback_query(callback_query_id, "Usuario rechazado")
@@ -1122,7 +1241,11 @@ def _telegram_help_text() -> str:
         "/catid <categoryId> [limit] [page] - buscar por categoría\n"
         "/find <texto> [limit] [page] - buscar en concepto/descripción\n"
         "/ask <texto> - consulta natural simple (sin LLM)\n"
-        "/chatid - mostrar y registrar este chat\n\n"
+        "/chatid - mostrar y registrar este chat\n"
+        "/users [approved|pending|all] - (admin) listar usuarios autorizados\n"
+        "/user_find <texto> - (admin) buscar usuario telegram\n"
+        "/user_add <chat_id|@username> - (admin) aprobar usuario\n"
+        "/user_remove <chat_id|@username> - (admin) revocar usuario\n\n"
         "Ejemplos:\n"
         "/prov cementos\n"
         "/ping"
@@ -1572,7 +1695,8 @@ def ensure_indexes():
     db.importRuns.create_index("sha256", unique=True)
     db.settings.create_index("key", unique=True)
     db.telegram_users.create_index("chat_id", unique=True)
-    db.telegram_users.create_index([("approved", 1), ("requested_at", -1)])
+    db.telegram_users.create_index([("status", 1), ("updated_at", -1)])
+    db.telegram_users.create_index([("username", 1)])
     db.telegram_state.create_index("chat_id", unique=True)
     db.telegram_state.create_index([("updated_at", -1)])
     try:
@@ -3024,6 +3148,9 @@ async def telegram_webhook(
 
     if chat_id is None:
         return {"ok": True, "ignored": "no_message_or_chat_id"}
+
+    if _telegram_handle_admin_command(chat_id=chat_id, text=text):
+        return {"ok": True, "handled": "admin_command"}
 
     if not _telegram_is_chat_approved(chat_id):
         send_telegram_to_chat("No autorizado. Envié solicitud al admin.", chat_id=chat_id)
