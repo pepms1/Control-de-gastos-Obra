@@ -140,11 +140,14 @@ export default function App() {
   const [vendors, setVendors] = useState([]);
   const [toast, setToast] = useState('');
   const [session, setSession] = useState(getSession());
-  const [themePreference, setThemePreference] = useState(() => localStorage.getItem(THEME_STORAGE_KEY) || 'auto');
-  const [autoDarkMode, setAutoDarkMode] = useState(false);
+  const [themePreference, setThemePreference] = useState(() => {
+    const storedPreference = localStorage.getItem(THEME_STORAGE_KEY);
+    if (storedPreference === 'dark') return 'dark';
+    return 'light';
+  });
 
   const isAdmin = session.role === 'ADMIN';
-  const isDarkMode = themePreference === 'dark' || (themePreference === 'auto' && autoDarkMode);
+  const isDarkMode = themePreference === 'dark';
 
   useEffect(() => {
     document.body.classList.toggle('theme-dark', isDarkMode);
@@ -154,68 +157,8 @@ export default function App() {
     localStorage.setItem(THEME_STORAGE_KEY, themePreference);
   }, [themePreference]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const fallbackAtSixPm = () => {
-      const hour = new Date().getHours();
-      return hour >= 18 || hour < 6;
-    };
-
-    async function detectNightBySunset() {
-      if (!('geolocation' in navigator)) {
-        setAutoDarkMode(fallbackAtSixPm());
-        return;
-      }
-
-      const position = await new Promise((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: false,
-          timeout: 5000,
-          maximumAge: 60 * 60 * 1000,
-        });
-      });
-
-      const lat = position.coords.latitude;
-      const lng = position.coords.longitude;
-      const today = new Date();
-      const date = today.toISOString().slice(0, 10);
-      const response = await fetch(
-        `https://api.sunrise-sunset.org/json?lat=${lat}&lng=${lng}&date=${date}&formatted=0`
-      );
-      if (!response.ok) throw new Error('No se pudo consultar el atardecer');
-
-      const payload = await response.json();
-      const sunsetUtc = payload?.results?.sunset;
-      if (!sunsetUtc) throw new Error('Respuesta inválida de atardecer');
-
-      const sunsetDate = new Date(sunsetUtc);
-      const now = new Date();
-      const isNight = now >= sunsetDate || now.getHours() < 6;
-      if (!cancelled) setAutoDarkMode(isNight);
-    }
-
-    detectNightBySunset().catch(() => {
-      if (!cancelled) setAutoDarkMode(fallbackAtSixPm());
-    });
-
-    const timer = window.setInterval(() => {
-      detectNightBySunset().catch(() => {
-        if (!cancelled) setAutoDarkMode(fallbackAtSixPm());
-      });
-    }, 15 * 60 * 1000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-
   function toggleTheme() {
-    setThemePreference((prev) => {
-      if (prev === 'auto') return autoDarkMode ? 'light' : 'dark';
-      return prev === 'dark' ? 'light' : 'dark';
-    });
+    setThemePreference((prev) => (prev === 'dark' ? 'light' : 'dark'));
   }
 
   async function refreshCatalog() {
