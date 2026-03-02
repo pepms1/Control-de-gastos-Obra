@@ -276,27 +276,10 @@ def get_active_project_id(request: FastAPIRequest) -> str:
     return active_project_id
 
 
-def resolve_transactions_project_id(project_id: str | None = None, project: str | None = None) -> str:
+def resolve_transactions_project_id(project_id: str | None = None) -> str:
     requested_project_id = (project_id or "").strip()
     if requested_project_id:
         return requested_project_id
-
-    project_key = (project or "").strip()
-    if project_key:
-        project_doc = db.projects.find_one(
-            {
-                "$or": [
-                    {"slug": project_key},
-                    {"name": project_key},
-                    {"slug": {"$regex": f"^{re.escape(project_key)}$", "$options": "i"}},
-                    {"name": {"$regex": f"^{re.escape(project_key)}$", "$options": "i"}},
-                ]
-            },
-            {"_id": 1},
-        )
-        if not project_doc:
-            raise HTTPException(status_code=404, detail=f"Project not found: {project_key}")
-        return str(project_doc["_id"])
 
     default_project_id = (os.getenv("DEFAULT_PROJECT_ID") or "").strip()
     if default_project_id:
@@ -306,6 +289,7 @@ def resolve_transactions_project_id(project_id: str | None = None, project: str 
 
 
 def with_legacy_project_filter(query: dict, project_id: str) -> dict:
+    # Multitenancy rule: nunca mezclar proyectos, contemplando registros legacy en sap.projectId.
     legacy_filter = {"$or": [{"projectId": project_id}, {"sap.projectId": project_id}]}
     if not query:
         return legacy_filter
@@ -1785,8 +1769,8 @@ def ensure_indexes():
         name="sap_transactions_unique_v2_cents",
     )
     db.transactions.create_index([("projectId", 1), ("date", -1)])
-    db.transactions.create_index([("projectId", 1)])
-    db.transactions.create_index([("sap.projectId", 1)])
+    db.transactions.create_index([("projectId", 1)], name="transactions_project_id_idx")
+    db.transactions.create_index([("sap.projectId", 1)], name="transactions_sap_project_id_idx")
     text_index_name = "transactions_text_search"
     current_indexes = {idx.get("name"): idx for idx in db.transactions.list_indexes()}
     existing_text_index = current_indexes.get(text_index_name)
@@ -3859,7 +3843,7 @@ def summary_expenses_by_supplier(
     include_iva: bool = False,
     _: dict = Depends(require_authenticated),
 ):
-    project_id = resolve_transactions_project_id(project_id=projectId, project=project)
+    project_id = resolve_transactions_project_id(project_id=projectId)
     movements_query = with_legacy_project_filter({"type": "EXPENSE"}, project_id)
     movements = list(
         db.transactions.find(
@@ -4309,8 +4293,13 @@ def set_vendor_categories(vendor_id: str, category_ids: list[str], request: Fast
 
 # ---------- transactions ----------
 @app.post("/transactions")
-def create_transaction(payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
-    active_project_id = get_active_project_id(request)
+def create_transaction(
+    payload: dict,
+    request: FastAPIRequest,
+    projectId: str | None = None,
+    _: dict = Depends(require_admin),
+):
+    active_project_id = resolve_transactions_project_id(project_id=projectId)
     ttype = payload.get("type")
     if ttype not in ("INCOME", "EXPENSE"):
         raise HTTPException(status_code=400, detail="type must be INCOME or EXPENSE")
@@ -4466,8 +4455,8 @@ def delete_transaction(transaction_id: str, request: FastAPIRequest, _: dict = D
 
 # Manual test (cURL):
 # curl -G "http://localhost:8000/api/transactions" --data-urlencode "projectId=<PROJECT_OBJECT_ID>" -H "Authorization: Bearer <TOKEN>"
-# curl -G "http://localhost:8000/api/transactions" --data-urlencode "project=calderon-de-la-barca" -H "Authorization: Bearer <TOKEN>"
-# curl -G "http://localhost:8000/stats/spend-by-category" --data-urlencode "project=CALDERON DE LA BARCA" -H "Authorization: Bearer <TOKEN>"
+# curl -G "http://localhost:8000/api/movimientos" -H "Authorization: Bearer <TOKEN>"  # usa DEFAULT_PROJECT_ID si no se envía projectId
+# curl -G "http://localhost:8000/api/expenses/summary-by-supplier" --data-urlencode "projectId=<PROJECT_OBJECT_ID>" -H "Authorization: Bearer <TOKEN>"
 @app.get("/transactions")
 @app.get("/api/transactions")
 @app.get("/api/movimientos")
@@ -4493,7 +4482,7 @@ def list_transactions(
     _: dict = Depends(require_authenticated),
 ):
     normalized_page = max(page, 1)
-    active_project_id = resolve_transactions_project_id(project_id=projectId, project=project)
+    active_project_id = resolve_transactions_project_id(project_id=projectId)
     normalized_limit = min(max(limit, 1), 500)
     skip = (normalized_page - 1) * normalized_limit
     effective_date_from = from_date or date_from
@@ -4576,7 +4565,7 @@ def spend_by_category(
     project: str | None = None,
     _: dict = Depends(require_authenticated),
 ):
-    active_project_id = resolve_transactions_project_id(project_id=projectId, project=project)
+    active_project_id = resolve_transactions_project_id(project_id=projectId)
     match = with_legacy_project_filter({"type": "EXPENSE"}, active_project_id)
     if vendor_id:
         match["vendor_id"] = vendor_id
