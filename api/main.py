@@ -276,8 +276,8 @@ def get_active_project_id(request: FastAPIRequest) -> str:
     return active_project_id
 
 
-def resolve_project_id(projectId: str | None = None) -> str:
-    requested_project_id = (projectId or "").strip()
+def resolve_project_id(project_id: str | None = None) -> str:
+    requested_project_id = (project_id or "").strip()
     using_default = not requested_project_id
 
     if using_default:
@@ -3861,8 +3861,8 @@ def summary_expenses_by_supplier(
     include_iva: bool = False,
     _: dict = Depends(require_authenticated),
 ):
-    project_id = resolve_project_id(projectId=projectId or project)
-    movements_query = with_legacy_project_filter({"type": "EXPENSE"}, project_id)
+    project_id = resolve_project_id(projectId or project)
+    movements_query = {"type": "EXPENSE", "projectId": project_id}
     movements = list(
         db.transactions.find(
             movements_query,
@@ -4317,7 +4317,7 @@ def create_transaction(
     projectId: str | None = None,
     _: dict = Depends(require_admin),
 ):
-    active_project_id = resolve_project_id(projectId=projectId)
+    active_project_id = resolve_project_id(projectId)
     ttype = payload.get("type")
     if ttype not in ("INCOME", "EXPENSE"):
         raise HTTPException(status_code=400, detail="type must be INCOME or EXPENSE")
@@ -4475,6 +4475,7 @@ def delete_transaction(transaction_id: str, request: FastAPIRequest, _: dict = D
 # curl -G "http://localhost:8000/api/transactions" --data-urlencode "projectId=<PROJECT_OBJECT_ID>" -H "Authorization: Bearer <TOKEN>"
 # curl -G "http://localhost:8000/api/transactions" --data-urlencode "projectId=000000000000000000000000" -H "Authorization: Bearer <TOKEN>"  # debe responder 404 si no existe
 # curl -G "http://localhost:8000/api/transactions" --data-urlencode "projectId=000" -H "Authorization: Bearer <TOKEN>"  # debe responder 400 Invalid projectId
+# curl -G "http://localhost:8000/api/transactions" --data-urlencode "projectId=<PENSYLVANIA_PROJECT_OBJECT_ID>" -H "Authorization: Bearer <TOKEN>"  # puede responder 200 con items=[] si no hay import
 # curl -G "http://localhost:8000/api/movimientos" -H "Authorization: Bearer <TOKEN>"  # usa DEFAULT_PROJECT_ID si no se envía projectId
 # curl -G "http://localhost:8000/api/expenses/summary-by-supplier" --data-urlencode "projectId=<PROJECT_OBJECT_ID>" -H "Authorization: Bearer <TOKEN>"
 @app.get("/transactions")
@@ -4502,7 +4503,7 @@ def list_transactions(
     _: dict = Depends(require_authenticated),
 ):
     normalized_page = max(page, 1)
-    active_project_id = resolve_project_id(projectId=projectId or project)
+    active_project_id = resolve_project_id(projectId or project)
     normalized_limit = min(max(limit, 1), 500)
     skip = (normalized_page - 1) * normalized_limit
     effective_date_from = from_date or date_from
@@ -4586,8 +4587,8 @@ def spend_by_category(
     project: str | None = None,
     _: dict = Depends(require_authenticated),
 ):
-    active_project_id = resolve_project_id(projectId=projectId or project)
-    match = with_legacy_project_filter({"type": "EXPENSE"}, active_project_id)
+    active_project_id = resolve_project_id(projectId or project)
+    match = {"type": "EXPENSE", "projectId": active_project_id}
     if vendor_id:
         match["vendor_id"] = vendor_id
     if date_from or date_to:
