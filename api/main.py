@@ -276,6 +276,42 @@ def get_active_project_id(request: FastAPIRequest) -> str:
     return active_project_id
 
 
+def resolve_transactions_project_id(project_id: str | None = None, project: str | None = None) -> str:
+    requested_project_id = (project_id or "").strip()
+    if requested_project_id:
+        return requested_project_id
+
+    project_key = (project or "").strip()
+    if project_key:
+        project_doc = db.projects.find_one(
+            {
+                "$or": [
+                    {"slug": project_key},
+                    {"name": project_key},
+                    {"slug": {"$regex": f"^{re.escape(project_key)}$", "$options": "i"}},
+                    {"name": {"$regex": f"^{re.escape(project_key)}$", "$options": "i"}},
+                ]
+            },
+            {"_id": 1},
+        )
+        if not project_doc:
+            raise HTTPException(status_code=404, detail=f"Project not found: {project_key}")
+        return str(project_doc["_id"])
+
+    default_project_id = (os.getenv("DEFAULT_PROJECT_ID") or "").strip()
+    if default_project_id:
+        return default_project_id
+
+    raise HTTPException(status_code=400, detail="DEFAULT_PROJECT_ID env var is required")
+
+
+def with_legacy_project_filter(query: dict, project_id: str) -> dict:
+    legacy_filter = {"$or": [{"projectId": project_id}, {"sap.projectId": project_id}]}
+    if not query:
+        return legacy_filter
+    return {"$and": [legacy_filter, query]}
+
+
 def ensure_default_users():
     users = db.users
     users.create_index("username", unique=True)
@@ -1749,6 +1785,8 @@ def ensure_indexes():
         name="sap_transactions_unique_v2_cents",
     )
     db.transactions.create_index([("projectId", 1), ("date", -1)])
+    db.transactions.create_index([("projectId", 1)])
+    db.transactions.create_index([("sap.projectId", 1)])
     text_index_name = "transactions_text_search"
     current_indexes = {idx.get("name"): idx for idx in db.transactions.list_indexes()}
     existing_text_index = current_indexes.get(text_index_name)
@@ -2329,7 +2367,7 @@ def build_transactions_query(
     if supplier_id:
         q["supplierId"] = supplier_id
     if project_id:
-        q["projectId"] = project_id
+        q = with_legacy_project_filter(q, project_id)
     if origen:
         q["source"] = origen
     if source:
@@ -3816,15 +3854,16 @@ def cron_import_sap_latest(
 
 @app.get("/api/expenses/summary-by-supplier")
 def summary_expenses_by_supplier(
-    project: str = "CALDERON DE LA BARCA",
+    projectId: str | None = None,
+    project: str | None = None,
     include_iva: bool = False,
-    request: FastAPIRequest = None,
     _: dict = Depends(require_authenticated),
 ):
-    project_id = get_active_project_id(request)
+    project_id = resolve_transactions_project_id(project_id=projectId, project=project)
+    movements_query = with_legacy_project_filter({"type": "EXPENSE"}, project_id)
     movements = list(
         db.transactions.find(
-            {"type": "EXPENSE", "projectId": project_id},
+            movements_query,
             {"supplierId": 1, "amount": 1, "tax": 1},
         )
     )
@@ -3864,6 +3903,39 @@ def summary_expenses_by_supplier(
 
     output.sort(key=lambda item: (item["supplierName"] or "").lower())
     return output
+
+
+@app.post("/api/admin/migrate/projectId")
+def migrate_transactions_project_id(_: dict = Depends(require_admin)):
+    default_project_id = resolve_transactions_project_id()
+
+    copied_result = db.transactions.update_many(
+        {
+            "projectId": {"$exists": False},
+            "sap.projectId": {"$exists": True, "$nin": [None, ""]},
+        },
+        [{"$set": {"projectId": "$sap.projectId"}}],
+    )
+
+    defaulted_result = db.transactions.update_many(
+        {
+            "$and": [
+                {"$or": [{"projectId": {"$exists": False}}, {"projectId": None}, {"projectId": ""}]},
+                {"$or": [{"sap.projectId": {"$exists": False}}, {"sap.projectId": None}, {"sap.projectId": ""}]},
+            ]
+        },
+        {"$set": {"projectId": default_project_id}},
+    )
+
+    return {
+        "defaultProjectId": default_project_id,
+        "copiedFromSapProjectId": copied_result.modified_count,
+        "defaultedProjectId": defaulted_result.modified_count,
+    }
+
+
+# Manual test (cURL):
+# curl -X POST "http://localhost:8000/api/admin/migrate/projectId" -H "Authorization: Bearer <ADMIN_TOKEN>"
 @app.post("/api/admin/sap/dedupe-migration")
 def admin_run_sap_dedupe_migration(_: dict = Depends(require_admin)):
     return run_sap_manual_migration_and_dedupe()
@@ -4392,6 +4464,10 @@ def delete_transaction(transaction_id: str, request: FastAPIRequest, _: dict = D
     return {"ok": True}
 
 
+# Manual test (cURL):
+# curl -G "http://localhost:8000/api/transactions" --data-urlencode "projectId=<PROJECT_OBJECT_ID>" -H "Authorization: Bearer <TOKEN>"
+# curl -G "http://localhost:8000/api/transactions" --data-urlencode "project=calderon-de-la-barca" -H "Authorization: Bearer <TOKEN>"
+# curl -G "http://localhost:8000/stats/spend-by-category" --data-urlencode "project=CALDERON DE LA BARCA" -H "Authorization: Bearer <TOKEN>"
 @app.get("/transactions")
 @app.get("/api/transactions")
 @app.get("/api/movimientos")
@@ -4407,6 +4483,7 @@ def list_transactions(
     to_date: str | None = Query(default=None, alias="to"),
     request: FastAPIRequest = None,
     projectId: str | None = None,
+    project: str | None = None,
     origen: str | None = None,
     source: str | None = None,
     sourceDb: str | None = None,
@@ -4416,7 +4493,7 @@ def list_transactions(
     _: dict = Depends(require_authenticated),
 ):
     normalized_page = max(page, 1)
-    active_project_id = get_active_project_id(request)
+    active_project_id = resolve_transactions_project_id(project_id=projectId, project=project)
     normalized_limit = min(max(limit, 1), 500)
     skip = (normalized_page - 1) * normalized_limit
     effective_date_from = from_date or date_from
@@ -4495,11 +4572,12 @@ def spend_by_category(
     date_to: str | None = None,
     vendor_id: str | None = None,
     include_iva: bool = False,
-    request: FastAPIRequest = None,
+    projectId: str | None = None,
+    project: str | None = None,
     _: dict = Depends(require_authenticated),
 ):
-    active_project_id = get_active_project_id(request)
-    match = {"type": "EXPENSE", "projectId": active_project_id}
+    active_project_id = resolve_transactions_project_id(project_id=projectId, project=project)
+    match = with_legacy_project_filter({"type": "EXPENSE"}, active_project_id)
     if vendor_id:
         match["vendor_id"] = vendor_id
     if date_from or date_to:
