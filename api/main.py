@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File, Query, Request as FastAPIRequest
 from fastapi import Header
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient, UpdateOne
@@ -253,6 +253,25 @@ def require_admin(user=Depends(role_from_token)):
 
 def require_authenticated(user=Depends(role_from_token)):
     return user
+
+
+def get_active_project_id(request: FastAPIRequest) -> str:
+    header_project_id = (request.headers.get("X-Project-Id") or "").strip()
+    default_project_id = (os.getenv("DEFAULT_PROJECT_ID") or "").strip()
+
+    active_project_id = header_project_id or default_project_id
+    if not active_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing active project. Provide X-Project-Id header or configure DEFAULT_PROJECT_ID env var.",
+        )
+
+    logger.info(
+        "Resolved active projectId=%s via %s",
+        active_project_id,
+        "X-Project-Id" if header_project_id else "DEFAULT_PROJECT_ID",
+    )
+    return active_project_id
 
 
 def ensure_default_users():
@@ -2921,6 +2940,12 @@ def list_supplier_categories(_: dict = Depends(require_authenticated)):
     return [serialize(c) for c in db.supplierCategories.find({}).sort("name", 1)]
 
 
+@app.get("/api/projects")
+def list_projects(_: dict = Depends(require_authenticated)):
+    rows = db.projects.find({}, {"name": 1, "slug": 1}).sort("name", 1)
+    return [{"_id": str(row["_id"]), "name": row.get("name"), "slug": row.get("slug")} for row in rows]
+
+
 @app.post("/api/supplier-categories")
 def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
     name = (payload.get("name") or "").strip()
@@ -2933,16 +2958,19 @@ def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
 
 
 @app.get("/api/suppliers")
-def list_suppliers(uncategorized: int = 0, _: dict = Depends(require_authenticated)):
-    query = {}
+def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, _: dict = Depends(require_authenticated)):
+    active_project_id = get_active_project_id(request)
+    query = {"projectId": active_project_id}
     if uncategorized == 1:
-        query = {"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]}
+        query["$or"] = [{"categoryId": None}, {"categoryId": {"$exists": False}}]
     return [serialize(s) for s in db.suppliers.find(query).sort("name", 1)]
 
 
 @app.patch("/api/suppliers/{supplier_id}")
-def update_supplier(supplier_id: str, payload: dict, _: dict = Depends(require_admin)):
-    supplier = db.suppliers.find_one({"_id": oid(supplier_id)})
+def update_supplier(supplier_id: str, payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
+    supplier_filter = {"_id": oid(supplier_id), "projectId": active_project_id}
+    supplier = db.suppliers.find_one(supplier_filter)
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
 
@@ -2950,11 +2978,11 @@ def update_supplier(supplier_id: str, payload: dict, _: dict = Depends(require_a
     if category_id is not None:
         if not db.supplierCategories.find_one({"_id": oid(category_id)}):
             raise HTTPException(status_code=400, detail="Invalid categoryId")
-        db.suppliers.update_one({"_id": oid(supplier_id)}, {"$set": {"categoryId": category_id}})
+        db.suppliers.update_one(supplier_filter, {"$set": {"categoryId": category_id}})
     else:
-        db.suppliers.update_one({"_id": oid(supplier_id)}, {"$set": {"categoryId": None}})
+        db.suppliers.update_one(supplier_filter, {"$set": {"categoryId": None}})
 
-    return serialize(db.suppliers.find_one({"_id": oid(supplier_id)}))
+    return serialize(db.suppliers.find_one(supplier_filter))
 
 
 def build_sap_vendor_upsert(card_code: str, beneficiary: str, project_id: str):
@@ -3763,14 +3791,10 @@ def cron_import_sap_latest(project: str = "CALDERON DE LA BARCA", force: int = 0
 def summary_expenses_by_supplier(
     project: str = "CALDERON DE LA BARCA",
     include_iva: bool = False,
+    request: FastAPIRequest = None,
     _: dict = Depends(require_authenticated),
 ):
-    project_name = (project or "").strip() or "CALDERON DE LA BARCA"
-    project_doc = db.projects.find_one({"name": project_name})
-    if not project_doc:
-        return []
-
-    project_id = str(project_doc["_id"])
+    project_id = get_active_project_id(request)
     movements = list(
         db.transactions.find(
             {"type": "EXPENSE", "projectId": project_id},
@@ -3798,7 +3822,7 @@ def summary_expenses_by_supplier(
     supplier_ids = [oid(row["_id"]) for row in rows if row.get("_id")]
     supplier_names = {}
     if supplier_ids:
-        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1}):
+        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}, "projectId": project_id}, {"name": 1}):
             supplier_names[str(supplier["_id"])] = supplier.get("name") or "(Sin proveedor)"
 
     output = [
@@ -3821,7 +3845,7 @@ def admin_run_sap_dedupe_migration(_: dict = Depends(require_admin)):
 @app.post("/api/admin/backfill/suppliers-to-vendors")
 def backfill_suppliers_to_vendors(project: str = "CALDERON DE LA BARCA", _: dict = Depends(require_admin)):
     project_id = get_or_create_project_id(project)
-    suppliers = list(db.suppliers.find({}, {"cardCode": 1, "name": 1}))
+    suppliers = list(db.suppliers.find({"projectId": project_id}, {"cardCode": 1, "name": 1}))
     vendors_synced = sync_suppliers_into_vendors(suppliers, project_id)
     return {
         "projectId": project_id,
@@ -4080,9 +4104,11 @@ def list_vendors(
     active_only: bool = True,
     category_id: str | None = None,
     include_sap: bool = True,
+    request: FastAPIRequest = None,
     _: dict = Depends(require_authenticated),
 ):
-    q = {"active": True} if active_only else {}
+    active_project_id = get_active_project_id(request)
+    q = {"projectId": active_project_id, "active": True} if active_only else {"projectId": active_project_id}
     if category_id:
         q["category_ids"] = category_id
     if include_sap:
@@ -4093,11 +4119,12 @@ def list_vendors(
 
 
 @app.post("/vendors")
-def create_vendor(payload: dict, _: dict = Depends(require_admin)):
+def create_vendor(payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
     name = (payload.get("name") or "").strip()
     if len(name) < 2:
         raise HTTPException(status_code=400, detail="name is required")
-    if db.vendors.find_one({"name": name}):
+    if db.vendors.find_one({"name": name, "projectId": active_project_id}):
         raise HTTPException(status_code=409, detail="Vendor already exists")
 
     category_ids = payload.get("category_ids") or []
@@ -4112,14 +4139,17 @@ def create_vendor(payload: dict, _: dict = Depends(require_admin)):
         "notes": payload.get("notes"),
         "category_ids": category_ids,
         "active": True,
+        "projectId": active_project_id,
     }
     _id = db.vendors.insert_one(doc).inserted_id
     return serialize(db.vendors.find_one({"_id": _id}))
 
 
 @app.patch("/vendors/{vendor_id}")
-def update_vendor(vendor_id: str, payload: dict, _: dict = Depends(require_admin)):
-    vendor = db.vendors.find_one({"_id": oid(vendor_id)})
+def update_vendor(vendor_id: str, payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
+    vendor_filter = {"_id": oid(vendor_id), "projectId": active_project_id}
+    vendor = db.vendors.find_one(vendor_filter)
     if not vendor:
         raise HTTPException(status_code=404, detail="Vendor not found")
 
@@ -4128,7 +4158,7 @@ def update_vendor(vendor_id: str, payload: dict, _: dict = Depends(require_admin
         name = (payload.get("name") or "").strip()
         if len(name) < 2:
             raise HTTPException(status_code=400, detail="name is required")
-        dup = db.vendors.find_one({"name": name, "_id": {"$ne": oid(vendor_id)}})
+        dup = db.vendors.find_one({"name": name, "projectId": active_project_id, "_id": {"$ne": oid(vendor_id)}})
         if dup:
             raise HTTPException(status_code=409, detail="Vendor already exists")
         updates["name"] = name
@@ -4150,33 +4180,38 @@ def update_vendor(vendor_id: str, payload: dict, _: dict = Depends(require_admin
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    db.vendors.update_one({"_id": oid(vendor_id)}, {"$set": updates})
-    return serialize(db.vendors.find_one({"_id": oid(vendor_id)}))
+    db.vendors.update_one(vendor_filter, {"$set": updates})
+    return serialize(db.vendors.find_one(vendor_filter))
 
 
 @app.delete("/vendors/{vendor_id}")
-def delete_vendor(vendor_id: str, _: dict = Depends(require_admin)):
-    result = db.vendors.delete_one({"_id": oid(vendor_id)})
+def delete_vendor(vendor_id: str, request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
+    vendor_filter = {"_id": oid(vendor_id), "projectId": active_project_id}
+    result = db.vendors.delete_one(vendor_filter)
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Vendor not found")
-    db.transactions.update_many({"vendor_id": vendor_id}, {"$set": {"vendor_id": None}})
+    db.transactions.update_many({"vendor_id": vendor_id, "projectId": active_project_id}, {"$set": {"vendor_id": None}})
     return {"ok": True}
 
 
 @app.post("/vendors/{vendor_id}/categories")
-def set_vendor_categories(vendor_id: str, category_ids: list[str], _: dict = Depends(require_admin)):
-    if not db.vendors.find_one({"_id": oid(vendor_id)}):
+def set_vendor_categories(vendor_id: str, category_ids: list[str], request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
+    vendor_filter = {"_id": oid(vendor_id), "projectId": active_project_id}
+    if not db.vendors.find_one(vendor_filter):
         raise HTTPException(status_code=404, detail="Vendor not found")
     for cid in category_ids:
         if not db.categories.find_one({"_id": oid(cid), "active": True}):
             raise HTTPException(status_code=400, detail=f"Invalid category_id: {cid}")
-    db.vendors.update_one({"_id": oid(vendor_id)}, {"$set": {"category_ids": category_ids}})
-    return serialize(db.vendors.find_one({"_id": oid(vendor_id)}))
+    db.vendors.update_one(vendor_filter, {"$set": {"category_ids": category_ids}})
+    return serialize(db.vendors.find_one(vendor_filter))
 
 
 # ---------- transactions ----------
 @app.post("/transactions")
-def create_transaction(payload: dict, _: dict = Depends(require_admin)):
+def create_transaction(payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
     ttype = payload.get("type")
     if ttype not in ("INCOME", "EXPENSE"):
         raise HTTPException(status_code=400, detail="type must be INCOME or EXPENSE")
@@ -4212,7 +4247,7 @@ def create_transaction(payload: dict, _: dict = Depends(require_admin)):
             raise HTTPException(status_code=400, detail="EXPENSE requires category_id and vendor_id")
         if not db.categories.find_one({"_id": oid(category_id), "active": True}):
             raise HTTPException(status_code=400, detail="Invalid category_id")
-        if not db.vendors.find_one({"_id": oid(vendor_id), "active": True}):
+        if not db.vendors.find_one({"_id": oid(vendor_id), "active": True, "projectId": active_project_id}):
             raise HTTPException(status_code=400, detail="Invalid vendor_id")
 
     doc = {
@@ -4225,14 +4260,17 @@ def create_transaction(payload: dict, _: dict = Depends(require_admin)):
         "reference": payload.get("reference"),
         "sourceDb": source_db,
         "created_at": datetime.utcnow().isoformat(),
+        "projectId": active_project_id,
     }
     _id = db.transactions.insert_one(doc).inserted_id
     return serialize(db.transactions.find_one({"_id": _id}))
 
 
 @app.patch("/transactions/{transaction_id}")
-def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(require_admin)):
-    tx = db.transactions.find_one({"_id": oid(transaction_id)})
+def update_transaction(transaction_id: str, payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
+    transaction_filter = {"_id": oid(transaction_id), "projectId": active_project_id}
+    tx = db.transactions.find_one(transaction_filter)
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
@@ -4269,7 +4307,7 @@ def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(req
 
     if "vendor_id" in payload:
         vid = payload.get("vendor_id")
-        if vid and not db.vendors.find_one({"_id": oid(vid), "active": True}):
+        if vid and not db.vendors.find_one({"_id": oid(vid), "active": True, "projectId": active_project_id}):
             raise HTTPException(status_code=400, detail="Invalid vendor_id")
         updates["vendor_id"] = vid
 
@@ -4296,7 +4334,7 @@ def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(req
         if tx.get("source") != "sap":
             raise HTTPException(status_code=400, detail="EXPENSE requires category_id and vendor_id")
 
-    db.transactions.update_one({"_id": oid(transaction_id)}, {"$set": updates})
+    db.transactions.update_one(transaction_filter, {"$set": updates})
 
     category_id = updates.get("category_id")
     existing_category_id = tx.get("category_id") or tx.get("categoryId")
@@ -4306,21 +4344,22 @@ def update_transaction(transaction_id: str, payload: dict, _: dict = Depends(req
         supplier_id = tx.get("supplierId")
         if supplier_id:
             db.transactions.update_many(
-                {"supplierId": supplier_id, "type": "EXPENSE"},
+                {"supplierId": supplier_id, "type": "EXPENSE", "projectId": active_project_id},
                 {"$set": {"category_id": category_id, "categoryId": category_id}},
             )
         elif tx.get("vendor_id"):
             db.transactions.update_many(
-                {"vendor_id": tx.get("vendor_id"), "type": "EXPENSE"},
+                {"vendor_id": tx.get("vendor_id"), "type": "EXPENSE", "projectId": active_project_id},
                 {"$set": {"category_id": category_id}},
             )
 
-    return serialize(db.transactions.find_one({"_id": oid(transaction_id)}))
+    return serialize(db.transactions.find_one(transaction_filter))
 
 
 @app.delete("/transactions/{transaction_id}")
-def delete_transaction(transaction_id: str, _: dict = Depends(require_admin)):
-    result = db.transactions.delete_one({"_id": oid(transaction_id)})
+def delete_transaction(transaction_id: str, request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
+    result = db.transactions.delete_one({"_id": oid(transaction_id), "projectId": active_project_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return {"ok": True}
@@ -4339,6 +4378,7 @@ def list_transactions(
     date_to: str | None = None,
     from_date: str | None = Query(default=None, alias="from"),
     to_date: str | None = Query(default=None, alias="to"),
+    request: FastAPIRequest = None,
     projectId: str | None = None,
     origen: str | None = None,
     source: str | None = None,
@@ -4349,6 +4389,7 @@ def list_transactions(
     _: dict = Depends(require_authenticated),
 ):
     normalized_page = max(page, 1)
+    active_project_id = get_active_project_id(request)
     normalized_limit = min(max(limit, 1), 500)
     skip = (normalized_page - 1) * normalized_limit
     effective_date_from = from_date or date_from
@@ -4361,7 +4402,7 @@ def list_transactions(
         supplier_id=supplierId,
         date_from=effective_date_from,
         date_to=effective_date_to,
-        project_id=projectId,
+        project_id=active_project_id,
         origen=origen,
         source=source,
         source_db=sourceDb,
@@ -4389,7 +4430,7 @@ def list_transactions(
 
     suppliers_by_id = {}
     if supplier_ids:
-        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1, "cardCode": 1}):
+        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}, "projectId": active_project_id}, {"name": 1, "cardCode": 1}):
             suppliers_by_id[str(supplier["_id"])] = supplier
 
     items = []
@@ -4427,9 +4468,11 @@ def spend_by_category(
     date_to: str | None = None,
     vendor_id: str | None = None,
     include_iva: bool = False,
+    request: FastAPIRequest = None,
     _: dict = Depends(require_authenticated),
 ):
-    match = {"type": "EXPENSE"}
+    active_project_id = get_active_project_id(request)
+    match = {"type": "EXPENSE", "projectId": active_project_id}
     if vendor_id:
         match["vendor_id"] = vendor_id
     if date_from or date_to:
