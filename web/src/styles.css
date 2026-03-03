@@ -22,6 +22,7 @@ html{
 }
 body{margin:0; background:#fff; color:var(--primary);}
 body.theme-dark{
+  background:#1f2937;
   color:#e2e8f0;
   --primary:#60a5fa;
   --primary-dark:#bfdbfe;
