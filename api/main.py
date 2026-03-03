@@ -180,7 +180,13 @@ def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dic
     if supplier_id and suppliers_by_id:
         supplier = suppliers_by_id.get(supplier_id)
 
-    supplier_name = tx_doc.get("supplierName") or (supplier or {}).get("name") or ""
+    supplier_name = (
+        tx_doc.get("supplierName")
+        or tx_doc.get("proveedorNombre")
+        or tx_doc.get("beneficiario")
+        or (supplier or {}).get("name")
+        or ""
+    )
     supplier_card_code = tx_doc.get("supplierCardCode") or (supplier or {}).get("cardCode") or ""
 
     tx_doc["proveedorNombre"] = supplier_name
@@ -2387,7 +2393,11 @@ def build_transactions_query(
     if vendor_id:
         q["vendor_id"] = vendor_id
     if supplier_id:
-        q["supplierId"] = supplier_id
+        supplier_filter = [{"supplierId": supplier_id}, {"vendor_id": supplier_id}]
+        if "$or" in q:
+            q["$and"] = [{"$or": q.pop("$or")}, {"$or": supplier_filter}]
+        else:
+            q["$or"] = supplier_filter
     if project_id:
         q["projectId"] = project_id
     if origen:
@@ -4155,37 +4165,60 @@ def summary_expenses_by_supplier(
     movements = list(
         db.transactions.find(
             movements_query,
-            {"supplierId": 1, "amount": 1, "tax": 1},
+            {"supplierId": 1, "vendor_id": 1, "supplierName": 1, "beneficiario": 1, "amount": 1, "tax": 1},
         )
     )
 
     supplier_totals = {}
     for tx in movements:
         supplier_id = tx.get("supplierId")
-        bucket = supplier_totals.setdefault(supplier_id, {"totalAmount": 0.0, "count": 0})
+        vendor_id = tx.get("vendor_id")
+        provider_key = supplier_id or vendor_id
+        bucket = supplier_totals.setdefault(
+            provider_key,
+            {
+                "supplierId": supplier_id,
+                "vendorId": vendor_id,
+                "supplierName": tx.get("supplierName") or tx.get("beneficiario") or "",
+                "totalAmount": 0.0,
+                "count": 0,
+            },
+        )
         amount_value = float(tx.get("amount") or 0)
         bucket["totalAmount"] += amount_value if include_iva else compute_monto_sin_iva(tx)
         bucket["count"] += 1
 
     rows = [
         {
-            "_id": supplier_id,
+            "_id": provider_id,
+            "supplierId": values.get("supplierId"),
+            "vendorId": values.get("vendorId"),
+            "supplierName": values.get("supplierName") or "",
             "totalAmount": round(values["totalAmount"], 2),
             "count": values["count"],
         }
-        for supplier_id, values in supplier_totals.items()
+        for provider_id, values in supplier_totals.items()
     ]
 
-    supplier_ids = [oid(row["_id"]) for row in rows if row.get("_id")]
+    supplier_ids = [oid(row.get("supplierId")) for row in rows if row.get("supplierId")]
+    vendor_ids = [oid(row.get("vendorId")) for row in rows if row.get("vendorId")]
     supplier_names = {}
     if supplier_ids:
-        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}, "projectId": project_id}, {"name": 1}):
+        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1}):
             supplier_names[str(supplier["_id"])] = supplier.get("name") or "(Sin proveedor)"
+
+    vendor_names = {}
+    if vendor_ids:
+        for vendor in db.vendors.find({"_id": {"$in": vendor_ids}, "projectId": project_id}, {"name": 1}):
+            vendor_names[str(vendor["_id"])] = vendor.get("name") or "(Sin proveedor)"
 
     output = [
         {
-            "supplierId": row.get("_id"),
-            "supplierName": supplier_names.get(row.get("_id"), "(Sin proveedor)"),
+            "supplierId": row.get("supplierId") or row.get("vendorId"),
+            "supplierName": supplier_names.get(row.get("supplierId"))
+            or vendor_names.get(row.get("vendorId"))
+            or row.get("supplierName")
+            or "(Sin proveedor)",
             "totalAmount": round(float(row.get("totalAmount") or 0), 2),
             "count": int(row.get("count") or 0),
         }
@@ -4886,7 +4919,7 @@ def list_transactions(
 
     suppliers_by_id = {}
     if supplier_ids:
-        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}, "projectId": resolved_project_id}, {"name": 1, "cardCode": 1}):
+        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1, "cardCode": 1}):
             suppliers_by_id[str(supplier["_id"])] = supplier
 
     items = []
