@@ -2394,7 +2394,7 @@ def build_transactions_query(
     if vendor_id:
         q["vendor_id"] = vendor_id
     if supplier_id:
-        supplier_filter = [{"supplierId": supplier_id}, {"vendor_id": supplier_id}]
+        supplier_filter = [{"supplierId": supplier_id}, {"supplier_id": supplier_id}, {"vendor_id": supplier_id}]
         if ObjectId.is_valid(supplier_id):
             supplier_filter.append({"supplierId": oid(supplier_id)})
         if "$or" in q:
@@ -2423,7 +2423,9 @@ def build_transactions_query(
             {"description": {"$regex": escaped_search, "$options": "i"}},
             {"concept": {"$regex": escaped_search, "$options": "i"}},
             {"supplierName": {"$regex": escaped_search, "$options": "i"}},
+            {"proveedorNombre": {"$regex": escaped_search, "$options": "i"}},
             {"beneficiario": {"$regex": escaped_search, "$options": "i"}},
+            {"proveedor.name": {"$regex": escaped_search, "$options": "i"}},
         ]
 
         normalized_search = normalize_category_name(cleaned_search)
@@ -4168,25 +4170,44 @@ def summary_expenses_by_supplier(
     movements = list(
         db.transactions.find(
             movements_query,
-            {"supplierId": 1, "vendor_id": 1, "supplierName": 1, "beneficiario": 1, "amount": 1, "tax": 1},
+            {
+                "supplierId": 1,
+                "supplier_id": 1,
+                "vendor_id": 1,
+                "supplierName": 1,
+                "proveedorNombre": 1,
+                "beneficiario": 1,
+                "proveedor.name": 1,
+                "amount": 1,
+                "tax": 1,
+            },
         )
     )
 
     supplier_totals = {}
     for tx in movements:
-        supplier_id = tx.get("supplierId")
+        supplier_id = tx.get("supplierId") or tx.get("supplier_id")
         vendor_id = tx.get("vendor_id")
+        supplier_name = (
+            tx.get("supplierName")
+            or tx.get("proveedorNombre")
+            or tx.get("beneficiario")
+            or (tx.get("proveedor") or {}).get("name")
+            or ""
+        )
         provider_key = str(supplier_id or vendor_id or "")
         bucket = supplier_totals.setdefault(
             provider_key,
             {
                 "supplierId": supplier_id,
                 "vendorId": vendor_id,
-                "supplierName": tx.get("supplierName") or tx.get("beneficiario") or "",
+                "supplierName": supplier_name,
                 "totalAmount": 0.0,
                 "count": 0,
             },
         )
+        if not bucket.get("supplierName") and supplier_name:
+            bucket["supplierName"] = supplier_name
         amount_value = float(tx.get("amount") or 0)
         bucket["totalAmount"] += amount_value if include_iva else compute_monto_sin_iva(tx)
         bucket["count"] += 1
