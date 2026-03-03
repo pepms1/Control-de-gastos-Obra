@@ -39,16 +39,17 @@ function getCategoryHintCode(transaction) {
 }
 
 function getTransactionCategoryLabel(transaction, catMap) {
-  const hintName = getCategoryHintName(transaction);
-  if (hintName) return hintName;
+  const effectiveCategoryId = transaction?.category_id || transaction?.categoryId;
+  if (effectiveCategoryId) {
+    const mappedCategory = (catMap[effectiveCategoryId] || '').trim();
+    if (mappedCategory) return mappedCategory;
+  }
 
   const legacyCategory = (transaction?.category_name || transaction?.category || '').trim();
   if (legacyCategory) return legacyCategory;
 
-  if (transaction?.category_id) {
-    const mappedCategory = (catMap[transaction.category_id] || '').trim();
-    if (mappedCategory) return mappedCategory;
-  }
+  const hintName = getCategoryHintName(transaction);
+  if (hintName) return hintName;
 
   return 'Sin categoría';
 }
@@ -197,6 +198,7 @@ export default function App() {
   const [session, setSession] = useState(getSession());
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(localStorage.getItem(SELECTED_PROJECT_KEY) || '');
+  const [dataVersion, setDataVersion] = useState(0);
   const [themePreference, setThemePreference] = useState(() => {
     const storedPreference = localStorage.getItem(THEME_STORAGE_KEY);
     if (storedPreference === 'dark') return 'dark';
@@ -222,6 +224,11 @@ export default function App() {
     const [c, v] = await Promise.all([api.categories(), api.vendors()]);
     setCats(Array.isArray(c) ? c : []);
     setVendors(Array.isArray(v) ? v : []);
+  }
+
+  async function invalidateData() {
+    await refreshCatalog();
+    setDataVersion((prev) => prev + 1);
   }
 
   useEffect(() => {
@@ -302,7 +309,9 @@ export default function App() {
       <div className="container grid" style={{ gap: 14 }}>
         {toast && <div className="card">{toast}</div>}
 
-        {tab === 'dashboard' && <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} />}
+        {tab === 'dashboard' && (
+          <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={dataVersion} />
+        )}
 
         {tab === 'transactions' && (
           <Transactions
@@ -310,6 +319,7 @@ export default function App() {
             cats={cats}
             vendors={vendors}
             onCatalogChanged={refreshCatalog}
+            onTransactionsChanged={invalidateData}
             selectedProjectId={selectedProjectId}
           />
         )}
@@ -528,7 +538,7 @@ function RawDataAdmin() {
 }
 
 /* ================= DASHBOARD ================= */
-function Dashboard({ isAdmin, selectedProjectId }) {
+function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
@@ -567,7 +577,7 @@ function Dashboard({ isAdmin, selectedProjectId }) {
     return () => {
       ok = false;
     };
-  }, [showCategoryIva, showSupplierIva, selectedProjectId]);
+  }, [showCategoryIva, showSupplierIva, selectedProjectId, refreshKey]);
 
   const supplierTotal = supplierSummary.reduce((acc, row) => acc + (Number(row.totalAmount) || 0), 0);
   const categoryRows = Array.isArray(stats?.rows) ? stats.rows : [];
@@ -977,7 +987,7 @@ function EditModal({ title, children, onClose, onSave }) {
 }
 
 /* ================= TRANSACTIONS ================= */
-function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjectId }) {
+function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactionsChanged, selectedProjectId }) {
   const UNCATEGORIZED_FILTER = '__UNCATEGORIZED__';
   const getTransactionStableKey = (tx) =>
     tx?._id ?? tx?.id ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sap?.pagoNum || ''}|${tx?.sap?.facturaNum || ''}|${tx?.sap?.montoAplicado || ''}`;
@@ -1009,8 +1019,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
   const [bulkCategoryId, setBulkCategoryId] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
 
+
   const isHintCategoryFilter = categoryFilter.startsWith('HINT::');
   const isUncategorizedFilter = categoryFilter === UNCATEGORIZED_FILTER;
+  const isSapIvaTransaction = (transaction) =>
+    transaction?.source === 'sap' && String(transaction?.sourceDb || '').trim().toUpperCase() === 'IVA';
 
   async function load(targetPage = page) {
     setLoading(true);
@@ -1133,13 +1146,16 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
 
   async function saveEdit() {
     setEditErr('');
-    const payload = {
-      date: editing.date,
-      amount: parseMoneyInput(editing.amount),
-      description: editing.description,
-      category_id: editing.category_id || null,
-    };
+    const payload = isSapIvaTransaction(editing)
+      ? { categoryId: editing.category_id || null }
+      : {
+        date: editing.date,
+        amount: parseMoneyInput(editing.amount),
+        description: editing.description,
+        categoryId: editing.category_id || null,
+      };
     await api.updateTransaction(editing.id, payload);
+    await onTransactionsChanged?.();
     setEditing(null);
     setNewCategoryName('');
     load(page);
@@ -1157,6 +1173,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
     try {
       const created = await api.createCategory(cleanName);
       await onCatalogChanged?.();
+      await onTransactionsChanged?.();
       setEditing((prev) => (prev ? { ...prev, category_id: created.id } : prev));
       setNewCategoryName('');
     } catch (e) {
@@ -1193,7 +1210,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
     if (!selectedRows.length) return;
     setBulkSaving(true);
     try {
-      await Promise.all(selectedRows.map((id) => api.updateTransaction(id, { category_id: bulkCategoryId || null })));
+      await api.bulkUpdateTransactionCategory({
+        ids: selectedRows,
+        categoryId: bulkCategoryId || null,
+      });
+      await onTransactionsChanged?.();
       setSelectedRows([]);
       load(page);
     } finally {
@@ -1273,6 +1294,16 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
             <option value="IVA">Base IVA</option>
             <option value="EFECTIVO">Base EFECTIVO</option>
           </select>
+          <button
+            type="button"
+            className={sourceDbFilter === 'IVA' ? '' : 'secondary'}
+            onClick={() => {
+              setPage(1);
+              setSourceDbFilter(sourceDbFilter === 'IVA' ? 'ALL' : 'IVA');
+            }}
+          >
+            Solo IVA
+          </button>
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
             <option value="date_desc">Fecha (más reciente)</option>
             <option value="created_desc">Fecha de añadido (más reciente)</option>
@@ -1346,7 +1377,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
                   </td>
                 </tr>
               )}
-              {shown.map((r) => (
+              {shown.map((r) => {
+                const isSapIva = isSapIvaTransaction(r);
+                return (
                 <tr key={getTransactionStableKey(r)}>
                   <td>{r.date}</td>
                   <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
@@ -1363,16 +1396,18 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.totalFactura ?? 0)}</td>
                   {isAdmin && (
                     <td>
-                      <button
-                        className="secondary"
-                        onClick={() => {
-                          setEditErr('');
-                          setNewCategoryName('');
-                          setEditing({ ...r });
-                        }}
-                      >
-                        {r.source === 'sap' ? 'Categorizar' : 'Editar'}
-                      </button>
+                      {(r.source !== 'sap' || isSapIva) && (
+                        <button
+                          className="secondary"
+                          onClick={() => {
+                            setEditErr('');
+                            setNewCategoryName('');
+                            setEditing({ ...r });
+                          }}
+                        >
+                          {isSapIva ? 'Editar' : 'Editar'}
+                        </button>
+                      )}
                       {r.source !== 'sap' && (
                         <>
                           {' '}
@@ -1392,7 +1427,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
                     </td>
                   )}
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
             <tfoot>
               <tr>
@@ -1418,14 +1454,22 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
       </div>
 
       {editing && (
-        <EditModal title="Editar movimiento" onClose={() => setEditing(null)} onSave={saveEdit}>
+        <EditModal
+          title={isSapIvaTransaction(editing) ? 'Editar categoría IVA' : 'Editar movimiento'}
+          onClose={() => setEditing(null)}
+          onSave={saveEdit}
+        >
           <div className="grid">
-            <label>Fecha</label>
-            <input value={editing.date || ''} onChange={(e) => setEditing({ ...editing, date: e.target.value })} />
-            <label>Monto</label>
-            <input value={editing.amount || ''} onChange={(e) => setEditing({ ...editing, amount: e.target.value })} />
-            <label>Descripción</label>
-            <input value={editing.description || ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
+            {!isSapIvaTransaction(editing) && (
+              <>
+                <label>Fecha</label>
+                <input value={editing.date || ''} onChange={(e) => setEditing({ ...editing, date: e.target.value })} />
+                <label>Monto</label>
+                <input value={editing.amount || ''} onChange={(e) => setEditing({ ...editing, amount: e.target.value })} />
+                <label>Descripción</label>
+                <input value={editing.description || ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
+              </>
+            )}
             <label>Categoría</label>
             <select value={editing.category_id || ''} onChange={(e) => setEditing({ ...editing, category_id: e.target.value || null })}>
               <option value="">Sin categoría</option>
@@ -1441,7 +1485,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
                 onChange={(e) => setNewCategoryName(e.target.value)}
               />
               <button type="button" className="secondary" onClick={createCategoryFromEdit} disabled={savingCategory}>
-                {savingCategory ? 'Creando...' : 'Crear'}
+                {savingCategory ? 'Creando...' : 'Crear nueva categoría'}
               </button>
             </div>
             {editErr && <div style={{ color: '#b91c1c' }}>{editErr}</div>}
