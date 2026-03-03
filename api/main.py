@@ -2619,6 +2619,7 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
     ]
     optional_tax_headers = ["subtotal", "iva", "retenciones", "totalfactura"]
     optional_movement_headers = ["sourcedb"]
+    optional_category_hint_headers = ["categoryhintcode", "categoryhintname", "categoryhintproject"]
     canonical_to_expected = dict(zip(canonical_headers, expected_headers))
     header_aliases = {
         "docnum": "pagonum",
@@ -2643,6 +2644,9 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "subtotal": "subtotal",  # Subtotal | Sub total | SubTotal
         "iva": "iva",  # IVA | Iva
         "totalfactura": "totalfactura",  # TotalFactura | Total Factura | Total_Factura
+        "categoryhintcode": "categoryhintcode",
+        "categoryhintname": "categoryhintname",
+        "categoryhintproject": "categoryhintproject",
     }
 
     def normalize_header(header_value):
@@ -2659,7 +2663,12 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
             canonical = header_aliases.get(normalized, normalized)
             if normalized == "fecha" and not has_fechafactura:
                 canonical = "fechapago"
-            if canonical in (canonical_headers + optional_tax_headers + optional_movement_headers) and canonical not in header_index:
+            if canonical in (
+                canonical_headers
+                + optional_tax_headers
+                + optional_movement_headers
+                + optional_category_hint_headers
+            ) and canonical not in header_index:
                 header_index[canonical] = idx
 
         missing = [h for h in canonical_headers if h not in header_index]
@@ -2776,6 +2785,9 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
                 row_dict[tax_key] = row_values[source_idx] if source_idx is not None and source_idx < len(row_values) else None
             source_db_idx = header_index.get("sourcedb")
             row_dict["sourceDb"] = row_values[source_db_idx] if source_db_idx is not None and source_db_idx < len(row_values) else None
+            for hint_key in optional_category_hint_headers:
+                source_idx = header_index.get(hint_key)
+                row_dict[hint_key] = row_values[source_idx] if source_idx is not None and source_idx < len(row_values) else None
 
             if should_try_repair:
                 row_dict["__csvRepairApplied"] = len(values) > len(rows[0])
@@ -2805,6 +2817,9 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
                 row_dict[tax_key] = values[source_idx] if source_idx is not None and source_idx < len(values) else None
             source_db_idx = header_index.get("sourcedb")
             row_dict["sourceDb"] = values[source_db_idx] if source_db_idx is not None and source_db_idx < len(values) else None
+            for hint_key in optional_category_hint_headers:
+                source_idx = header_index.get(hint_key)
+                row_dict[hint_key] = values[source_idx] if source_idx is not None and source_idx < len(values) else None
             parsed.append(row_dict)
         return parsed
 
@@ -3527,6 +3542,9 @@ def run_sap_import(
             retenciones = parse_optional_decimal(row.get("retenciones"))
             total_factura = parse_optional_decimal(row.get("totalfactura"))
             source_db = (source_db_override or str(row.get("sourceDb") or "").strip() or "SAP").upper()
+            category_hint_code = str(row.get("categoryhintcode") or "").strip() or None
+            category_hint_name = str(row.get("categoryhintname") or "").strip() or None
+            category_hint_project = str(row.get("categoryhintproject") or "").strip() or None
 
             if card_code not in existing_cardcodes and card_code not in created_cardcodes:
                 suppliers_created += 1
@@ -3569,6 +3587,9 @@ def run_sap_import(
                         "totalFactura": total_factura,
                     },
                     "sourceDb": source_db,
+                    "categoryHintCode": category_hint_code,
+                    "categoryHintName": category_hint_name,
+                    "categoryHintProject": category_hint_project,
                 }
             )
             rows_ok += 1
@@ -3665,16 +3686,16 @@ def run_sap_import(
         )
 
         if supplier_id:
-            tx_filter = {
+            tx_identity_filter = {
                 "projectId": project_id,
                 "source": "sap",
-                "sourceDb": record["sourceDb"],
                 "sap.projectId": project_id,
                 "sap.pagoNum": record["paymentNum"],
                 "sap.facturaNum": record["invoiceNum"],
                 "sap.montoAplicadoCents": record["appliedAmountCents"],
             }
-            existing_tx = db.transactions.find_one(tx_filter, {"categoryId": 1, "category_id": 1})
+            tx_filter = {**tx_identity_filter, "sourceDb": record["sourceDb"]}
+            existing_tx = db.transactions.find_one(tx_identity_filter, {"categoryId": 1, "category_id": 1})
             existing_category_id = None
             if existing_tx:
                 existing_category_id = existing_tx.get("categoryId") or existing_tx.get("category_id")
@@ -3699,6 +3720,10 @@ def run_sap_import(
                 "source": "sap",
                 "sourceDb": record["sourceDb"],
                 "importRunId": str(import_run_id),
+                "category_hint_code": record["categoryHintCode"],
+                "category_hint_name": record["categoryHintName"],
+                "category_hint_project": record["categoryHintProject"],
+                "category_name": record["categoryHintName"],
                 "tax": record["tax"],
                 "sap": {
                     "pagoNum": str(record["paymentNum"]).strip(),
@@ -3711,21 +3736,30 @@ def run_sap_import(
                     "projectId": project_id,
                 },
             }
-            sap_expense_ops.append(
-                UpdateOne(
-                    tx_filter,
-                    {
-                        "$set": sap_set_doc,
-                        "$setOnInsert": {
-                            "categoryId": inferred_category_id,
-                            "category_id": inferred_category_id,
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                            "sourceFile": source_file_value,
-                        },
-                    },
-                    upsert=True,
+            if existing_tx and existing_tx.get("_id"):
+                sap_expense_ops.append(
+                    UpdateOne(
+                        {"_id": existing_tx["_id"]},
+                        {"$set": sap_set_doc},
+                        upsert=False,
+                    )
                 )
-            )
+            else:
+                sap_expense_ops.append(
+                    UpdateOne(
+                        tx_filter,
+                        {
+                            "$set": sap_set_doc,
+                            "$setOnInsert": {
+                                "categoryId": inferred_category_id,
+                                "category_id": inferred_category_id,
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "sourceFile": source_file_value,
+                            },
+                        },
+                        upsert=True,
+                    )
+                )
 
     if lines_ops:
         result = db.paymentLines.bulk_write(lines_ops, ordered=False)
@@ -3763,6 +3797,10 @@ def run_sap_import(
             sap_expenses_upserted = upserted_count + modified_count
 
     rows_total = len(rows)
+    category_hints_rows = sum(1 for record in line_records if record.get("categoryHintCode") or record.get("categoryHintName"))
+    print(
+        f"sap_import category_hints project={project_id} rows_with_hints={category_hints_rows} total_rows={rows_total}"
+    )
     db.importRuns.update_one(
         {"_id": import_run_id},
         {
