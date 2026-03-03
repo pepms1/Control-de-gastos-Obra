@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { api, clearSession, getSession, saveSession } from '../api.js';
+import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
@@ -21,7 +21,19 @@ function parseMoneyInput(value) {
 }
 
 /* ================= NAV ================= */
-function Nav({ tab, setTab, role, username, displayName, onLogout, isDarkMode, onToggleTheme }) {
+function Nav({
+  tab,
+  setTab,
+  role,
+  username,
+  displayName,
+  onLogout,
+  isDarkMode,
+  onToggleTheme,
+  projects,
+  selectedProjectId,
+  onProjectChange,
+}) {
   const canSeeSettings = role !== 'VIEWER';
   const items = [
     ['dashboard', 'Dashboard', true],
@@ -53,6 +65,16 @@ function Nav({ tab, setTab, role, username, displayName, onLogout, isDarkMode, o
       </div>
 
       <div className="nav-items">
+        <div className="small" style={{ marginBottom: 6 }}>Proyecto</div>
+        <select value={selectedProjectId} onChange={(e) => onProjectChange(e.target.value)} disabled={!projects.length}>
+          {!projects.length && <option value="">Sin proyectos</option>}
+          {projects.map((project) => (
+            <option key={project._id} value={project._id}>
+              {project.name}
+            </option>
+          ))}
+        </select>
+
         {items
           .filter(([, , show]) => show)
           .map(([k, label]) => (
@@ -140,6 +162,8 @@ export default function App() {
   const [vendors, setVendors] = useState([]);
   const [toast, setToast] = useState('');
   const [session, setSession] = useState(getSession());
+  const [projects, setProjects] = useState([]);
+  const [selectedProjectId, setSelectedProjectId] = useState(localStorage.getItem(SELECTED_PROJECT_KEY) || '');
   const [themePreference, setThemePreference] = useState(() => {
     const storedPreference = localStorage.getItem(THEME_STORAGE_KEY);
     if (storedPreference === 'dark') return 'dark';
@@ -183,7 +207,40 @@ export default function App() {
       });
 
     refreshCatalog().catch(() => {});
+
+    api
+      .projects()
+      .then((data) => {
+        const list = Array.isArray(data) ? data : [];
+        setProjects(list);
+
+        if (!list.length) {
+          setSelectedProjectId('');
+          localStorage.removeItem(SELECTED_PROJECT_KEY);
+          return;
+        }
+
+        const currentProjectId = localStorage.getItem(SELECTED_PROJECT_KEY) || '';
+        const exists = list.some((project) => project._id === currentProjectId);
+        const fallbackProjectId = list[0]?._id || '';
+        const nextProjectId = exists ? currentProjectId : fallbackProjectId;
+
+        setSelectedProjectId(nextProjectId);
+        if (nextProjectId) localStorage.setItem(SELECTED_PROJECT_KEY, nextProjectId);
+      })
+      .catch(() => {
+        setProjects([]);
+      });
   }, [session.token]);
+
+  function handleProjectChange(nextProjectId) {
+    setSelectedProjectId(nextProjectId);
+    if (nextProjectId) {
+      localStorage.setItem(SELECTED_PROJECT_KEY, nextProjectId);
+      return;
+    }
+    localStorage.removeItem(SELECTED_PROJECT_KEY);
+  }
 
   function logout() {
     clearSession();
@@ -204,18 +261,27 @@ export default function App() {
         onLogout={logout}
         isDarkMode={isDarkMode}
         onToggleTheme={toggleTheme}
+        projects={projects}
+        selectedProjectId={selectedProjectId}
+        onProjectChange={handleProjectChange}
       />
 
       <div className="container grid" style={{ gap: 14 }}>
         {toast && <div className="card">{toast}</div>}
 
-        {tab === 'dashboard' && <Dashboard isAdmin={isAdmin} />}
+        {tab === 'dashboard' && <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} />}
 
         {tab === 'transactions' && (
-          <Transactions isAdmin={isAdmin} cats={cats} vendors={vendors} onCatalogChanged={refreshCatalog} />
+          <Transactions
+            isAdmin={isAdmin}
+            cats={cats}
+            vendors={vendors}
+            onCatalogChanged={refreshCatalog}
+            selectedProjectId={selectedProjectId}
+          />
         )}
 
-        {tab === 'search' && <SearchTransactions cats={cats} vendors={vendors} />}
+        {tab === 'search' && <SearchTransactions cats={cats} vendors={vendors} selectedProjectId={selectedProjectId} />}
 
         {tab === 'settings' && (
           <Settings
@@ -429,7 +495,7 @@ function RawDataAdmin() {
 }
 
 /* ================= DASHBOARD ================= */
-function Dashboard({ isAdmin }) {
+function Dashboard({ isAdmin, selectedProjectId }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
@@ -444,7 +510,7 @@ function Dashboard({ isAdmin }) {
 
     Promise.allSettled([
       api.spendByCategory({ include_iva: showCategoryIva ? 'true' : 'false' }),
-      api.expensesSummaryBySupplier('CALDERON DE LA BARCA', { include_iva: showSupplierIva ? 'true' : 'false' }),
+      api.expensesSummaryBySupplier({ include_iva: showSupplierIva ? 'true' : 'false' }),
     ]).then(([categoryResult, supplierResult]) => {
       if (!ok) return;
 
@@ -468,7 +534,7 @@ function Dashboard({ isAdmin }) {
     return () => {
       ok = false;
     };
-  }, [showCategoryIva, showSupplierIva]);
+  }, [showCategoryIva, showSupplierIva, selectedProjectId]);
 
   const supplierTotal = supplierSummary.reduce((acc, row) => acc + (Number(row.totalAmount) || 0), 0);
   const categoryRows = Array.isArray(stats?.rows) ? stats.rows : [];
@@ -878,7 +944,7 @@ function EditModal({ title, children, onClose, onSave }) {
 }
 
 /* ================= TRANSACTIONS ================= */
-function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
+function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjectId }) {
   const UNCATEGORIZED_FILTER = '__UNCATEGORIZED__';
   const getTransactionStableKey = (tx) =>
     tx?._id ?? tx?.id ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sap?.pagoNum || ''}|${tx?.sap?.facturaNum || ''}|${tx?.sap?.montoAplicado || ''}`;
@@ -941,7 +1007,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
     setPage(1);
     setRows([]);
     load(1);
-  }, [filter, categoryFilter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo]);
+  }, [filter, categoryFilter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId]);
 
   useEffect(() => {
     api.suppliers()
@@ -1311,7 +1377,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged }) {
   );
 }
 
-function SearchTransactions({ cats, vendors }) {
+function SearchTransactions({ cats, vendors, selectedProjectId }) {
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -1346,7 +1412,7 @@ function SearchTransactions({ cats, vendors }) {
         setError(err?.message || 'No se pudo buscar movimientos');
       })
       .finally(() => setLoading(false));
-  }, [page, query]);
+  }, [page, query, selectedProjectId]);
 
   const getAmountWithoutIva = (row) => {
     const totalAmount = Number(row.amount) || 0;
