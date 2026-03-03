@@ -214,6 +214,12 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  bulkUpdateTransactionCategory: (payload) =>
+    req('/transactions/bulk-update-category', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
   deleteTransaction: (id) =>
     req(`/transactions/${id}`, {
       method: 'DELETE',

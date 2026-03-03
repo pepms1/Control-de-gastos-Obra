@@ -4629,8 +4629,8 @@ def update_transaction(transaction_id: str, payload: dict, request: FastAPIReque
             raise HTTPException(status_code=400, detail="type must be INCOME or EXPENSE")
         updates["type"] = ttype
 
-    if "category_id" in payload:
-        cid = payload.get("category_id")
+    if "category_id" in payload or "categoryId" in payload:
+        cid = payload.get("categoryId") if "categoryId" in payload else payload.get("category_id")
         if cid and not db.categories.find_one({"_id": oid(cid), "active": True}):
             raise HTTPException(status_code=400, detail="Invalid category_id")
         updates["category_id"] = cid
@@ -4685,6 +4685,44 @@ def update_transaction(transaction_id: str, payload: dict, request: FastAPIReque
             )
 
     return serialize(db.transactions.find_one(transaction_filter))
+
+
+@app.patch("/transactions/bulk-update-category")
+def bulk_update_transaction_category(payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
+
+    ids = payload.get("ids") if isinstance(payload, dict) else None
+    filter_payload = payload.get("filter") if isinstance(payload, dict) else None
+    has_ids = isinstance(ids, list) and len(ids) > 0
+    has_filter = isinstance(filter_payload, dict) and len(filter_payload) > 0
+    if not has_ids and not has_filter:
+        raise HTTPException(status_code=400, detail="Provide ids or filter")
+
+    if not isinstance(payload, dict) or "categoryId" not in payload:
+        raise HTTPException(status_code=400, detail="categoryId is required")
+    category_id = payload.get("categoryId")
+
+    if category_id and not db.categories.find_one({"_id": oid(category_id), "active": True}):
+        raise HTTPException(status_code=400, detail="Invalid category_id")
+
+    query = {"projectId": active_project_id}
+    if has_ids:
+        query["_id"] = {"$in": [oid(tx_id) for tx_id in ids]}
+    else:
+        query.update(build_transactions_query(
+            type_value=filter_payload.get("type"),
+            category_id=filter_payload.get("category_id"),
+            vendor_id=filter_payload.get("vendor_id"),
+            supplier_id=filter_payload.get("supplierId"),
+            date_from=filter_payload.get("from") or filter_payload.get("date_from"),
+            date_to=filter_payload.get("to") or filter_payload.get("date_to"),
+            project_id=active_project_id,
+            source_db=filter_payload.get("sourceDb"),
+            search_query=filter_payload.get("q"),
+        ))
+
+    result = db.transactions.update_many(query, {"$set": {"category_id": category_id, "categoryId": category_id}})
+    return {"matched": result.matched_count, "updated": result.modified_count, "categoryId": category_id}
 
 
 @app.delete("/transactions/{transaction_id}")
