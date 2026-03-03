@@ -4492,8 +4492,7 @@ def list_transactions(
     from_date: str | None = Query(default=None, alias="from"),
     to_date: str | None = Query(default=None, alias="to"),
     request: FastAPIRequest = None,
-    projectId: str | None = None,
-    project: str | None = None,
+    project_id: str | None = Query(default=None, alias="projectId"),
     origen: str | None = None,
     source: str | None = None,
     sourceDb: str | None = None,
@@ -4503,7 +4502,8 @@ def list_transactions(
     _: dict = Depends(require_authenticated),
 ):
     normalized_page = max(page, 1)
-    active_project_id = resolve_project_id(projectId or project)
+    resolved_project_id = resolve_project_id(project_id)
+    logger.info("transactions projectId=%s resolved=%s", project_id, resolved_project_id)
     normalized_limit = min(max(limit, 1), 500)
     skip = (normalized_page - 1) * normalized_limit
     effective_date_from = from_date or date_from
@@ -4516,16 +4516,17 @@ def list_transactions(
         supplier_id=supplierId,
         date_from=effective_date_from,
         date_to=effective_date_to,
-        project_id=active_project_id,
+        project_id=resolved_project_id,
         origen=origen,
         source=source,
         source_db=sourceDb,
         search_query=q,
     )
+    match_query["projectId"] = resolved_project_id
 
     total_count = db.transactions.count_documents(match_query)
     totals = build_transaction_totals(match_query, search_query=q)
-    logger.info("/transactions resolved projectId=%s totalCount=%s", active_project_id, total_count)
+    logger.info("/transactions resolved projectId=%s totalCount=%s", resolved_project_id, total_count)
 
     txs = list(
         db.transactions.find(match_query)
@@ -4545,7 +4546,7 @@ def list_transactions(
 
     suppliers_by_id = {}
     if supplier_ids:
-        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}, "projectId": active_project_id}, {"name": 1, "cardCode": 1}):
+        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}, "projectId": resolved_project_id}, {"name": 1, "cardCode": 1}):
             suppliers_by_id[str(supplier["_id"])] = supplier
 
     items = []
