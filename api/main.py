@@ -3542,8 +3542,26 @@ def run_sap_import(
             retenciones = parse_optional_decimal(row.get("retenciones"))
             total_factura = parse_optional_decimal(row.get("totalfactura"))
             source_db = (source_db_override or str(row.get("sourceDb") or "").strip() or "SAP").upper()
-            category_hint_code = str(row.get("categoryhintcode") or "").strip() or None
-            category_hint_name = str(row.get("categoryhintname") or "").strip() or None
+            category_hint_code = (
+                str(
+                    row.get("CategoryHintCode")
+                    or row.get("category_hint_code")
+                    or row.get("categoryHintCode")
+                    or row.get("categoryhintcode")
+                    or ""
+                ).strip()
+                or None
+            )
+            category_hint_name = (
+                str(
+                    row.get("CategoryHintName")
+                    or row.get("category_hint_name")
+                    or row.get("categoryHintName")
+                    or row.get("categoryhintname")
+                    or ""
+                ).strip()
+                or None
+            )
             category_hint_project = str(row.get("categoryhintproject") or "").strip() or None
 
             if card_code not in existing_cardcodes and card_code not in created_cardcodes:
@@ -3694,7 +3712,6 @@ def run_sap_import(
                 "sap.facturaNum": record["invoiceNum"],
                 "sap.montoAplicadoCents": record["appliedAmountCents"],
             }
-            tx_filter = {**tx_identity_filter, "sourceDb": record["sourceDb"]}
             existing_tx = db.transactions.find_one(tx_identity_filter, {"categoryId": 1, "category_id": 1})
             existing_category_id = None
             if existing_tx:
@@ -3705,6 +3722,8 @@ def run_sap_import(
 
             inferred_category_id = supplier_auto_category_map.get(supplier_id)
 
+            supplier_name = record["beneficiary"] or record["cardCode"]
+            vendor_id = supplier_id
             sap_set_doc = {
                 "type": "EXPENSE",
                 "projectId": project_id,
@@ -3714,15 +3733,18 @@ def run_sap_import(
                 "concept": record["concept"],
                 "description": record["concept"],
                 "supplierId": supplier_id,
-                "supplierName": record["beneficiary"] or record["cardCode"],
+                "supplierName": supplier_name,
                 "supplierCardCode": record["cardCode"],
-                "vendor_id": None,
+                "vendor_id": vendor_id,
+                "vendorName": supplier_name,
                 "source": "sap",
                 "sourceDb": record["sourceDb"],
                 "importRunId": str(import_run_id),
                 "category_hint_code": record["categoryHintCode"],
                 "category_hint_name": record["categoryHintName"],
                 "category_hint_project": record["categoryHintProject"],
+                "categoryHintCode": record["categoryHintCode"],
+                "categoryHintName": record["categoryHintName"],
                 "category_name": record["categoryHintName"],
                 "tax": record["tax"],
                 "sap": {
@@ -3734,32 +3756,25 @@ def run_sap_import(
                     "sourceFile": source_file_value,
                     "sourceSbo": record["sourceDb"],
                     "projectId": project_id,
+                    "categoryHintCode": record["categoryHintCode"],
+                    "categoryHintName": record["categoryHintName"],
                 },
             }
-            if existing_tx and existing_tx.get("_id"):
-                sap_expense_ops.append(
-                    UpdateOne(
-                        {"_id": existing_tx["_id"]},
-                        {"$set": sap_set_doc},
-                        upsert=False,
-                    )
-                )
-            else:
-                sap_expense_ops.append(
-                    UpdateOne(
-                        tx_filter,
-                        {
-                            "$set": sap_set_doc,
-                            "$setOnInsert": {
-                                "categoryId": inferred_category_id,
-                                "category_id": inferred_category_id,
-                                "created_at": datetime.now(timezone.utc).isoformat(),
-                                "sourceFile": source_file_value,
-                            },
+            sap_expense_ops.append(
+                UpdateOne(
+                    tx_identity_filter,
+                    {
+                        "$set": sap_set_doc,
+                        "$setOnInsert": {
+                            "categoryId": inferred_category_id,
+                            "category_id": inferred_category_id,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "sourceFile": source_file_value,
                         },
-                        upsert=True,
-                    )
+                    },
+                    upsert=True,
                 )
+            )
 
     if lines_ops:
         result = db.paymentLines.bulk_write(lines_ops, ordered=False)
