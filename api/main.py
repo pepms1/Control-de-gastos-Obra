@@ -1798,6 +1798,10 @@ def ensure_indexes():
     )
     db.transactions.create_index([("projectId", 1), ("date", -1)])
     db.transactions.create_index([("projectId", 1)], name="transactions_project_id_idx")
+    db.transactions.create_index(
+        [("projectId", 1), ("sourceDb", 1), ("category_id", 1)],
+        name="transactions_project_source_db_category_idx",
+    )
     db.transactions.create_index([("sap.projectId", 1)], name="transactions_sap_project_id_idx")
     db.vendors.create_index(
         [("projectId", 1), ("supplierCardCode", 1)],
@@ -3240,6 +3244,43 @@ def upsert_sap_categories_from_hints(project_id: str, line_records: list[dict]) 
     }
 
 
+def normalize_category_override_update(
+    payload: dict,
+    *,
+    lock_override: bool,
+) -> dict:
+    category_id_value = payload.get("category_id", payload.get("categoryId"))
+    if category_id_value is None:
+        return {}
+
+    normalized_category_id = str(category_id_value).strip()
+    if not normalized_category_id:
+        if lock_override:
+            return {
+                "category_override_id": None,
+                "category_locked": False,
+                "category_source": "sap",
+            }
+        return {"category_id": None, "categoryId": None}
+
+    if not db.categories.find_one({"_id": oid(normalized_category_id), "active": True}):
+        raise HTTPException(status_code=400, detail="Invalid category_id")
+
+    updates = {
+        "category_id": normalized_category_id,
+        "categoryId": normalized_category_id,
+    }
+    if lock_override:
+        updates.update(
+            {
+                "category_override_id": normalized_category_id,
+                "category_locked": True,
+                "category_source": "manual",
+            }
+        )
+    return updates
+
+
 def downloadFromS3(key: str) -> bytes:
     region = (os.getenv("AWS_REGION") or "").strip()
     bucket = (os.getenv("S3_BUCKET") or "").strip()
@@ -3776,13 +3817,16 @@ def run_sap_import(
                 "sap.facturaNum": record["invoiceNum"],
                 "sap.montoAplicadoCents": record["appliedAmountCents"],
             }
-            existing_tx = db.transactions.find_one(tx_identity_filter, {"categoryId": 1, "category_id": 1})
-            existing_category_id = None
-            if existing_tx:
-                existing_category_id = existing_tx.get("categoryId") or existing_tx.get("category_id")
-                if existing_category_id:
-                    category_preserved_count += 1
-                    category_would_have_changed_count += 1
+            existing_tx = db.transactions.find_one(
+                tx_identity_filter,
+                {
+                    "categoryId": 1,
+                    "category_id": 1,
+                    "category_auto_id": 1,
+                    "category_override_id": 1,
+                    "category_locked": 1,
+                },
+            )
 
             hinted_category_id = sap_category_ids_by_code.get(str(record.get("categoryHintCode") or "").strip())
             inferred_category_id = hinted_category_id or supplier_auto_category_map.get(supplier_id)
@@ -3825,9 +3869,27 @@ def run_sap_import(
                     "categoryHintName": record["categoryHintName"],
                 },
             }
+            locked_by_override = bool(
+                existing_tx
+                and (
+                    existing_tx.get("category_locked") is True
+                    or str(existing_tx.get("category_override_id") or "").strip()
+                )
+            )
+
             if inferred_category_id:
-                sap_set_doc["categoryId"] = inferred_category_id
-                sap_set_doc["category_id"] = inferred_category_id
+                sap_set_doc["category_auto_id"] = inferred_category_id
+                if not locked_by_override:
+                    sap_set_doc["categoryId"] = inferred_category_id
+                    sap_set_doc["category_id"] = inferred_category_id
+                    sap_set_doc["category_source"] = "sap"
+                elif existing_tx:
+                    category_preserved_count += 1
+                    current_effective_category = str(existing_tx.get("categoryId") or existing_tx.get("category_id") or "").strip()
+                    if current_effective_category and current_effective_category != inferred_category_id:
+                        category_would_have_changed_count += 1
+            elif not locked_by_override:
+                sap_set_doc["category_auto_id"] = None
 
             sap_expense_ops_by_key[
                 (
@@ -3842,6 +3904,8 @@ def run_sap_import(
                     "$setOnInsert": {
                         "created_at": datetime.now(timezone.utc).isoformat(),
                         "sourceFile": source_file_value,
+                        "category_locked": False,
+                        "category_override_id": None,
                     },
                 },
                 upsert=True,
@@ -4379,6 +4443,7 @@ def list_categories(active_only: bool = True, _: dict = Depends(require_authenti
     return [serialize(c) for c in db.categories.find(q).sort("name", 1)]
 
 
+@app.post("/api/categories")
 @app.post("/categories")
 def create_category(payload: dict, _: dict = Depends(require_admin)):
     name = (payload.get("name") or "").strip()
@@ -4586,6 +4651,11 @@ def create_transaction(
         "date": d,
         "amount": amount,
         "category_id": category_id,
+        "categoryId": category_id,
+        "category_auto_id": category_id,
+        "category_override_id": None,
+        "category_locked": False,
+        "category_source": "manual" if category_id else None,
         "vendor_id": vendor_id,
         "description": payload.get("description"),
         "reference": payload.get("reference"),
@@ -4597,6 +4667,7 @@ def create_transaction(
     return serialize(db.transactions.find_one({"_id": _id}))
 
 
+@app.patch("/api/transactions/{transaction_id}")
 @app.patch("/transactions/{transaction_id}")
 def update_transaction(transaction_id: str, payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
     active_project_id = get_active_project_id(request)
@@ -4629,12 +4700,12 @@ def update_transaction(transaction_id: str, payload: dict, request: FastAPIReque
             raise HTTPException(status_code=400, detail="type must be INCOME or EXPENSE")
         updates["type"] = ttype
 
-    if "category_id" in payload or "categoryId" in payload:
-        cid = payload.get("categoryId") if "categoryId" in payload else payload.get("category_id")
-        if cid and not db.categories.find_one({"_id": oid(cid), "active": True}):
-            raise HTTPException(status_code=400, detail="Invalid category_id")
-        updates["category_id"] = cid
-        updates["categoryId"] = cid
+    category_override_updates = normalize_category_override_update(
+        payload,
+        lock_override=("category_id" in payload or "categoryId" in payload),
+    )
+    if category_override_updates:
+        updates.update(category_override_updates)
 
     if "vendor_id" in payload:
         vid = payload.get("vendor_id")
@@ -4687,42 +4758,48 @@ def update_transaction(transaction_id: str, payload: dict, request: FastAPIReque
     return serialize(db.transactions.find_one(transaction_filter))
 
 
-@app.patch("/transactions/bulk-update-category")
-def bulk_update_transaction_category(payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
-    active_project_id = get_active_project_id(request)
+@app.patch("/api/projects/{project_id}/transactions/{transaction_id}")
+def update_project_transaction(project_id: str, transaction_id: str, payload: dict, _: dict = Depends(require_admin)):
+    transaction_filter = {"_id": oid(transaction_id), "projectId": project_id}
+    tx = db.transactions.find_one(transaction_filter)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
 
-    ids = payload.get("ids") if isinstance(payload, dict) else None
-    filter_payload = payload.get("filter") if isinstance(payload, dict) else None
-    has_ids = isinstance(ids, list) and len(ids) > 0
-    has_filter = isinstance(filter_payload, dict) and len(filter_payload) > 0
-    if not has_ids and not has_filter:
+    updates = normalize_category_override_update(payload, lock_override=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    db.transactions.update_one(transaction_filter, {"$set": updates})
+    return serialize(db.transactions.find_one(transaction_filter))
+
+
+@app.post("/api/projects/{project_id}/transactions/bulk-update-category")
+def bulk_update_project_transactions_category(project_id: str, payload: dict, _: dict = Depends(require_admin)):
+    ids = payload.get("ids") or []
+    raw_filter = payload.get("filter") or {}
+    category_payload = {"category_id": payload.get("category_id", payload.get("categoryId"))}
+    updates = normalize_category_override_update(category_payload, lock_override=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="categoryId/category_id is required")
+
+    query = {"projectId": project_id}
+    if ids:
+        normalized_ids = []
+        for tx_id in ids:
+            if not ObjectId.is_valid(str(tx_id)):
+                raise HTTPException(status_code=400, detail=f"Invalid transaction id: {tx_id}")
+            normalized_ids.append(ObjectId(str(tx_id)))
+        query["_id"] = {"$in": normalized_ids}
+    elif isinstance(raw_filter, dict) and raw_filter:
+        allowed_filters = ("sourceDb", "source", "supplierId", "vendor_id", "type")
+        for key in allowed_filters:
+            if key in raw_filter:
+                query[key] = raw_filter.get(key)
+    else:
         raise HTTPException(status_code=400, detail="Provide ids or filter")
 
-    if not isinstance(payload, dict) or "categoryId" not in payload:
-        raise HTTPException(status_code=400, detail="categoryId is required")
-    category_id = payload.get("categoryId")
-
-    if category_id and not db.categories.find_one({"_id": oid(category_id), "active": True}):
-        raise HTTPException(status_code=400, detail="Invalid category_id")
-
-    query = {"projectId": active_project_id}
-    if has_ids:
-        query["_id"] = {"$in": [oid(tx_id) for tx_id in ids]}
-    else:
-        query.update(build_transactions_query(
-            type_value=filter_payload.get("type"),
-            category_id=filter_payload.get("category_id"),
-            vendor_id=filter_payload.get("vendor_id"),
-            supplier_id=filter_payload.get("supplierId"),
-            date_from=filter_payload.get("from") or filter_payload.get("date_from"),
-            date_to=filter_payload.get("to") or filter_payload.get("date_to"),
-            project_id=active_project_id,
-            source_db=filter_payload.get("sourceDb"),
-            search_query=filter_payload.get("q"),
-        ))
-
-    result = db.transactions.update_many(query, {"$set": {"category_id": category_id, "categoryId": category_id}})
-    return {"matched": result.matched_count, "updated": result.modified_count, "categoryId": category_id}
+    result = db.transactions.update_many(query, {"$set": updates})
+    return {"matched": result.matched_count, "modified": result.modified_count}
 
 
 @app.delete("/transactions/{transaction_id}")
