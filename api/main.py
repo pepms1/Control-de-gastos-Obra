@@ -3090,13 +3090,40 @@ def sync_suppliers_into_vendors(suppliers: list[dict], project_id: str):
 
 def get_or_create_project_id(project: str):
     project_name = project.strip() or "CALDERON DE LA BARCA"
+    default_s3_prefix = {
+        "CALDERON DE LA BARCA": "exports/calderon",
+        "PENSYLVANIA": "exports/pensylvania",
+    }.get(project_name.upper())
+
+    set_on_insert = {"name": project_name}
+    if default_s3_prefix:
+        set_on_insert["sap.s3.prefix"] = default_s3_prefix
+
     project_doc = db.projects.find_one_and_update(
         {"name": project_name},
-        {"$setOnInsert": {"name": project_name}},
+        {"$setOnInsert": set_on_insert},
         upsert=True,
     )
     if not project_doc:
         project_doc = db.projects.find_one({"name": project_name})
+
+    if default_s3_prefix and project_doc and isinstance(project_doc, dict):
+        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+        s3_doc = sap_doc.get("s3") if isinstance(sap_doc.get("s3"), dict) else {}
+        existing_prefix = str(s3_doc.get("prefix") or "").strip()
+        if not existing_prefix:
+            db.projects.update_one(
+                {
+                    "_id": project_doc["_id"],
+                    "$or": [
+                        {"sap.s3.prefix": {"$exists": False}},
+                        {"sap.s3.prefix": None},
+                        {"sap.s3.prefix": ""},
+                    ],
+                },
+                {"$set": {"sap.s3.prefix": default_s3_prefix}},
+            )
+
     return str(project_doc["_id"])
 
 
@@ -3208,6 +3235,13 @@ def run_s3_latest_sap_import(
     project_id = get_or_create_project_id(project)
     iva_key = build_project_s3_key(project_id, "latest_IVA.csv")
     efectivo_key = build_project_s3_key(project_id, "latest_EFECTIVO.csv")
+    logger.info(
+        "Running latest SAP import project=%s project_id=%s iva_key=%s efectivo_key=%s",
+        project,
+        project_id,
+        iva_key,
+        efectivo_key,
+    )
 
     iva_bytes = downloadFromS3(iva_key)
     efectivo_bytes = downloadFromS3(efectivo_key)
