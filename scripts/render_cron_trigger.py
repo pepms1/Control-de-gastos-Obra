@@ -2,14 +2,23 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import urllib.parse
 
-BASE = "https://control-de-gastos-obra.onrender.com"
-URL = BASE + "/api/cron/import/sap-latest"
+BASE = os.environ.get("BASE", "https://control-de-gastos-obra.onrender.com").rstrip("/")
+
+# Proyecto: primero env var, luego argv, si no -> default (Calderón)
+project = os.environ.get("CRON_PROJECT") or (sys.argv[1] if len(sys.argv) > 1 else "CALDERON DE LA BARCA")
+
+# endpoint
+URL = f"{BASE}/api/cron/import/sap-latest?project={urllib.parse.quote(project, safe='')}"
 
 secret = os.environ.get("CRON_SECRET", "")
 headers = {"X-Cron-Secret": secret} if secret else {}
 
 print("CRON START")
+print("PROJECT", project)
+print("URL", URL)
+
 req = urllib.request.Request(URL, method="POST", headers=headers)
 
 try:
