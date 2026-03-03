@@ -3067,16 +3067,27 @@ def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
 @app.get("/api/suppliers")
 def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, _: dict = Depends(require_authenticated)):
     active_project_id = get_active_project_id(request)
-    query = {"projectId": active_project_id}
+    # Suppliers started as a legacy/global collection (keyed by CardCode) and later
+    # became project-aware. Support both shapes:
+    #   - projectId == active_project_id
+    #   - projectIds contains active_project_id
+    query = {"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}
     if uncategorized == 1:
-        query["$or"] = [{"categoryId": None}, {"categoryId": {"$exists": False}}]
+        query["$and"] = [
+            query,
+            {"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]},
+        ]
+        query = {"$and": query["$and"]}
     return [serialize(s) for s in db.suppliers.find(query).sort("name", 1)]
 
 
 @app.patch("/api/suppliers/{supplier_id}")
 def update_supplier(supplier_id: str, payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
     active_project_id = get_active_project_id(request)
-    supplier_filter = {"_id": oid(supplier_id), "projectId": active_project_id}
+    supplier_filter = {
+        "_id": oid(supplier_id),
+        "$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}],
+    }
     supplier = db.suppliers.find_one(supplier_filter)
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
@@ -3691,8 +3702,18 @@ def run_sap_import(
                 UpdateOne(
                     {"cardCode": card_code},
                     {
-                        "$setOnInsert": {"cardCode": card_code, "categoryId": None},
-                        "$set": {"name": beneficiary or card_code},
+                        "$setOnInsert": {
+                            "cardCode": card_code,
+                            "categoryId": None,
+                            "projectId": project_id,
+                            "projectIds": [project_id],
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                        },
+                        "$set": {
+                            "name": beneficiary or card_code,
+                            "projectId": project_id,
+                        },
+                        "$addToSet": {"projectIds": project_id},
                     },
                     upsert=True,
                 )
@@ -4298,7 +4319,12 @@ def admin_run_sap_dedupe_migration(_: dict = Depends(require_admin)):
 @app.post("/api/admin/backfill/suppliers-to-vendors")
 def backfill_suppliers_to_vendors(project: str = "CALDERON DE LA BARCA", _: dict = Depends(require_admin)):
     project_id = get_or_create_project_id(project)
-    suppliers = list(db.suppliers.find({"projectId": project_id}, {"cardCode": 1, "name": 1}))
+    suppliers = list(
+        db.suppliers.find(
+            {"$or": [{"projectId": project_id}, {"projectIds": project_id}]},
+            {"cardCode": 1, "name": 1},
+        )
+    )
     vendors_synced = sync_suppliers_into_vendors(suppliers, project_id)
     return {
         "projectId": project_id,
