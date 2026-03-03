@@ -1760,7 +1760,6 @@ def ensure_indexes():
         [("projectId", 1), ("code", 1)],
         unique=True,
         name="categories_project_code_unique",
-        partialFilterExpression={"projectId": {"$exists": True}, "code": {"$exists": True, "$type": "string"}},
     )
     db.supplierCategories.create_index("name", unique=True)
     db.projects.create_index("name", unique=True)
@@ -3210,12 +3209,12 @@ def upsert_sap_categories_from_hints(project_id: str, line_records: list[dict]) 
         category_set_doc = {
             "projectId": project_id,
             "code": code,
+            "name": name or code,
             "source": "sap",
             "updatedAt": now,
             "active": True,
+            "isActive": True,
         }
-        if name:
-            category_set_doc["name"] = name
 
         category_ops.append(
             UpdateOne(
