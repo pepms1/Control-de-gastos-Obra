@@ -13,6 +13,40 @@ const TOKEN_KEY = 'obra_token';
 const ROLE_KEY = 'obra_role';
 const USER_KEY = 'obra_user';
 const DISPLAY_NAME_KEY = 'obra_display_name';
+export const SELECTED_PROJECT_KEY = 'selectedProjectId';
+
+function getSelectedProjectId() {
+  return localStorage.getItem(SELECTED_PROJECT_KEY) || '';
+}
+
+function shouldInjectProjectId(method, path) {
+  if ((method || 'GET').toUpperCase() !== 'GET') return false;
+
+  const pathname = path.split('?')[0] || '';
+  if (pathname === '/api/projects' || pathname.startsWith('/auth/')) return false;
+
+  return [
+    '/transactions',
+    '/api/transactions',
+    '/api/movimientos',
+    '/api/expenses/summary-by-supplier',
+    '/stats/spend-by-category',
+  ].some((target) => pathname === target || pathname.startsWith(`${target}/`));
+}
+
+function withProjectId(path, opts = {}) {
+  if (!shouldInjectProjectId(opts.method, path)) return path;
+
+  const [pathname, queryString = ''] = path.split('?');
+  const qs = new URLSearchParams(queryString);
+  if (qs.has('projectId')) return path;
+
+  const selectedProjectId = getSelectedProjectId();
+  if (!selectedProjectId) return path;
+
+  qs.set('projectId', selectedProjectId);
+  return `${pathname}?${qs.toString()}`;
+}
 
 export function getSession() {
   return {
@@ -39,7 +73,8 @@ export function clearSession() {
 
 async function request(baseUrl, path, opts = {}) {
   const { token } = getSession();
-  const cleanPath = path.startsWith('/') ? path : `/${path}`;
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const cleanPath = withProjectId(normalizedPath, opts);
   const isFormData = opts.body instanceof FormData;
 
   const headers = {
@@ -80,6 +115,8 @@ async function backendReq(path, opts = {}) {
 }
 
 export const api = {
+  projects: () => req('/api/projects'),
+
   login: (username, password) =>
     req('/auth/login', {
       method: 'POST',
@@ -152,9 +189,9 @@ export const api = {
     return req(`/stats/spend-by-category${qs ? `?${qs}` : ''}`);
   },
 
-  expensesSummaryBySupplier: (project = 'CALDERON DE LA BARCA', params = {}) => {
-    const qs = new URLSearchParams({ project, ...params }).toString();
-    return backendReq(`/api/expenses/summary-by-supplier?${qs}`);
+  expensesSummaryBySupplier: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/expenses/summary-by-supplier${qs ? `?${qs}` : ''}`);
   },
 
   importSapPayments: (file, project = 'CALDERON DE LA BARCA') => {
