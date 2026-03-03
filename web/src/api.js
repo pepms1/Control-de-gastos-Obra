@@ -78,9 +78,19 @@ async function request(baseUrl, path, opts = {}) {
   const cleanPath = withProjectId(normalizedPath, opts);
   const isFormData = opts.body instanceof FormData;
 
+  // Many backend endpoints (e.g. /vendors, /api/suppliers) rely on X-Project-Id.
+  // We always send it when the user has selected a project.
+  const selectedProjectId = getSelectedProjectId();
+  const pathname = normalizedPath.split('?')[0] || '';
+  const shouldSendProjectHeader =
+    !!selectedProjectId &&
+    pathname !== '/api/projects' &&
+    !pathname.startsWith('/auth/');
+
   const headers = {
     ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(shouldSendProjectHeader ? { 'X-Project-Id': selectedProjectId } : {}),
     ...(opts.headers || {}),
   };
 
