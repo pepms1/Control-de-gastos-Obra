@@ -1756,6 +1756,12 @@ def notify_import(summary: dict):
 def ensure_indexes():
     db.users.create_index("username", unique=True)
     db.suppliers.create_index("cardCode", unique=True)
+    db.categories.create_index(
+        [("projectId", 1), ("code", 1)],
+        unique=True,
+        name="categories_project_code_unique",
+        partialFilterExpression={"projectId": {"$exists": True}, "code": {"$exists": True, "$type": "string"}},
+    )
     db.supplierCategories.create_index("name", unique=True)
     db.projects.create_index("name", unique=True)
     db.payments.create_index([("projectId", 1), ("sapPaymentNum", 1)], unique=True)
@@ -1794,6 +1800,12 @@ def ensure_indexes():
     db.transactions.create_index([("projectId", 1), ("date", -1)])
     db.transactions.create_index([("projectId", 1)], name="transactions_project_id_idx")
     db.transactions.create_index([("sap.projectId", 1)], name="transactions_sap_project_id_idx")
+    db.vendors.create_index(
+        [("projectId", 1), ("supplierCardCode", 1)],
+        unique=True,
+        name="vendors_project_supplier_card_code_unique",
+        partialFilterExpression={"projectId": {"$exists": True}, "supplierCardCode": {"$exists": True, "$type": "string"}},
+    )
     text_index_name = "transactions_text_search"
     current_indexes = {idx.get("name"): idx for idx in db.transactions.list_indexes()}
     existing_text_index = current_indexes.get(text_index_name)
@@ -3064,12 +3076,13 @@ def update_supplier(supplier_id: str, payload: dict, request: FastAPIRequest, _:
 
 def build_sap_vendor_upsert(card_code: str, beneficiary: str, project_id: str):
     return UpdateOne(
-        {"source": "sap", "externalIds.sapCardCode": card_code},
+        {"source": "sap", "projectId": project_id, "supplierCardCode": card_code},
         {
             "$set": {
                 "name": beneficiary or card_code,
                 "source": "sap",
                 "externalIds.sapCardCode": card_code,
+                "supplierCardCode": card_code,
                 "projectId": project_id,
                 "active": True,
             },
@@ -3174,6 +3187,57 @@ def build_supplier_auto_category_map(supplier_ids: list[str]) -> dict[str, str]:
         supplier_id: next(iter(categories))
         for supplier_id, categories in distinct_categories_by_supplier.items()
         if len(categories) == 1
+    }
+
+
+def upsert_sap_categories_from_hints(project_id: str, line_records: list[dict]) -> dict[str, str]:
+    hints_by_code: dict[str, str | None] = {}
+    for record in line_records:
+        code = str(record.get("categoryHintCode") or "").strip()
+        if not code:
+            continue
+
+        name = str(record.get("categoryHintName") or "").strip() or None
+        if code not in hints_by_code or (not hints_by_code.get(code) and name):
+            hints_by_code[code] = name
+
+    if not hints_by_code:
+        return {}
+
+    now = datetime.now(timezone.utc).isoformat()
+    category_ops = []
+    for code, name in hints_by_code.items():
+        category_set_doc = {
+            "projectId": project_id,
+            "code": code,
+            "source": "sap",
+            "updatedAt": now,
+            "active": True,
+        }
+        if name:
+            category_set_doc["name"] = name
+
+        category_ops.append(
+            UpdateOne(
+                {"projectId": project_id, "code": code},
+                {
+                    "$set": category_set_doc,
+                    "$setOnInsert": {"createdAt": now},
+                },
+                upsert=True,
+            )
+        )
+
+    if category_ops:
+        db.categories.bulk_write(category_ops, ordered=False)
+
+    return {
+        str(category.get("code")): str(category.get("_id"))
+        for category in db.categories.find(
+            {"projectId": project_id, "code": {"$in": list(hints_by_code.keys())}},
+            {"code": 1},
+        )
+        if category.get("code")
     }
 
 
@@ -3682,9 +3746,10 @@ def run_sap_import(
         }
     )
     supplier_auto_category_map = build_supplier_auto_category_map(supplier_ids_in_file)
+    sap_category_ids_by_code = upsert_sap_categories_from_hints(project_id, line_records)
 
     lines_ops = []
-    sap_expense_ops = []
+    sap_expense_ops_by_key = {}
     for record in line_records:
         payment_id = payments_map.get(record["paymentNum"])
         invoice_id = invoices_map.get(record["invoiceNum"])
@@ -3720,7 +3785,8 @@ def run_sap_import(
                     category_preserved_count += 1
                     category_would_have_changed_count += 1
 
-            inferred_category_id = supplier_auto_category_map.get(supplier_id)
+            hinted_category_id = sap_category_ids_by_code.get(str(record.get("categoryHintCode") or "").strip())
+            inferred_category_id = hinted_category_id or supplier_auto_category_map.get(supplier_id)
 
             supplier_name = record["beneficiary"] or record["cardCode"]
             vendor_id = supplier_id
@@ -3760,20 +3826,26 @@ def run_sap_import(
                     "categoryHintName": record["categoryHintName"],
                 },
             }
-            sap_expense_ops.append(
-                UpdateOne(
-                    tx_identity_filter,
-                    {
-                        "$set": sap_set_doc,
-                        "$setOnInsert": {
-                            "categoryId": inferred_category_id,
-                            "category_id": inferred_category_id,
-                            "created_at": datetime.now(timezone.utc).isoformat(),
-                            "sourceFile": source_file_value,
-                        },
-                    },
-                    upsert=True,
+            if inferred_category_id:
+                sap_set_doc["categoryId"] = inferred_category_id
+                sap_set_doc["category_id"] = inferred_category_id
+
+            sap_expense_ops_by_key[
+                (
+                    record["paymentNum"],
+                    record["invoiceNum"],
+                    record["appliedAmountCents"],
                 )
+            ] = UpdateOne(
+                tx_identity_filter,
+                {
+                    "$set": sap_set_doc,
+                    "$setOnInsert": {
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "sourceFile": source_file_value,
+                    },
+                },
+                upsert=True,
             )
 
     if lines_ops:
@@ -3781,6 +3853,7 @@ def run_sap_import(
         lines_inserted = result.upserted_count or 0
         duplicates_skipped = len(lines_ops) - lines_inserted
 
+    sap_expense_ops = list(sap_expense_ops_by_key.values())
     if sap_expense_ops:
         try:
             result = db.transactions.bulk_write(sap_expense_ops, ordered=False)
@@ -3791,8 +3864,18 @@ def run_sap_import(
             details = exc.details or {}
             write_errors = details.get("writeErrors") or []
             non_duplicate_errors = [error for error in write_errors if error.get("code") != 11000]
-            duplicate_errors_count = len(write_errors) - len(non_duplicate_errors)
-            duplicates_skipped += duplicate_errors_count
+            duplicate_errors = [error for error in write_errors if error.get("code") == 11000]
+
+            for error in duplicate_errors:
+                error_index = error.get("index")
+                if error_index is None or error_index < 0 or error_index >= len(sap_expense_ops):
+                    continue
+                duplicate_op = sap_expense_ops[error_index]
+                duplicate_update_doc = duplicate_op._doc if isinstance(duplicate_op._doc, dict) else {}
+                duplicate_set_doc = duplicate_update_doc.get("$set")
+                if duplicate_set_doc:
+                    retry_result = db.transactions.update_one(duplicate_op._filter, {"$set": duplicate_set_doc})
+                    sap_expenses_updated += retry_result.modified_count or 0
 
             if non_duplicate_errors:
                 rows_error += len(non_duplicate_errors)
@@ -3808,8 +3891,8 @@ def run_sap_import(
             upserted_count = len(details.get("upserted") or [])
             modified_count = details.get("nModified") or 0
             sap_expenses_inserted = upserted_count
-            sap_expenses_updated = modified_count
-            sap_expenses_upserted = upserted_count + modified_count
+            sap_expenses_updated += modified_count
+            sap_expenses_upserted = sap_expenses_inserted + sap_expenses_updated
 
     rows_total = len(rows)
     category_hints_rows = sum(1 for record in line_records if record.get("categoryHintCode") or record.get("categoryHintName"))
