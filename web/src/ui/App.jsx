@@ -499,7 +499,7 @@ function Dashboard({ isAdmin, selectedProjectId }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
-  const [viewMode, setViewMode] = useState('category');
+  const [viewMode, setViewMode] = useState('experimental');
   const [showCategoryIva, setShowCategoryIva] = useState(false);
   const [showSupplierIva, setShowSupplierIva] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -755,14 +755,14 @@ function Dashboard({ isAdmin, selectedProjectId }) {
     <div className="card">
       <h2 style={{ margin: '0 0 8px' }}>Dashboard de egresos</h2>
       <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <button className={viewMode === 'experimental' ? '' : 'secondary'} onClick={() => setViewMode('experimental')}>
+          Vista experimental
+        </button>
         <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
           Por categoría
         </button>
         <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
           Por proveedor
-        </button>
-        <button className={viewMode === 'experimental' ? '' : 'secondary'} onClick={() => setViewMode('experimental')}>
-          Vista experimental
         </button>
       </div>
       <div className="small">{subtitle}</div>
