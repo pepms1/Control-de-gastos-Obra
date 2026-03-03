@@ -3186,7 +3186,9 @@ def build_s3_key(filename: str) -> str:
 def build_project_s3_key(project_id: str, filename: str) -> str:
     prefix = ""
     try:
-        project_doc = db.projects.find_one({"_id": ObjectId(project_id)}, {"sap": 1})
+        project_doc = db.projects.find_one(
+            {"_id": ObjectId(project_id)}, {"sap": 1, "s3Prefix": 1}
+        )
     except Exception:
         project_doc = None
 
@@ -3194,9 +3196,21 @@ def build_project_s3_key(project_id: str, filename: str) -> str:
         sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
         s3_doc = sap_doc.get("s3") if isinstance(sap_doc.get("s3"), dict) else {}
         prefix = str(s3_doc.get("prefix") or "").strip().strip("/")
+        if not prefix:
+            prefix = str(project_doc.get("s3Prefix") or "").strip().strip("/")
 
     if not prefix:
-        return build_s3_key(filename)
+        prefix = (os.getenv("S3_PREFIX") or "").strip().strip("/")
+
+    logger.info(
+        "Resolved project S3 key prefix project_id=%s prefix=%s filename=%s",
+        project_id,
+        prefix,
+        filename,
+    )
+
+    if not prefix:
+        return filename
 
     return f"{prefix}/{filename}"
 
