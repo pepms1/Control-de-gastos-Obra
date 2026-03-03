@@ -3247,8 +3247,22 @@ def run_s3_latest_sap_import(
     source: str = "sap-latest",
 ):
     project_id = get_or_create_project_id(project)
-    iva_key = build_project_s3_key(project_id, "latest_IVA.csv")
-    efectivo_key = build_project_s3_key(project_id, "latest_EFECTIVO.csv")
+    project_doc = db.projects.find_one({"_id": ObjectId(project_id)}, {"sap": 1, "s3Prefix": 1}) or {}
+    sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+    sap_s3_doc = sap_doc.get("s3") if isinstance(sap_doc.get("s3"), dict) else {}
+
+    prefijo = str(sap_s3_doc.get("prefix") or "").strip()
+    if not prefijo:
+        prefijo = str(project_doc.get("s3Prefix") or "").strip()
+    if not prefijo:
+        prefijo = str(os.getenv("S3_PREFIX") or "").strip()
+
+    prefijo = prefijo.strip("/")
+    if not prefijo:
+        raise RuntimeError(f"Missing S3 prefix for project '{project}' (project_id={project_id})")
+
+    iva_key = f"{prefijo}/latest_IVA.csv"
+    efectivo_key = f"{prefijo}/latest_EFECTIVO.csv"
     logger.info(
         "Running latest SAP import project=%s project_id=%s iva_key=%s efectivo_key=%s",
         project,
@@ -3257,7 +3271,9 @@ def run_s3_latest_sap_import(
         efectivo_key,
     )
 
+    logger.info("Attempting S3 download for iva_key=%s", iva_key)
     iva_bytes = downloadFromS3(iva_key)
+    logger.info("Attempting S3 download for efectivo_key=%s", efectivo_key)
     efectivo_bytes = downloadFromS3(efectivo_key)
 
     iva_summary = importCsv(
