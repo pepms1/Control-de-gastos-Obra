@@ -1,40 +1,73 @@
 import os
 import sys
-import urllib.error
+import json
 import urllib.request
+import urllib.error
 import urllib.parse
 
 BASE = "https://control-de-gastos-obra.onrender.com"
 
-project = os.environ.get("CRON_PROJECT", "CALDERON DE LA BARCA")
+PROJECT = os.environ.get("CRON_PROJECT", "CALDERON DE LA BARCA").strip()
+USERNAME = os.environ.get("CRON_USERNAME", "").strip()
+PASSWORD = os.environ.get("CRON_PASSWORD", "").strip()
 
-# Puedes pegarle al endpoint cron o al admin, los dos piden Bearer según tu error.
-URL = BASE + "/api/cron/import/sap-latest?project=" + urllib.parse.quote(project)
+LOGIN_URL = BASE + "/api/auth/login"
+CRON_URL = BASE + "/api/cron/import/sap-latest?project=" + urllib.parse.quote(PROJECT)
 
-bearer = os.environ.get("CRON_BEARER_TOKEN", "").strip()
-secret = os.environ.get("CRON_SECRET", "").strip()
-
-headers = {}
-if bearer:
-    headers["Authorization"] = f"Bearer {bearer}"
-if secret:
-    headers["X-Cron-Secret"] = secret
+def http_json(url: str, method: str = "GET", headers: dict | None = None, data_obj=None, timeout: int = 600):
+    headers = headers or {}
+    data = None
+    if data_obj is not None:
+        data = json.dumps(data_obj).encode("utf-8")
+        headers = {**headers, "Content-Type": "application/json"}
+    req = urllib.request.Request(url, method=method, headers=headers, data=data)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = resp.read().decode("utf-8", "replace")
+        return resp.status, body
 
 print("CRON START")
-print("PROJECT", project)
-print("URL", URL)
+print("PROJECT", PROJECT)
+print("URL", CRON_URL)
 
-req = urllib.request.Request(URL, method="POST", headers=headers)
-
-try:
-    with urllib.request.urlopen(req, timeout=600) as response:
-        body = response.read().decode("utf-8", "replace")
-        print("STATUS", response.status)
-        print(body)
-except urllib.error.HTTPError as error:
-    print("STATUS", error.code)
-    print(error.read().decode("utf-8", "replace"))
+if not USERNAME or not PASSWORD:
+    print("ERROR: Missing CRON_USERNAME / CRON_PASSWORD env vars")
     sys.exit(1)
-except Exception as error:
-    print("ERROR", repr(error))
+
+# 1) Login → token fresco
+try:
+    st, body = http_json(LOGIN_URL, method="POST", data_obj={"username": USERNAME, "password": PASSWORD})
+    if st != 200:
+        print("LOGIN STATUS", st)
+        print(body)
+        sys.exit(1)
+
+    o = json.loads(body)
+    token = (o.get("access_token") or "").strip()
+    if not token:
+        print("ERROR: login did not return access_token")
+        print(body)
+        sys.exit(1)
+
+except urllib.error.HTTPError as e:
+    print("LOGIN STATUS", e.code)
+    print(e.read().decode("utf-8", "replace"))
+    sys.exit(1)
+except Exception as e:
+    print("LOGIN ERROR", repr(e))
+    sys.exit(1)
+
+# 2) Llamar cron endpoint con Bearer
+try:
+    st, body = http_json(CRON_URL, method="POST", headers={"Authorization": f"Bearer {token}"})
+    print("STATUS", st)
+    print(body)
+    if st >= 400:
+        sys.exit(1)
+
+except urllib.error.HTTPError as e:
+    print("STATUS", e.code)
+    print(e.read().decode("utf-8", "replace"))
+    sys.exit(1)
+except Exception as e:
+    print("ERROR", repr(e))
     sys.exit(1)
