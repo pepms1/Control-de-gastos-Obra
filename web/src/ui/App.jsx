@@ -273,6 +273,13 @@ export default function App() {
       });
   }, [session.token]);
 
+  // When switching projects, refresh vendors (and other catalogs) immediately.
+  useEffect(() => {
+    if (!session.token) return;
+    if (!selectedProjectId) return;
+    refreshCatalog().catch(() => {});
+  }, [session.token, selectedProjectId]);
+
   function handleProjectChange(nextProjectId) {
     setSelectedProjectId(nextProjectId);
     if (nextProjectId) {
@@ -313,7 +320,7 @@ export default function App() {
           <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={dataVersion} />
         )}
 
-      {tab === 'transactions' && (
+        {tab === 'transactions' && (
           <Transactions
             isAdmin={isAdmin}
             cats={cats}
@@ -321,7 +328,6 @@ export default function App() {
             onCatalogChanged={refreshCatalog}
             onTransactionsChanged={invalidateData}
             selectedProjectId={selectedProjectId}
-          refreshKey={dataVersion}
           />
         )}
 
@@ -988,7 +994,7 @@ function EditModal({ title, children, onClose, onSave }) {
 }
 
 /* ================= TRANSACTIONS ================= */
-function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactionsChanged, selectedProjectId, refreshKey }) {
+function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactionsChanged, selectedProjectId }) {
   const UNCATEGORIZED_FILTER = '__UNCATEGORIZED__';
   const getTransactionStableKey = (tx) =>
     tx?._id ?? tx?.id ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sap?.pagoNum || ''}|${tx?.sap?.facturaNum || ''}|${tx?.sap?.montoAplicado || ''}`;
@@ -1063,20 +1069,14 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   }, [filter, categoryFilter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId]);
 
   useEffect(() => {
-    let alive = true;
     api.suppliers()
       .then((supplierList) => {
-        if (!alive) return;
         setAllSuppliers(Array.isArray(supplierList) ? supplierList : []);
       })
       .catch(() => {
-        if (!alive) return;
         setAllSuppliers([]);
       });
-    return () => {
-      alive = false;
-    };
-  }, [selectedProjectId, refreshKey]);
+  }, [selectedProjectId]);
 
   useEffect(() => {
     setSelectedRows([]);

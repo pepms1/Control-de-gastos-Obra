@@ -266,19 +266,24 @@ def require_authenticated(user=Depends(role_from_token)):
 
 def get_active_project_id(request: FastAPIRequest) -> str:
     header_project_id = (request.headers.get("X-Project-Id") or "").strip()
+    # Frontend often sends projectId as query parameter; accept it as a fallback.
+    query_project_id = (request.query_params.get("projectId") or "").strip()
     default_project_id = (os.getenv("DEFAULT_PROJECT_ID") or "").strip()
 
-    active_project_id = header_project_id or default_project_id
+    active_project_id = header_project_id or query_project_id or default_project_id
     if not active_project_id:
         raise HTTPException(
             status_code=400,
             detail="Missing active project. Provide X-Project-Id header or configure DEFAULT_PROJECT_ID env var.",
         )
 
+    if not ObjectId.is_valid(active_project_id):
+        raise HTTPException(status_code=400, detail="Invalid active projectId")
+
     logger.info(
         "Resolved active projectId=%s via %s",
         active_project_id,
-        "X-Project-Id" if header_project_id else "DEFAULT_PROJECT_ID",
+        "X-Project-Id" if header_project_id else ("query projectId" if query_project_id else "DEFAULT_PROJECT_ID"),
     )
     return active_project_id
 
@@ -3067,17 +3072,9 @@ def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
 @app.get("/api/suppliers")
 def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, _: dict = Depends(require_authenticated)):
     active_project_id = get_active_project_id(request)
-    # Suppliers started as a legacy/global collection (keyed by CardCode) and later
-    # became project-aware. Support both shapes:
-    #   - projectId == active_project_id
-    #   - projectIds contains active_project_id
-    query = {"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}
+    query = {"$and": [{"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}]}
     if uncategorized == 1:
-        query["$and"] = [
-            query,
-            {"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]},
-        ]
-        query = {"$and": query["$and"]}
+        query["$and"].append({"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]})
     return [serialize(s) for s in db.suppliers.find(query).sort("name", 1)]
 
 
@@ -3702,17 +3699,15 @@ def run_sap_import(
                 UpdateOne(
                     {"cardCode": card_code},
                     {
+                        # Suppliers are shared across projects by cardCode, but we track membership per project.
                         "$setOnInsert": {
                             "cardCode": card_code,
                             "categoryId": None,
+                            "created_at": datetime.now(timezone.utc).isoformat(),
                             "projectId": project_id,
                             "projectIds": [project_id],
-                            "created_at": datetime.now(timezone.utc).isoformat(),
                         },
-                        "$set": {
-                            "name": beneficiary or card_code,
-                            "projectId": project_id,
-                        },
+                        "$set": {"name": beneficiary or card_code},
                         "$addToSet": {"projectIds": project_id},
                     },
                     upsert=True,
@@ -3764,7 +3759,21 @@ def run_sap_import(
         project_id,
     )
 
-    suppliers_map = {s["cardCode"]: str(s["_id"]) for s in db.suppliers.find({}, {"cardCode": 1})}
+    supplier_cardcodes = list(suppliers_seen.keys())
+    suppliers_map = {
+        s["cardCode"]: str(s["_id"])
+        for s in db.suppliers.find({"cardCode": {"$in": supplier_cardcodes}}, {"cardCode": 1})
+    }
+
+    # Map SAP supplier card codes to vendor ids for this project.
+    vendor_map = {
+        v.get("supplierCardCode"): str(v.get("_id"))
+        for v in db.vendors.find(
+            {"projectId": project_id, "supplierCardCode": {"$in": supplier_cardcodes}},
+            {"supplierCardCode": 1},
+        )
+        if v.get("supplierCardCode")
+    }
 
     payments_unique = {}
     invoices_unique = {}
@@ -3868,7 +3877,8 @@ def run_sap_import(
             inferred_category_id = hinted_category_id or supplier_auto_category_map.get(supplier_id)
 
             supplier_name = record["beneficiary"] or record["cardCode"]
-            vendor_id = supplier_id
+            # For UI/vendor filtering we link to vendors collection when possible.
+            vendor_id = vendor_map.get(record["cardCode"]) or supplier_id
             sap_set_doc = {
                 "type": "EXPENSE",
                 "projectId": project_id,
