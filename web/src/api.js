@@ -114,6 +114,35 @@ async function backendReq(path, opts = {}) {
   return request(BACKEND_URL, path, opts);
 }
 
+/**
+ * @typedef {Object} TransactionDTO
+ * @property {string=} category_hint_code
+ * @property {string=} category_hint_name
+ * @property {string=} CategoryHintCode
+ * @property {string=} CategoryHintName
+ */
+
+function normalizeTransaction(transaction) {
+  if (!transaction || typeof transaction !== 'object') return transaction;
+
+  const categoryHintName = transaction.categoryHintName
+    || transaction.category_hint_name
+    || transaction.CategoryHintName
+    || '';
+  const categoryHintCode = transaction.categoryHintCode
+    || transaction.category_hint_code
+    || transaction.CategoryHintCode
+    || '';
+
+  return {
+    ...transaction,
+    categoryHintName,
+    categoryHintCode,
+    category_hint_name: transaction.category_hint_name || categoryHintName,
+    category_hint_code: transaction.category_hint_code || categoryHintCode,
+  };
+}
+
 export const api = {
   projects: () => req('/api/projects'),
 
@@ -164,7 +193,13 @@ export const api = {
 
   transactions: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
-    return req(`/transactions${qs ? `?${qs}` : ''}`);
+    return req(`/transactions${qs ? `?${qs}` : ''}`).then((response) => {
+      if (!response || typeof response !== 'object') return response;
+      return {
+        ...response,
+        items: Array.isArray(response.items) ? response.items.map(normalizeTransaction) : [],
+      };
+    });
   },
 
   createTransaction: (payload) =>

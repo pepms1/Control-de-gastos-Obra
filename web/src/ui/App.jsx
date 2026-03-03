@@ -20,6 +20,39 @@ function parseMoneyInput(value) {
   return Number(value.replace(/,/g, '').trim());
 }
 
+function getCategoryHintName(transaction) {
+  return (
+    transaction?.categoryHintName
+    || transaction?.category_hint_name
+    || transaction?.CategoryHintName
+    || ''
+  ).trim();
+}
+
+function getCategoryHintCode(transaction) {
+  return (
+    transaction?.categoryHintCode
+    || transaction?.category_hint_code
+    || transaction?.CategoryHintCode
+    || ''
+  ).trim();
+}
+
+function getTransactionCategoryLabel(transaction, catMap) {
+  const hintName = getCategoryHintName(transaction);
+  if (hintName) return hintName;
+
+  const legacyCategory = (transaction?.category_name || transaction?.category || '').trim();
+  if (legacyCategory) return legacyCategory;
+
+  if (transaction?.category_id) {
+    const mappedCategory = (catMap[transaction.category_id] || '').trim();
+    if (mappedCategory) return mappedCategory;
+  }
+
+  return 'Sin categoría';
+}
+
 /* ================= NAV ================= */
 function Nav({
   tab,
@@ -976,6 +1009,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
   const [bulkCategoryId, setBulkCategoryId] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
 
+  const isHintCategoryFilter = categoryFilter.startsWith('HINT::');
+  const isUncategorizedFilter = categoryFilter === UNCATEGORIZED_FILTER;
+
   async function load(targetPage = page) {
     setLoading(true);
     setErr('');
@@ -984,7 +1020,10 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
         page: String(targetPage),
         limit: String(limit),
         type: filter === 'ALL' ? '' : filter,
-        category_id: categoryFilter === 'ALL' ? '' : categoryFilter,
+        category_id:
+          categoryFilter === 'ALL' || isHintCategoryFilter || isUncategorizedFilter
+            ? ''
+            : categoryFilter,
         supplierId: supplierFilter === 'ALL' ? '' : supplierFilter,
         sourceDb: sourceDbFilter === 'ALL' ? '' : sourceDbFilter,
         q: searchFilter.trim(),
@@ -1038,7 +1077,37 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
     return Array.from(byId.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
   }, [allSuppliers, rows, vendorMap]);
 
-  const shown = [...rows].sort((a, b) => {
+  const hintCategoryOptions = useMemo(() => {
+    const hintNames = new Set();
+    rows.forEach((row) => {
+      const hintName = getCategoryHintName(row);
+      if (hintName) hintNames.add(hintName);
+    });
+    return Array.from(hintNames).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [rows]);
+
+  const shown = rows
+    .filter((row) => {
+      if (categoryFilter === 'ALL') return true;
+      if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categoría';
+      if (categoryFilter.startsWith('HINT::')) return getCategoryHintName(row) === categoryFilter.replace('HINT::', '');
+      return row.category_id === categoryFilter;
+    })
+    .filter((row) => {
+      const query = searchFilter.trim().toLowerCase();
+      if (!query) return true;
+      const searchableFields = [
+        row.description,
+        row.concept,
+        row.proveedorNombre,
+        row.supplierName,
+        row.proveedor?.name,
+        getTransactionCategoryLabel(row, catMap),
+        getCategoryHintCode(row),
+      ];
+      return searchableFields.some((field) => String(field || '').toLowerCase().includes(query));
+    })
+    .sort((a, b) => {
     if (sortBy === 'created_desc') {
       const aCreatedAt = a.created_at || '';
       const bCreatedAt = b.created_at || '';
@@ -1186,6 +1255,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
           <select value={categoryFilter} onChange={(e) => { setPage(1); setCategoryFilter(e.target.value); }}>
             <option value="ALL">Todas las categorías</option>
             <option value={UNCATEGORIZED_FILTER}>Sin categoría</option>
+            {hintCategoryOptions.map((name) => (
+              <option key={`hint-${name}`} value={`HINT::${name}`}>{name} (SAP)</option>
+            ))}
             {cats.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}
@@ -1281,7 +1353,10 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, selectedProjec
                   <td>{r.source === 'sap' ? <span className="badge">SAP</span> : ''}</td>
                   <td>{r.sourceDb ? <span className="badge">{String(r.sourceDb).toUpperCase()}</span> : 'LEGACY/UNKNOWN'}</td>
                   <td>{r.description || r.concept || ''}</td>
-                  <td>{r.category_id ? catMap[r.category_id] || '' : ''}</td>
+                  <td>
+                    {getTransactionCategoryLabel(r, catMap)}
+                    {getCategoryHintCode(r) && <span className="badge" style={{ marginLeft: 6 }}>{getCategoryHintCode(r)}</span>}
+                  </td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>${formatMoney(r.subtotal ?? r.amount)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
@@ -1442,7 +1517,7 @@ function SearchTransactions({ cats, vendors, selectedProjectId }) {
         .map((r) => {
           const provider = r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—';
           const concept = r.description || r.concept || '—';
-          const category = r.category_name || (r.category_id ? catMap[r.category_id] || '—' : '—');
+          const category = getTransactionCategoryLabel(r, catMap) || '—';
           const ivaAmount = Number(r.tax?.iva ?? r.iva);
           const hasIva = Number.isFinite(ivaAmount) && Math.abs(ivaAmount) > 0;
           const totalAmount = Number(r.amount) || 0;
@@ -1570,7 +1645,7 @@ function SearchTransactions({ cats, vendors, selectedProjectId }) {
                 <td>{r.date}</td>
                 <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                 <td>{r.description || r.concept || ''}</td>
-                <td>{r.category_name || (r.category_id ? catMap[r.category_id] || '' : '')}</td>
+                <td>{getTransactionCategoryLabel(r, catMap)}</td>
                 <td>${formatMoney(getAmountWithoutIva(r))}</td>
               </tr>
             ))}

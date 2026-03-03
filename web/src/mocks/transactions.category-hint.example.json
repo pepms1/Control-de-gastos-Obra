@@ -1,0 +1,13 @@
+[
+  {
+    "id": "tx-sap-1",
+    "description": "Pago gestoría",
+    "category_hint_name": "Honorarios Gestoria",
+    "category_hint_code": "5100-06-009"
+  },
+  {
+    "id": "tx-legacy-1",
+    "description": "Compra de materiales",
+    "category_name": "Materiales"
+  }
+]
