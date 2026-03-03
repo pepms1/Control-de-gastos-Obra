@@ -176,9 +176,10 @@ def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dic
     tx_doc = serialize(tx)
     supplier = None
     supplier_id = tx_doc.get("supplierId")
+    supplier_id_key = str(supplier_id) if supplier_id else ""
 
-    if supplier_id and suppliers_by_id:
-        supplier = suppliers_by_id.get(supplier_id)
+    if supplier_id_key and suppliers_by_id:
+        supplier = suppliers_by_id.get(supplier_id_key)
 
     supplier_name = (
         tx_doc.get("supplierName")
@@ -2394,6 +2395,8 @@ def build_transactions_query(
         q["vendor_id"] = vendor_id
     if supplier_id:
         supplier_filter = [{"supplierId": supplier_id}, {"vendor_id": supplier_id}]
+        if ObjectId.is_valid(supplier_id):
+            supplier_filter.append({"supplierId": oid(supplier_id)})
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": supplier_filter}]
         else:
@@ -4173,7 +4176,7 @@ def summary_expenses_by_supplier(
     for tx in movements:
         supplier_id = tx.get("supplierId")
         vendor_id = tx.get("vendor_id")
-        provider_key = supplier_id or vendor_id
+        provider_key = str(supplier_id or vendor_id or "")
         bucket = supplier_totals.setdefault(
             provider_key,
             {
@@ -4199,6 +4202,12 @@ def summary_expenses_by_supplier(
         }
         for provider_id, values in supplier_totals.items()
     ]
+
+    for row in rows:
+        if row.get("supplierId"):
+            row["supplierId"] = str(row["supplierId"])
+        if row.get("vendorId"):
+            row["vendorId"] = str(row["vendorId"])
 
     supplier_ids = [oid(row.get("supplierId")) for row in rows if row.get("supplierId")]
     vendor_ids = [oid(row.get("vendorId")) for row in rows if row.get("vendorId")]
