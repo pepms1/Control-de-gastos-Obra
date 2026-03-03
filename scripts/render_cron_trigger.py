@@ -4,16 +4,21 @@ import urllib.error
 import urllib.request
 import urllib.parse
 
-BASE = os.environ.get("BASE", "https://control-de-gastos-obra.onrender.com").rstrip("/")
+BASE = "https://control-de-gastos-obra.onrender.com"
 
-# Proyecto: primero env var, luego argv, si no -> default (Calderón)
-project = os.environ.get("CRON_PROJECT") or (sys.argv[1] if len(sys.argv) > 1 else "CALDERON DE LA BARCA")
+project = os.environ.get("CRON_PROJECT", "CALDERON DE LA BARCA")
 
-# endpoint
-URL = f"{BASE}/api/cron/import/sap-latest?project={urllib.parse.quote(project, safe='')}"
+# Puedes pegarle al endpoint cron o al admin, los dos piden Bearer según tu error.
+URL = BASE + "/api/cron/import/sap-latest?project=" + urllib.parse.quote(project)
 
-secret = os.environ.get("CRON_SECRET", "")
-headers = {"X-Cron-Secret": secret} if secret else {}
+bearer = os.environ.get("CRON_BEARER_TOKEN", "").strip()
+secret = os.environ.get("CRON_SECRET", "").strip()
+
+headers = {}
+if bearer:
+    headers["Authorization"] = f"Bearer {bearer}"
+if secret:
+    headers["X-Cron-Secret"] = secret
 
 print("CRON START")
 print("PROJECT", project)
