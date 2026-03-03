@@ -1761,7 +1761,12 @@ def ensure_indexes():
     db.payments.create_index([("projectId", 1), ("sapPaymentNum", 1)], unique=True)
     db.apInvoices.create_index([("projectId", 1), ("sapInvoiceNum", 1)], unique=True)
     db.paymentLines.create_index([("paymentId", 1), ("apInvoiceId", 1), ("appliedAmount", 1)], unique=True)
-    db.importRuns.create_index("sha256", unique=True)
+    import_runs_indexes = {idx.get("name"): idx for idx in db.importRuns.list_indexes()}
+    legacy_sha_index = import_runs_indexes.get("sha256_1")
+    if legacy_sha_index and legacy_sha_index.get("unique"):
+        db.importRuns.drop_index("sha256_1")
+    db.importRuns.create_index([("projectId", 1), ("sha256", 1)], unique=True, name="import_runs_project_sha256_unique")
+    db.importRuns.create_index([("projectId", 1), ("importKey", 1)], name="import_runs_project_import_key_idx")
     db.settings.create_index("key", unique=True)
     db.telegram_users.create_index("chat_id", unique=True)
     db.telegram_users.create_index([("status", 1), ("updated_at", -1)])
@@ -3151,6 +3156,24 @@ def build_s3_key(filename: str) -> str:
     return f"{prefix}/{filename}"
 
 
+def build_project_s3_key(project_id: str, filename: str) -> str:
+    prefix = ""
+    try:
+        project_doc = db.projects.find_one({"_id": ObjectId(project_id)}, {"sap": 1})
+    except Exception:
+        project_doc = None
+
+    if isinstance(project_doc, dict):
+        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+        s3_doc = sap_doc.get("s3") if isinstance(sap_doc.get("s3"), dict) else {}
+        prefix = str(s3_doc.get("prefix") or "").strip().strip("/")
+
+    if not prefix:
+        return build_s3_key(filename)
+
+    return f"{prefix}/{filename}"
+
+
 def importCsv(
     file_bytes: bytes,
     sourceDb: str,
@@ -3182,8 +3205,9 @@ def run_s3_latest_sap_import(
     mode: str = "upsert",
     source: str = "sap-latest",
 ):
-    iva_key = build_s3_key("latest_IVA.csv")
-    efectivo_key = build_s3_key("latest_EFECTIVO.csv")
+    project_id = get_or_create_project_id(project)
+    iva_key = build_project_s3_key(project_id, "latest_IVA.csv")
+    efectivo_key = build_project_s3_key(project_id, "latest_EFECTIVO.csv")
 
     iva_bytes = downloadFromS3(iva_key)
     efectivo_bytes = downloadFromS3(efectivo_key)
@@ -3195,7 +3219,7 @@ def run_s3_latest_sap_import(
         force=force,
         source=source,
         mode=mode,
-        source_file="latest_IVA.csv",
+        source_file=iva_key,
         source_sbo="SBO_GMDI",
     )
     efectivo_summary = importCsv(
@@ -3205,7 +3229,7 @@ def run_s3_latest_sap_import(
         force=force,
         source=source,
         mode=mode,
-        source_file="latest_EFECTIVO.csv",
+        source_file=efectivo_key,
         source_sbo="SBO_RAFAEL",
     )
 
@@ -3312,9 +3336,10 @@ def run_sap_import(
     source_file_value = source_file_key or None
     source_sbo_value = (source_sbo or "").strip() or None
     source_db_value = normalize_source_db_value(source_db_override)
+    import_key = f"{project_id}:{source_db_value}:{source_file_value or file_name}"
     file_hash = sha256(file_bytes).hexdigest()
 
-    existing_run = db.importRuns.find_one({"sha256": file_hash})
+    existing_run = db.importRuns.find_one({"projectId": project_id, "sha256": file_hash})
     existing_ok_run = existing_run and existing_run.get("status") == "ok"
 
     existing_source_key_run = None
@@ -3323,8 +3348,7 @@ def run_sap_import(
         existing_source_key_run = db.importRuns.find_one(
             {
                 "projectId": project_id,
-                "sourceDb": source_db_value,
-                "sourceFile": source_file_value,
+                "importKey": import_key,
                 "status": "ok",
             }
         )
@@ -3355,7 +3379,7 @@ def run_sap_import(
         "sourceFile": source_file_value,
         "sourceSbo": source_sbo_value,
         "sourceDb": source_db_value,
-        "importKey": f"{source_db_value}:{source_file_value or file_name}",
+        "importKey": import_key,
         "source": source,
         "projectId": project_id,
         "rowsTotal": 0,
@@ -3581,6 +3605,7 @@ def run_sap_import(
                 "projectId": project_id,
                 "source": "sap",
                 "sourceDb": record["sourceDb"],
+                "sap.projectId": project_id,
                 "sap.pagoNum": record["paymentNum"],
                 "sap.facturaNum": record["invoiceNum"],
                 "sap.montoAplicadoCents": record["appliedAmountCents"],
@@ -3619,6 +3644,7 @@ def run_sap_import(
                     "cardCode": record["cardCode"],
                     "sourceFile": source_file_value,
                     "sourceSbo": record["sourceDb"],
+                    "projectId": project_id,
                 },
             }
             sap_expense_ops.append(
