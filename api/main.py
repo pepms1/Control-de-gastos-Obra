@@ -878,8 +878,11 @@ def _telegram_save_state(chat_id: int | str, payload: dict) -> None:
     data = {
         "chat_id": normalized_chat_id,
         "mode": payload.get("mode"),
+        "projectId": payload.get("projectId"),
         "supplierId": payload.get("supplierId"),
         "categoryId": payload.get("categoryId"),
+        "pendingCommand": payload.get("pendingCommand"),
+        "pendingText": payload.get("pendingText"),
         "month": payload.get("month") or _telegram_current_month_token(),
         "page": _telegram_parse_page(str(payload.get("page") or 1)),
         "limit": _telegram_parse_limit(str(payload.get("limit") or 25), default=25, maximum=50),
@@ -914,15 +917,72 @@ def _telegram_save_picker_state(chat_id: int | str, mode: str, search_text: str,
     return picker
 
 
-def _telegram_build_suppliers_keyboard(search_text: str, page: int = 1, limit: int = 10) -> tuple[str, dict | None, dict]:
+def _telegram_list_projects() -> list[dict]:
+    rows = db.projects.find({}, {"name": 1, "slug": 1}).sort("name", 1)
+    return [{"_id": str(row.get("_id")), "name": (row.get("name") or "(sin nombre)").strip(), "slug": row.get("slug")} for row in rows]
+
+
+def _telegram_build_projects_keyboard(selected_project_id: str | None = None) -> tuple[str, dict | None]:
+    projects = _telegram_list_projects()
+    if not projects:
+        return "No hay proyectos disponibles.", None
+
+    keyboard_rows = []
+    for project in projects[:20]:
+        project_id = project.get("_id") or ""
+        marker = "✅ " if selected_project_id and project_id == selected_project_id else ""
+        keyboard_rows.append([{"text": f"{marker}{project.get('name')}", "callback_data": f"projectSel:{project_id}"}])
+    keyboard_rows.append([{"text": "❌ Cerrar", "callback_data": "close"}])
+    return "Selecciona el proyecto para continuar:", {"inline_keyboard": keyboard_rows}
+
+
+def _telegram_get_selected_project_id(chat_id: int | str) -> str | None:
+    state = _telegram_get_state(chat_id) or {}
+    selected_project_id = str(state.get("projectId") or "").strip()
+    if selected_project_id and ObjectId.is_valid(selected_project_id):
+        exists = db.projects.find_one({"_id": ObjectId(selected_project_id)}, {"_id": 1})
+        if exists:
+            return selected_project_id
+    return None
+
+
+def _telegram_require_project_selection(chat_id: int | str, pending_command: str, pending_text: str) -> bool:
+    selected_project_id = _telegram_get_selected_project_id(chat_id)
+    if selected_project_id:
+        return False
+
+    _telegram_save_state(
+        chat_id,
+        {
+            "projectId": None,
+            "mode": None,
+            "supplierId": None,
+            "categoryId": None,
+            "pendingCommand": pending_command,
+            "pendingText": pending_text,
+            "page": 1,
+            "limit": 25,
+        },
+    )
+    prompt_text, prompt_keyboard = _telegram_build_projects_keyboard()
+    tg_send(chat_id=chat_id, text=prompt_text, reply_markup=prompt_keyboard)
+    return True
+
+
+def _telegram_build_suppliers_keyboard(project_id: str, search_text: str, page: int = 1, limit: int = 10) -> tuple[str, dict | None, dict]:
     clean_search = str(search_text or "").strip()
     current_page = _telegram_parse_page(str(page))
     effective_limit = _telegram_parse_limit(str(limit), default=10, maximum=25)
 
-    query: dict = {}
+    query: dict = {"$or": [{"projectId": project_id}, {"projectIds": project_id}]}
     if clean_search:
         escaped = re.escape(clean_search)
-        query = {"$or": [{"name": {"$regex": escaped, "$options": "i"}}, {"cardCode": {"$regex": escaped, "$options": "i"}}]}
+        query = {
+            "$and": [
+                query,
+                {"$or": [{"name": {"$regex": escaped, "$options": "i"}}, {"cardCode": {"$regex": escaped, "$options": "i"}}]},
+            ]
+        }
 
     total = db.suppliers.count_documents(query)
     last_page = max(1, (total + effective_limit - 1) // effective_limit)
@@ -952,15 +1012,15 @@ def _telegram_build_suppliers_keyboard(search_text: str, page: int = 1, limit: i
     return title, {"inline_keyboard": keyboard_rows}, {"mode": "prov", "searchText": clean_search, "page": current_page, "limit": effective_limit}
 
 
-def _telegram_build_categories_keyboard(search_text: str, page: int = 1, limit: int = 10) -> tuple[str, dict | None, dict]:
+def _telegram_build_categories_keyboard(project_id: str, search_text: str, page: int = 1, limit: int = 10) -> tuple[str, dict | None, dict]:
     clean_search = str(search_text or "").strip()
     current_page = _telegram_parse_page(str(page))
     effective_limit = _telegram_parse_limit(str(limit), default=10, maximum=25)
 
-    query: dict = {}
+    query: dict = {"projectId": project_id}
     if clean_search:
         escaped = re.escape(clean_search)
-        query = {"name": {"$regex": escaped, "$options": "i"}}
+        query = {"$and": [query, {"name": {"$regex": escaped, "$options": "i"}}]}
 
     total = db.categories.count_documents(query)
     last_page = max(1, (total + effective_limit - 1) // effective_limit)
@@ -1008,8 +1068,15 @@ def _telegram_search_suppliers_keyboard(chat_id: int | str, raw_text: str) -> tu
         else:
             picker = _telegram_save_picker_state(chat_id=chat_id, mode="prov", search_text="", page=1, limit=10)
 
+    selected_project_id = _telegram_get_selected_project_id(chat_id)
+    if not selected_project_id:
+        return "Primero selecciona un proyecto con /project", None
+
     response_text, keyboard, picker = _telegram_build_suppliers_keyboard(
-        search_text=picker.get("searchText") or "", page=picker.get("page") or 1, limit=picker.get("limit") or 10
+        project_id=selected_project_id,
+        search_text=picker.get("searchText") or "",
+        page=picker.get("page") or 1,
+        limit=picker.get("limit") or 10,
     )
     _telegram_save_picker_state(
         chat_id=chat_id,
@@ -1040,8 +1107,15 @@ def _telegram_search_categories_keyboard(chat_id: int | str, raw_text: str) -> t
         else:
             picker = _telegram_save_picker_state(chat_id=chat_id, mode="cat", search_text="", page=1, limit=10)
 
+    selected_project_id = _telegram_get_selected_project_id(chat_id)
+    if not selected_project_id:
+        return "Primero selecciona un proyecto con /project", None
+
     response_text, keyboard, picker = _telegram_build_categories_keyboard(
-        search_text=picker.get("searchText") or "", page=picker.get("page") or 1, limit=picker.get("limit") or 10
+        project_id=selected_project_id,
+        search_text=picker.get("searchText") or "",
+        page=picker.get("page") or 1,
+        limit=picker.get("limit") or 10,
     )
     _telegram_save_picker_state(
         chat_id=chat_id,
@@ -1057,7 +1131,9 @@ def _telegram_build_transaction_message(state: dict) -> tuple[str, dict]:
     mode = str(state.get("mode") or "").strip()
     page = _telegram_parse_page(str(state.get("page") or 1))
     limit = _telegram_parse_limit(str(state.get("limit") or 25), default=25, maximum=50)
-    project_id = _resolve_default_project_id() or "699f9b894678d62c8d69f86d"
+    project_id = str(state.get("projectId") or "").strip()
+    if not project_id:
+        return "Primero selecciona un proyecto con /project", {"inline_keyboard": [[{"text": "Seleccionar proyecto", "callback_data": "projectPicker"}]]}
 
     query: dict = {"projectId": project_id}
     title = ""
@@ -1108,7 +1184,9 @@ def _telegram_build_transaction_message(state: dict) -> tuple[str, dict]:
 
 def _telegram_compute_total_for_state(state: dict) -> float:
     mode = str(state.get("mode") or "").strip()
-    project_id = _resolve_default_project_id() or "699f9b894678d62c8d69f86d"
+    project_id = str(state.get("projectId") or "").strip()
+    if not project_id:
+        return 0.0
     query: dict = {"projectId": project_id}
     if mode == "prov":
         supplier_id = str(state.get("supplierId") or "").strip()
@@ -1146,6 +1224,62 @@ def _telegram_handle_callback(callback_query: dict) -> dict:
 
     picker_state = _telegram_get_picker_state(normalized_chat_id)
 
+    if data == "projectPicker":
+        selected_project_id = _telegram_get_selected_project_id(normalized_chat_id)
+        response_text, keyboard = _telegram_build_projects_keyboard(selected_project_id=selected_project_id)
+        tg_edit_message(chat_id=chat_id, message_id=message_id, text=response_text, reply_markup=keyboard)
+        tg_answer_callback_query(callback_query_id)
+        return {"ok": True}
+
+    if data.startswith("projectSel:"):
+        selected_project_id = data.split(":", 1)[1].strip()
+        if not ObjectId.is_valid(selected_project_id) or not db.projects.find_one({"_id": ObjectId(selected_project_id)}, {"_id": 1}):
+            tg_answer_callback_query(callback_query_id, "Proyecto inválido")
+            return {"ok": True, "ignored": "invalid_project"}
+
+        current_state = _telegram_get_state(normalized_chat_id) or {}
+        pending_command = str(current_state.get("pendingCommand") or "").strip()
+        pending_text = str(current_state.get("pendingText") or "").strip()
+        _telegram_save_state(
+            normalized_chat_id,
+            {
+                "projectId": selected_project_id,
+                "mode": current_state.get("mode"),
+                "supplierId": current_state.get("supplierId"),
+                "categoryId": current_state.get("categoryId"),
+                "pendingCommand": None,
+                "pendingText": None,
+                "page": current_state.get("page") or 1,
+                "limit": current_state.get("limit") or 25,
+            },
+        )
+
+        if pending_command == "prov":
+            response_text, keyboard = _telegram_search_suppliers_keyboard(normalized_chat_id, pending_text or "/prov")
+            tg_edit_message(chat_id=chat_id, message_id=message_id, text=response_text, reply_markup=keyboard)
+        elif pending_command == "cat":
+            response_text, keyboard = _telegram_search_categories_keyboard(normalized_chat_id, pending_text or "/cat")
+            tg_edit_message(chat_id=chat_id, message_id=message_id, text=response_text, reply_markup=keyboard)
+        elif pending_command == "count":
+            tg_edit_message(chat_id=chat_id, message_id=message_id, text=_telegram_count_transactions(selected_project_id))
+        elif pending_command == "sum":
+            _, _, month_token = (pending_text or "").partition(" ")
+            tg_edit_message(chat_id=chat_id, message_id=message_id, text=_telegram_sum_expenses(selected_project_id, month_token.strip(), include_iva=False))
+        elif pending_command == "catid":
+            tg_edit_message(chat_id=chat_id, message_id=message_id, text=_telegram_search_category_id(selected_project_id, pending_text or "/catid"))
+        elif pending_command == "find":
+            tg_edit_message(chat_id=chat_id, message_id=message_id, text=_telegram_search_find(selected_project_id, pending_text or "/find"))
+        elif pending_command == "ask":
+            ask_text = (pending_text or "").split(" ", 1)[1].strip() if (pending_text or "").startswith("/ask") else (pending_text or "")
+            tg_edit_message(chat_id=chat_id, message_id=message_id, text=_telegram_ask_transactions(selected_project_id, ask_text))
+        else:
+            project_doc = db.projects.find_one({"_id": ObjectId(selected_project_id)}, {"name": 1}) or {}
+            project_name = project_doc.get("name") or selected_project_id
+            tg_edit_message(chat_id=chat_id, message_id=message_id, text=f"Proyecto seleccionado: {project_name}")
+
+        tg_answer_callback_query(callback_query_id, "Proyecto seleccionado")
+        return {"ok": True}
+
     if data in {"provPick:prev", "provPick:next", "catPick:prev", "catPick:next", "noop"}:
         mode = str(picker_state.get("mode") or "").strip()
         search_text = str(picker_state.get("searchText") or "").strip()
@@ -1157,10 +1291,15 @@ def _telegram_handle_callback(callback_query: dict) -> dict:
         elif data.endswith(":next"):
             page = page + 1
 
+        selected_project_id = _telegram_get_selected_project_id(normalized_chat_id)
+        if not selected_project_id:
+            tg_answer_callback_query(callback_query_id, "Selecciona proyecto")
+            return {"ok": True, "ignored": "missing_project"}
+
         if mode == "prov":
-            response_text, keyboard, picker = _telegram_build_suppliers_keyboard(search_text=search_text, page=page, limit=limit)
+            response_text, keyboard, picker = _telegram_build_suppliers_keyboard(project_id=selected_project_id, search_text=search_text, page=page, limit=limit)
         elif mode == "cat":
-            response_text, keyboard, picker = _telegram_build_categories_keyboard(search_text=search_text, page=page, limit=limit)
+            response_text, keyboard, picker = _telegram_build_categories_keyboard(project_id=selected_project_id, search_text=search_text, page=page, limit=limit)
         else:
             tg_answer_callback_query(callback_query_id, "Expiró selección")
             return {"ok": True, "ignored": "missing_picker_state"}
@@ -1178,7 +1317,8 @@ def _telegram_handle_callback(callback_query: dict) -> dict:
 
     if data.startswith("provSel:"):
         supplier_id = data.split(":", 1)[1].strip()
-        state = {"mode": "prov", "supplierId": supplier_id, "categoryId": None, "page": 1, "limit": 25}
+        selected_project_id = _telegram_get_selected_project_id(normalized_chat_id)
+        state = {"projectId": selected_project_id, "mode": "prov", "supplierId": supplier_id, "categoryId": None, "page": 1, "limit": 25}
         _telegram_save_state(normalized_chat_id, state)
         text, keyboard = _telegram_build_transaction_message(state)
         tg_edit_message(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard)
@@ -1187,7 +1327,8 @@ def _telegram_handle_callback(callback_query: dict) -> dict:
 
     if data.startswith("catSel:"):
         category_id = data.split(":", 1)[1].strip()
-        state = {"mode": "cat", "supplierId": None, "categoryId": category_id, "page": 1, "limit": 25}
+        selected_project_id = _telegram_get_selected_project_id(normalized_chat_id)
+        state = {"projectId": selected_project_id, "mode": "cat", "supplierId": None, "categoryId": category_id, "page": 1, "limit": 25}
         _telegram_save_state(normalized_chat_id, state)
         text, keyboard = _telegram_build_transaction_message(state)
         tg_edit_message(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard)
@@ -1258,22 +1399,14 @@ def _telegram_import_status_summary() -> str:
     return "\n".join(lines)
 
 
-def _telegram_count_transactions() -> str:
-    project_id = _resolve_default_project_id()
-    if not project_id:
-        return "No encontré el proyecto por defecto"
-
+def _telegram_count_transactions(project_id: str) -> str:
     total = db.transactions.count_documents({"projectId": project_id})
     return f"Total transactions projectId={project_id}: {total}"
 
 
-def _telegram_sum_expenses(month_token: str, include_iva: bool = False) -> str:
+def _telegram_sum_expenses(project_id: str, month_token: str, include_iva: bool = False) -> str:
     if not re.fullmatch(r"\d{4}-\d{2}", month_token or ""):
         return "Uso: /sum YYYY-MM"
-
-    project_id = _resolve_default_project_id()
-    if not project_id:
-        return "No encontré el proyecto por defecto"
 
     year, month = month_token.split("-", 1)
     start_date = f"{year}-{month}-01"
@@ -1305,8 +1438,9 @@ def _telegram_help_text() -> str:
         "/start - mostrar esta ayuda\n"
         "/ping - prueba de conectividad\n"
         "/import_status - estado de última importación\n"
-        "/count - contar transacciones del proyecto por defecto\n"
+        "/count - contar transacciones del proyecto seleccionado\n"
         "/sum YYYY-MM - sumar egresos del mes (sin IVA)\n"
+        "/project - seleccionar proyecto activo para consultas\n"
         "/prov [texto] - listar o buscar proveedor con botones\n"
         "/cat [texto] - listar o buscar categoría con botones\n"
         "/catid <categoryId> [limit] [page] - buscar por categoría\n"
@@ -1438,8 +1572,7 @@ def _telegram_build_transactions_list(transactions: list[dict], limit_used: int,
     return f"{truncated}\n\nTruncado, usa page {page + 1}"
 
 
-def _telegram_query_transactions(query: dict, limit: int, page: int) -> str:
-    project_id = _resolve_default_project_id() or "699f9b894678d62c8d69f86d"
+def _telegram_query_transactions(project_id: str, query: dict, limit: int, page: int) -> str:
     effective_query = {"projectId": project_id, **query}
     skip = (page - 1) * limit
     projection = {
@@ -1455,7 +1588,7 @@ def _telegram_query_transactions(query: dict, limit: int, page: int) -> str:
     return _telegram_build_transactions_list(rows, limit_used=limit, page=page)
 
 
-def _telegram_search_supplier(raw_text: str) -> str:
+def _telegram_search_supplier(project_id: str, raw_text: str) -> str:
     text, limit, page = _telegram_parse_search_params(raw_text)
     if not text:
         return "Uso: /prov <texto> [limit] [page]"
@@ -1466,10 +1599,10 @@ def _telegram_search_supplier(raw_text: str) -> str:
             {"supplierCardCode": {"$regex": escaped, "$options": "i"}},
         ]
     }
-    return _telegram_query_transactions(query=query, limit=limit, page=page)
+    return _telegram_query_transactions(project_id=project_id, query=query, limit=limit, page=page)
 
 
-def _telegram_search_find(raw_text: str) -> str:
+def _telegram_search_find(project_id: str, raw_text: str) -> str:
     text, limit, page = _telegram_parse_search_params(raw_text)
     if not text:
         return "Uso: /find <texto> [limit] [page]"
@@ -1480,16 +1613,16 @@ def _telegram_search_find(raw_text: str) -> str:
             {"description": {"$regex": escaped, "$options": "i"}},
         ]
     }
-    return _telegram_query_transactions(query=query, limit=limit, page=page)
+    return _telegram_query_transactions(project_id=project_id, query=query, limit=limit, page=page)
 
 
-def _telegram_search_category_name(raw_text: str) -> str:
+def _telegram_search_category_name(project_id: str, raw_text: str) -> str:
     text, limit, _ = _telegram_parse_search_params(raw_text)
     if not text:
         return "Uso: /cat <texto> [limit]"
     escaped = re.escape(text)
     matches = list(
-        db.categories.find({"name": {"$regex": escaped, "$options": "i"}}, {"name": 1}).sort([("name", 1)]).limit(20)
+        db.categories.find({"projectId": project_id, "name": {"$regex": escaped, "$options": "i"}}, {"name": 1}).sort([("name", 1)]).limit(20)
     )
 
     if not matches:
@@ -1497,6 +1630,7 @@ def _telegram_search_category_name(raw_text: str) -> str:
     if len(matches) == 1:
         category_id = str(matches[0]["_id"])
         return _telegram_query_transactions(
+            project_id=project_id,
             query={"$or": [{"categoryId": category_id}, {"category_id": category_id}]},
             limit=limit,
             page=1,
@@ -1510,7 +1644,7 @@ def _telegram_search_category_name(raw_text: str) -> str:
     return "\n".join(lines)
 
 
-def _telegram_search_category_id(raw_text: str) -> str:
+def _telegram_search_category_id(project_id: str, raw_text: str) -> str:
     args = _telegram_parse_command_args(raw_text)
     if len(args) < 2:
         return "Uso: /catid <categoryId> [limit] [page]"
@@ -1519,6 +1653,7 @@ def _telegram_search_category_id(raw_text: str) -> str:
     limit = _telegram_parse_limit(args[2] if len(args) > 2 else None)
     page = _telegram_parse_page(args[3] if len(args) > 3 else None)
     return _telegram_query_transactions(
+        project_id=project_id,
         query={"$or": [{"categoryId": category_id}, {"category_id": category_id}]},
         limit=limit,
         page=page,
@@ -1623,14 +1758,10 @@ def _telegram_keyword_synonyms(keyword: str) -> tuple[str, list[str]]:
     return (fallback or "general", [fallback or "gasto"])
 
 
-def _telegram_ask_transactions(text: str) -> str:
+def _telegram_ask_transactions(project_id: str, text: str) -> str:
     action = _telegram_classify_ask_action(text)
     raw_keyword = _telegram_detect_ask_keyword(text)
     keyword, synonyms = _telegram_keyword_synonyms(raw_keyword)
-    project_id = _resolve_default_project_id()
-    if not project_id:
-        return "No encontré el proyecto por defecto"
-
     regex_terms = [re.escape(term) for term in synonyms if term]
     if not regex_terms:
         regex_terms = [re.escape(keyword)]
@@ -1638,7 +1769,7 @@ def _telegram_ask_transactions(text: str) -> str:
 
     category_matches = list(
         db.categories.find(
-            {"name": {"$regex": keyword_regex, "$options": "i"}},
+            {"projectId": project_id, "name": {"$regex": keyword_regex, "$options": "i"}},
             {"_id": 1},
         ).limit(200)
     )
@@ -3503,33 +3634,59 @@ async def telegram_webhook(
 
     if text.startswith("/start") or text.startswith("/help"):
         send_telegram_to_chat(_telegram_help_text(), chat_id=chat_id)
+    elif text.startswith("/project"):
+        selected_project_id = _telegram_get_selected_project_id(chat_id)
+        response_text, keyboard = _telegram_build_projects_keyboard(selected_project_id=selected_project_id)
+        tg_send(chat_id=chat_id, text=response_text, reply_markup=keyboard)
     elif text.startswith("/ping"):
         send_telegram_to_chat("pong", chat_id=chat_id)
     elif text.startswith("/import_status"):
         send_telegram_to_chat(_telegram_import_status_summary(), chat_id=chat_id)
     elif text.startswith("/count"):
-        send_telegram_to_chat(_telegram_count_transactions(), chat_id=chat_id)
+        if _telegram_require_project_selection(chat_id, pending_command="count", pending_text=text):
+            return {"ok": True, "pending": "project_selection"}
+        selected_project_id = _telegram_get_selected_project_id(chat_id)
+        send_telegram_to_chat(_telegram_count_transactions(selected_project_id), chat_id=chat_id)
     elif text.startswith("/sum"):
+        if _telegram_require_project_selection(chat_id, pending_command="sum", pending_text=text):
+            return {"ok": True, "pending": "project_selection"}
+        selected_project_id = _telegram_get_selected_project_id(chat_id)
         _, _, month_token = text.partition(" ")
-        send_telegram_to_chat(_telegram_sum_expenses(month_token=month_token.strip(), include_iva=False), chat_id=chat_id)
+        send_telegram_to_chat(_telegram_sum_expenses(project_id=selected_project_id, month_token=month_token.strip(), include_iva=False), chat_id=chat_id)
     elif text.startswith("/prov"):
+        if _telegram_require_project_selection(chat_id, pending_command="prov", pending_text=text):
+            return {"ok": True, "pending": "project_selection"}
         response_text, keyboard = _telegram_search_suppliers_keyboard(chat_id, text)
         tg_send(chat_id=chat_id, text=response_text, reply_markup=keyboard)
     elif text.startswith("/catid"):
-        send_telegram_to_chat(_telegram_search_category_id(text), chat_id=chat_id)
+        if _telegram_require_project_selection(chat_id, pending_command="catid", pending_text=text):
+            return {"ok": True, "pending": "project_selection"}
+        selected_project_id = _telegram_get_selected_project_id(chat_id)
+        send_telegram_to_chat(_telegram_search_category_id(selected_project_id, text), chat_id=chat_id)
     elif text.startswith("/cat"):
+        if _telegram_require_project_selection(chat_id, pending_command="cat", pending_text=text):
+            return {"ok": True, "pending": "project_selection"}
         response_text, keyboard = _telegram_search_categories_keyboard(chat_id, text)
         tg_send(chat_id=chat_id, text=response_text, reply_markup=keyboard)
     elif text.startswith("/find"):
-        send_telegram_to_chat(_telegram_search_find(text), chat_id=chat_id)
+        if _telegram_require_project_selection(chat_id, pending_command="find", pending_text=text):
+            return {"ok": True, "pending": "project_selection"}
+        selected_project_id = _telegram_get_selected_project_id(chat_id)
+        send_telegram_to_chat(_telegram_search_find(selected_project_id, text), chat_id=chat_id)
     elif text.startswith("/ask"):
+        if _telegram_require_project_selection(chat_id, pending_command="ask", pending_text=text):
+            return {"ok": True, "pending": "project_selection"}
+        selected_project_id = _telegram_get_selected_project_id(chat_id)
         _, _, ask_text = text.partition(" ")
-        send_telegram_to_chat(_telegram_ask_transactions(ask_text.strip()), chat_id=chat_id)
+        send_telegram_to_chat(_telegram_ask_transactions(selected_project_id, ask_text.strip()), chat_id=chat_id)
     elif text.startswith("/chatid"):
         set_setting(TELEGRAM_SETTINGS_KEY, str(chat_id))
         send_telegram_to_chat(f"chat_id registrado: {chat_id}", chat_id=chat_id)
     elif text and not text.startswith("/"):
-        send_telegram_to_chat(_telegram_ask_transactions(text), chat_id=chat_id)
+        if _telegram_require_project_selection(chat_id, pending_command="ask", pending_text=text):
+            return {"ok": True, "pending": "project_selection"}
+        selected_project_id = _telegram_get_selected_project_id(chat_id)
+        send_telegram_to_chat(_telegram_ask_transactions(selected_project_id, text), chat_id=chat_id)
 
     return {"ok": True}
 
