@@ -3715,7 +3715,6 @@ def run_sap_import(
                             "categoryId": None,
                             "created_at": datetime.now(timezone.utc).isoformat(),
                             "projectId": project_id,
-                            "projectIds": [project_id],
                         },
                         "$set": {"name": beneficiary or card_code},
                         "$addToSet": {"projectIds": project_id},
