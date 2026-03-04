@@ -77,11 +77,20 @@ async function request(baseUrl, path, opts = {}) {
   const { token } = getSession();
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const cleanPath = withProjectId(normalizedPath, opts);
+  const cleanPathname = cleanPath.split('?')[0] || '';
+  const selectedProjectId = getSelectedProjectId();
+  const shouldAttachProjectHeader = Boolean(
+    selectedProjectId
+      && !cleanPathname.startsWith('/auth/')
+      && cleanPathname !== '/api/projects'
+      && cleanPathname !== '/auth'
+  );
   const isFormData = opts.body instanceof FormData;
 
   const headers = {
     ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(shouldAttachProjectHeader ? { 'X-Project-Id': selectedProjectId } : {}),
     ...(opts.headers || {}),
   };
 
