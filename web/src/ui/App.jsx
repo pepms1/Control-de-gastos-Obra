@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
+import { dedupeCategories, dedupeSupplierOptions, dedupeVendors, normalizeOptionLabel } from './dropdownOptions.js';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
 
@@ -222,8 +223,8 @@ export default function App() {
 
   async function refreshCatalog() {
     const [c, v] = await Promise.all([api.categories(), api.vendors()]);
-    setCats(Array.isArray(c) ? c : []);
-    setVendors(Array.isArray(v) ? v : []);
+    setCats(dedupeCategories(Array.isArray(c) ? c : []));
+    setVendors(dedupeVendors(Array.isArray(v) ? v : []));
   }
 
   async function invalidateData() {
@@ -1083,34 +1084,44 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   }, [rows, sortBy]);
 
   const supplierOptions = useMemo(() => {
-    const byId = new Map();
+    const rawOptions = [];
 
     allSuppliers.forEach((supplier) => {
-      if (supplier?.id) byId.set(supplier.id, supplier.name || 'Proveedor SAP');
+      rawOptions.push({
+        value: supplier?.id || '',
+        label: supplier?.name || 'Proveedor SAP',
+      });
     });
 
-    rows.forEach((r) => {
-      if (r.supplierId) byId.set(r.supplierId, r.proveedorNombre || r.supplierName || r.proveedor?.name || 'Proveedor SAP');
-      if (r.vendor_id) byId.set(r.vendor_id, vendorMap[r.vendor_id] || 'Proveedor');
+    rows.forEach((row) => {
+      rawOptions.push({
+        value: row?.supplierId || '',
+        label: row?.proveedorNombre || row?.supplierName || row?.proveedor?.name || 'Proveedor SAP',
+      });
     });
 
-    return Array.from(byId.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
-  }, [allSuppliers, rows, vendorMap]);
+    return dedupeSupplierOptions(rawOptions).map((option) => [option.value, option.label]);
+  }, [allSuppliers, rows]);
 
   const hintCategoryOptions = useMemo(() => {
-    const hintNames = new Set();
+    const byNormalizedLabel = new Map();
     rows.forEach((row) => {
-      const hintName = getCategoryHintName(row);
-      if (hintName) hintNames.add(hintName);
+      const rawHintName = getCategoryHintName(row);
+      const label = String(rawHintName || '').trim().replace(/\s+/g, ' ');
+      const normalized = normalizeOptionLabel(label);
+      if (!normalized || byNormalizedLabel.has(normalized)) return;
+      byNormalizedLabel.set(normalized, label);
     });
-    return Array.from(hintNames).sort((a, b) => a.localeCompare(b, 'es'));
+    return Array.from(byNormalizedLabel.values()).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
   }, [rows]);
 
   const shown = rows
     .filter((row) => {
       if (categoryFilter === 'ALL') return true;
       if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categoría';
-      if (categoryFilter.startsWith('HINT::')) return getCategoryHintName(row) === categoryFilter.replace('HINT::', '');
+      if (categoryFilter.startsWith('HINT::')) {
+        return normalizeOptionLabel(getCategoryHintName(row)) === normalizeOptionLabel(categoryFilter.replace('HINT::', ''));
+      }
       return row.category_id === categoryFilter;
     })
     .filter((row) => {
