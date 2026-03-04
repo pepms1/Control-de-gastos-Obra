@@ -308,4 +308,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ name, slug, s3Prefix }),
     }),
+
+  createS3PrefixAdmin: ({ slug }) =>
+    backendReq('/api/admin/s3/create-prefix', {
+      method: 'POST',
+      body: JSON.stringify({ slug }),
+    }),
 };

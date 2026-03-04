@@ -410,6 +410,15 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged, onProjectCreated }
             Agregar proyecto
           </button>
         )}
+        {isAdmin && (
+          <button
+            type="button"
+            className={section === 's3-prefix' ? '' : 'secondary'}
+            onClick={() => setSection('s3-prefix')}
+          >
+            Crear carpeta S3
+          </button>
+        )}
       </div>
 
       {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
@@ -425,6 +434,54 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged, onProjectCreated }
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
 
       {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
+
+      {section === 's3-prefix' && isAdmin && <AdminS3PrefixCreateSection />}
+    </div>
+  );
+}
+
+function AdminS3PrefixCreateSection() {
+  const [slug, setSlug] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [createdPath, setCreatedPath] = useState('');
+
+  async function onSubmit(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    setCreatedPath('');
+
+    try {
+      const response = await api.createS3PrefixAdmin({ slug });
+      const bucket = response?.bucket || 'calderon-sap-exports';
+      const prefix = response?.prefix || '';
+      setCreatedPath(`s3://${bucket}/${prefix}`);
+      setSlug('');
+    } catch (e) {
+      setError(e.message || 'No se pudo crear la carpeta en S3');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Crear carpeta S3</h3>
+      <form className="grid" onSubmit={onSubmit}>
+        <div>
+          <label>Slug</label>
+          <input
+            value={slug}
+            onChange={(e) => setSlug(e.target.value)}
+            placeholder="ej. colima"
+            required
+          />
+        </div>
+        {error && <div>{error}</div>}
+        {createdPath && <div>Creado: <code>{createdPath}</code></div>}
+        <button type="submit" disabled={saving}>{saving ? 'Creando...' : 'Crear carpeta en S3'}</button>
+      </form>
     </div>
   );
 }
