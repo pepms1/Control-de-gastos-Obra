@@ -3369,7 +3369,9 @@ def sync_suppliers_into_vendors(suppliers: list[dict], project_id: str):
 
 
 def get_or_create_project_id(project: str):
-    project_name = project.strip() or "CALDERON DE LA BARCA"
+    project_name = (project or "").strip()
+    if not project_name:
+        raise HTTPException(status_code=400, detail="project is required")
     default_s3_prefix = {
         "CALDERON DE LA BARCA": "exports/calderon",
         "PENSYLVANIA": "exports/pensylvania",
@@ -3779,8 +3781,9 @@ async def telegram_webhook(
 def run_sap_import(
     file_name: str,
     file_bytes: bytes,
-    project: str,
+    project: str | None,
     force: int,
+    project_id: str | None = None,
     source: str = "sap-payments",
     mode: str = "upsert",
     confirm_rebuild: int = 0,
@@ -3789,7 +3792,16 @@ def run_sap_import(
     source_file: str | None = None,
     source_sbo: str | None = None,
 ):
-    project_id = get_or_create_project_id(project)
+    resolved_project_id = (project_id or "").strip()
+    if resolved_project_id:
+        if not ObjectId.is_valid(resolved_project_id):
+            raise HTTPException(status_code=400, detail="Invalid projectId")
+        if not db.projects.find_one({"_id": ObjectId(resolved_project_id)}, {"_id": 1}):
+            raise HTTPException(status_code=404, detail="Project not found")
+    else:
+        resolved_project_id = get_or_create_project_id(project or "")
+
+    project_id = resolved_project_id
     source_file_key = normalize_source_file_key(source_file=source_file, file_name=file_name)
     source_file_value = source_file_key or None
     source_sbo_value = (source_sbo or "").strip() or None
@@ -4305,21 +4317,57 @@ def run_sap_import(
     return summary
 
 
+def resolve_sap_import_project_id(
+    request: FastAPIRequest,
+    project_id_query: str | None,
+    project_name_query: str | None,
+) -> str:
+    header_project_id = (request.headers.get("X-Project-Id") or "").strip()
+    query_project_id = (project_id_query or "").strip()
+    query_project_name = (project_name_query or "").strip()
+
+    candidate_project_id = header_project_id or query_project_id
+    if candidate_project_id:
+        if not ObjectId.is_valid(candidate_project_id):
+            raise HTTPException(status_code=400, detail="Invalid projectId")
+        if not db.projects.find_one({"_id": ObjectId(candidate_project_id)}, {"_id": 1}):
+            raise HTTPException(status_code=404, detail="Project not found")
+        return candidate_project_id
+
+    if query_project_name:
+        project_doc = db.projects.find_one(
+            {"name": {"$regex": f"^{re.escape(query_project_name)}$", "$options": "i"}},
+            {"_id": 1},
+        )
+        if not project_doc:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return str(project_doc["_id"])
+
+    raise HTTPException(
+        status_code=400,
+        detail="Missing target project. Provide X-Project-Id header, query projectId, or query project.",
+    )
+
+
 @app.post("/api/import/sap-payments")
 async def import_sap_payments(
+    request: FastAPIRequest,
     file: UploadFile = File(...),
-    project: str = "CALDERON DE LA BARCA",
+    project: str | None = None,
+    projectId: str | None = None,
     force: int = 0,
     mode: str = "upsert",
     confirm_rebuild: int = 0,
     admin_user: dict = Depends(require_admin),
 ):
     file_bytes = await file.read()
+    resolved_project_id = resolve_sap_import_project_id(request, project_id_query=projectId, project_name_query=project)
     return run_sap_import(
         file.filename or "",
         file_bytes,
         project,
         force,
+        project_id=resolved_project_id,
         source="sap-payments",
         mode=mode,
         confirm_rebuild=confirm_rebuild,

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { api } from '../api.js';
+import { api, SELECTED_PROJECT_KEY } from '../api.js';
 
 function valueToArray(value) {
   if (Array.isArray(value)) return value;
@@ -13,9 +13,34 @@ export function ImportSapScreen() {
   const [summary, setSummary] = useState(null);
   const [errors, setErrors] = useState([]);
   const [message, setMessage] = useState('');
+  const [projects, setProjects] = useState([]);
+  const [selectedProjectId, setSelectedProjectId] = useState(localStorage.getItem(SELECTED_PROJECT_KEY) || '');
+
+  useEffect(() => {
+    const nextProjectId = localStorage.getItem(SELECTED_PROJECT_KEY) || '';
+    setSelectedProjectId(nextProjectId);
+
+    async function loadProjects() {
+      try {
+        const response = await api.projects();
+        setProjects(Array.isArray(response) ? response : []);
+      } catch (err) {
+        setProjects([]);
+      }
+    }
+
+    loadProjects();
+  }, []);
+
+  const destinationProject = projects.find((project) => String(project?._id || '') === String(selectedProjectId || '')) || null;
+  const canImport = Boolean(file && destinationProject?.name && !loading);
 
   async function onSubmit(e) {
     e.preventDefault();
+    if (!selectedProjectId || !destinationProject?.name) {
+      setMessage('Selecciona un proyecto activo antes de importar.');
+      return;
+    }
     if (!file) {
       setMessage('Selecciona un archivo para importar.');
       return;
@@ -27,7 +52,7 @@ export function ImportSapScreen() {
     setErrors([]);
 
     try {
-      const response = await api.importSapPayments(file);
+      const response = await api.importSapPayments(file, destinationProject.name, selectedProjectId);
       setSummary(response?.summary || response || null);
       setErrors(valueToArray(response?.errors));
       setMessage('Importación finalizada.');
@@ -42,12 +67,15 @@ export function ImportSapScreen() {
     <div className="container grid">
       <div className="card">
         <h2 style={{ marginTop: 0 }}>Importar pagos SAP</h2>
+        <p className="small" style={{ marginTop: 0 }}>
+          Proyecto destino: <strong>{destinationProject?.name || 'Sin proyecto seleccionado'}</strong>
+        </p>
         <form className="grid" onSubmit={onSubmit}>
           <div>
             <label>Archivo</label>
             <input type="file" accept=".csv,.xlsx,.xls,.txt" onChange={(e) => setFile(e.target.files?.[0] || null)} />
           </div>
-          <button type="submit" disabled={loading}>
+          <button type="submit" disabled={!canImport}>
             {loading ? 'Importando...' : 'Subir e importar'}
           </button>
         </form>

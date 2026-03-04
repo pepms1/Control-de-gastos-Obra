@@ -262,11 +262,13 @@ export const api = {
     return backendReq(`/api/expenses/summary-by-supplier${qs ? `?${qs}` : ''}`);
   },
 
-  importSapPayments: (file, project = 'CALDERON DE LA BARCA') => {
+  importSapPayments: (file, project, projectId) => {
     const formData = new FormData();
     formData.append('file', file);
-    const qs = new URLSearchParams({ project }).toString();
-    return backendReq(`/api/import/sap-payments?${qs}`, {
+    const qs = new URLSearchParams();
+    if (project) qs.set('project', project);
+    if (projectId) qs.set('projectId', projectId);
+    return backendReq(`/api/import/sap-payments${qs ? `?${qs}` : ''}`, {
       method: 'POST',
       body: formData,
     });
