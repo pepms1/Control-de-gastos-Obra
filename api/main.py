@@ -1768,11 +1768,21 @@ def notify_import(summary: dict):
 def ensure_indexes():
     db.users.create_index("username", unique=True)
     db.suppliers.create_index("cardCode", unique=True)
-    db.categories.create_index(
-        [("projectId", 1), ("code", 1)],
-        unique=True,
-        name="categories_project_code_unique",
-    )
+    try:
+        db.categories.create_index(
+            [("projectId", 1), ("code", 1)],
+            unique=True,
+            name="categories_project_code_unique",
+        )
+    except OperationFailure as exc:
+        error_message = str(exc)
+        if exc.code == 86 or "same name" in error_message.lower():
+            logger.warning(
+                "Skipping categories_project_code_unique creation due to index conflict: %s",
+                error_message,
+            )
+        else:
+            raise
     db.supplierCategories.create_index("name", unique=True)
     db.projects.create_index("name", unique=True)
     db.payments.create_index([("projectId", 1), ("sapPaymentNum", 1)], unique=True)
