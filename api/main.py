@@ -3262,6 +3262,28 @@ def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
     }
 
 
+@app.post("/api/admin/s3/create-prefix")
+def create_s3_prefix_admin(payload: dict, _: dict = Depends(require_admin)):
+    slug = normalize_project_slug(payload.get("slug"))
+    prefix = f"exports/{slug}/"
+
+    region = (os.getenv("AWS_REGION") or "").strip()
+    s3_client = boto3.client("s3", region_name=region or None)
+
+    try:
+        s3_client.put_object(Bucket=DEFAULT_PROJECT_S3_BUCKET, Key=prefix, Body=b"")
+        s3_client.put_object(Bucket=DEFAULT_PROJECT_S3_BUCKET, Key=f"{prefix}.keep", Body=b"keep")
+    except Exception as exc:
+        logger.exception("Failed creating S3 prefix marker bucket=%s prefix=%s", DEFAULT_PROJECT_S3_BUCKET, prefix)
+        raise HTTPException(status_code=500, detail=f"Could not create S3 prefix: {exc}")
+
+    return {
+        "ok": True,
+        "bucket": DEFAULT_PROJECT_S3_BUCKET,
+        "prefix": prefix,
+    }
+
+
 @app.post("/api/supplier-categories")
 def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
     name = (payload.get("name") or "").strip()
