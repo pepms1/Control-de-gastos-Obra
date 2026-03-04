@@ -278,10 +278,12 @@ export default function App() {
   useEffect(() => {
     if (!session.token) return;
     if (!selectedProjectId) return;
+    setVendors([]);
     refreshCatalog().catch(() => {});
   }, [session.token, selectedProjectId]);
 
   function handleProjectChange(nextProjectId) {
+    setVendors([]);
     setSelectedProjectId(nextProjectId);
     if (nextProjectId) {
       localStorage.setItem(SELECTED_PROJECT_KEY, nextProjectId);
@@ -1073,13 +1075,19 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     vendors.forEach((vendor) => {
       const value = String(vendor?._id || vendor?.id || '').trim();
       if (!value || byVendorId.has(value)) return;
-      const label = String(vendor?.name || '').trim().replace(/\s+/g, ' ');
-      if (!label) return;
+      const name = String(vendor?.name || '').trim().replace(/\s+/g, ' ');
+      if (!name) return;
+      const cardCode = String(vendor?.supplierCardCode || vendor?.externalIds?.sapCardCode || '').trim();
+      const label = `${name} (${cardCode || 'Sin CardCode'})`;
       byVendorId.set(value, label);
     });
 
     return Array.from(byVendorId.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es', { sensitivity: 'base' }));
   }, [vendors]);
+
+  useEffect(() => {
+    setSupplierFilter('ALL');
+  }, [selectedProjectId]);
 
   const shown = rows
     .filter((row) => {
