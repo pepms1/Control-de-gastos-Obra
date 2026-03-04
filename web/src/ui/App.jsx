@@ -919,7 +919,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
               <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
                 {cats.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name}
+                    {c.displayLabel || c.name}
                   </option>
                 ))}
               </select>
@@ -1273,7 +1273,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <option value="ALL">Todas las categorías</option>
             <option value={UNCATEGORIZED_FILTER}>Sin categoría</option>
             {cats.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
+              <option key={c.id} value={c.id}>{c.displayLabel || c.name}</option>
             ))}
           </select>
           <select value={supplierFilter} onChange={(e) => { setPage(1); setSupplierFilter(e.target.value); }}>
@@ -1315,7 +1315,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <select value={bulkCategoryId} onChange={(e) => setBulkCategoryId(e.target.value)}>
               <option value="">Sin categoría</option>
               {cats.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
+                <option key={c.id} value={c.id}>{c.displayLabel || c.name}</option>
               ))}
             </select>
             <button
@@ -1467,7 +1467,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <select value={editing.category_id || ''} onChange={(e) => setEditing({ ...editing, category_id: e.target.value || null })}>
               <option value="">Sin categoría</option>
               {cats.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
+                <option key={c.id} value={c.id}>{c.displayLabel || c.name}</option>
               ))}
             </select>
             <label>Crear categoría nueva</label>
