@@ -1153,15 +1153,20 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
 
   async function saveEdit() {
     setEditErr('');
-    const payload = isSapIvaTransaction(editing)
-      ? { categoryId: editing.category_id || null }
+    const isSapIva = isSapIvaTransaction(editing);
+    const payload = isSapIva
+      ? { categoryId: editing.category_id ?? '' }
       : {
         date: editing.date,
         amount: parseMoneyInput(editing.amount),
         description: editing.description,
         categoryId: editing.category_id || null,
       };
-    await api.updateTransaction(editing.id, payload);
+    if (isSapIva) {
+      await api.updateProjectTransaction(selectedProjectId, editing.id, payload);
+    } else {
+      await api.updateTransaction(editing.id, payload);
+    }
     await onTransactionsChanged?.();
     setEditing(null);
     setNewCategoryName('');
@@ -1217,13 +1222,15 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     if (!selectedRows.length) return;
     setBulkSaving(true);
     try {
-      await api.bulkUpdateTransactionCategory({
+      await api.bulkUpdateProjectTransactionCategory(selectedProjectId, {
         ids: selectedRows,
-        categoryId: bulkCategoryId || null,
+        categoryId: bulkCategoryId,
       });
-      await onTransactionsChanged?.();
+      await Promise.all([
+        onTransactionsChanged?.(),
+        load(page),
+      ]);
       setSelectedRows([]);
-      load(page);
     } finally {
       setBulkSaving(false);
     }

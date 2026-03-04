@@ -225,9 +225,21 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  updateProjectTransaction: (projectId, txId, payload) =>
+    backendReq(`/api/projects/${projectId}/transactions/${txId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
   bulkUpdateTransactionCategory: (payload) =>
     req('/transactions/bulk-update-category', {
       method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  bulkUpdateProjectTransactionCategory: (projectId, payload) =>
+    backendReq(`/api/projects/${projectId}/transactions/bulk-update-category`, {
+      method: 'POST',
       body: JSON.stringify(payload),
     }),
 
