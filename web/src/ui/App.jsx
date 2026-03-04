@@ -738,6 +738,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
   const [viewMode, setViewMode] = useState('experimental');
   const [showCategoryIva, setShowCategoryIva] = useState(false);
   const [showSupplierIva, setShowSupplierIva] = useState(false);
+  const [supplierSortMode, setSupplierSortMode] = useState('alpha');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -773,6 +774,18 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
   }, [showCategoryIva, showSupplierIva, selectedProjectId, refreshKey]);
 
   const supplierTotal = supplierSummary.reduce((acc, row) => acc + (Number(row.totalAmount) || 0), 0);
+  const sortedSupplierSummary = useMemo(() => {
+    const rows = [...supplierSummary];
+    if (supplierSortMode === 'amount') {
+      return rows.sort((a, b) => {
+        const amountDiff = (Number(b.totalAmount) || 0) - (Number(a.totalAmount) || 0);
+        if (amountDiff !== 0) return amountDiff;
+        return (a.supplierName || '').localeCompare(b.supplierName || '', 'es');
+      });
+    }
+
+    return rows.sort((a, b) => (a.supplierName || '').localeCompare(b.supplierName || '', 'es'));
+  }, [supplierSummary, supplierSortMode]);
   const categoryRows = Array.isArray(stats?.rows) ? stats.rows : [];
   const topCategories = useMemo(
     () => [...categoryRows].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0)).slice(0, 6),
@@ -847,7 +860,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
                 </tr>
               </thead>
               <tbody>
-                {supplierSummary.map((row) => (
+                {sortedSupplierSummary.map((row) => (
                   <tr key={row.supplierId || row.supplierName}>
                     <td>{row.supplierName || '(Sin proveedor)'}</td>
                     <td>{row.count}</td>
@@ -1004,10 +1017,20 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       <div className="small">{subtitle}</div>
 
       {viewMode === 'supplier' ? (
-        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
-          Mostrar IVA
-        </label>
+        <div className="row" style={{ marginTop: 8 }}>
+          <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
+            Mostrar IVA
+          </label>
+          <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <input
+              type="checkbox"
+              checked={supplierSortMode === 'amount'}
+              onChange={(e) => setSupplierSortMode(e.target.checked ? 'amount' : 'alpha')}
+            />
+            Ordenar por monto (mayor a menor)
+          </label>
+        </div>
       ) : (
         <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
           <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
