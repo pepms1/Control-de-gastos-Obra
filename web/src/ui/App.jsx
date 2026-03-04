@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
-import { dedupeCategories, dedupeSupplierOptions, dedupeVendors, normalizeOptionLabel } from './dropdownOptions.js';
+import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
 
@@ -1004,7 +1004,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   const [rows, setRows] = useState([]);
-  const [allSuppliers, setAllSuppliers] = useState([]);
   const [serverTotals, setServerTotals] = useState(null);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('ALL');
@@ -1027,8 +1026,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   const [bulkCategoryId, setBulkCategoryId] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
 
-
-  const isHintCategoryFilter = categoryFilter.startsWith('HINT::');
   const isUncategorizedFilter = categoryFilter === UNCATEGORIZED_FILTER;
   const isSapIvaTransaction = (transaction) =>
     transaction?.source === 'sap' && String(transaction?.sourceDb || '').trim().toUpperCase() === 'IVA';
@@ -1041,10 +1038,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
         page: String(targetPage),
         limit: String(limit),
         type: filter === 'ALL' ? '' : filter,
-        category_id:
-          categoryFilter === 'ALL' || isHintCategoryFilter || isUncategorizedFilter
-            ? ''
-            : categoryFilter,
+        category_id: categoryFilter === 'ALL' || isUncategorizedFilter ? '' : categoryFilter,
         supplierId: supplierFilter === 'ALL' ? '' : supplierFilter,
         sourceDb: sourceDbFilter === 'ALL' ? '' : sourceDbFilter,
         q: searchFilter.trim(),
@@ -1070,58 +1064,27 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   }, [filter, categoryFilter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId]);
 
   useEffect(() => {
-    api.suppliers()
-      .then((supplierList) => {
-        setAllSuppliers(Array.isArray(supplierList) ? supplierList : []);
-      })
-      .catch(() => {
-        setAllSuppliers([]);
-      });
-  }, [selectedProjectId]);
-
-  useEffect(() => {
     setSelectedRows([]);
   }, [rows, sortBy]);
 
   const supplierOptions = useMemo(() => {
-    const rawOptions = [];
+    const byVendorId = new Map();
 
-    allSuppliers.forEach((supplier) => {
-      rawOptions.push({
-        value: supplier?.id || '',
-        label: supplier?.name || 'Proveedor SAP',
-      });
+    vendors.forEach((vendor) => {
+      const value = String(vendor?._id || vendor?.id || '').trim();
+      if (!value || byVendorId.has(value)) return;
+      const label = String(vendor?.name || '').trim().replace(/\s+/g, ' ');
+      if (!label) return;
+      byVendorId.set(value, label);
     });
 
-    rows.forEach((row) => {
-      rawOptions.push({
-        value: row?.supplierId || '',
-        label: row?.proveedorNombre || row?.supplierName || row?.proveedor?.name || 'Proveedor SAP',
-      });
-    });
-
-    return dedupeSupplierOptions(rawOptions).map((option) => [option.value, option.label]);
-  }, [allSuppliers, rows]);
-
-  const hintCategoryOptions = useMemo(() => {
-    const byNormalizedLabel = new Map();
-    rows.forEach((row) => {
-      const rawHintName = getCategoryHintName(row);
-      const label = String(rawHintName || '').trim().replace(/\s+/g, ' ');
-      const normalized = normalizeOptionLabel(label);
-      if (!normalized || byNormalizedLabel.has(normalized)) return;
-      byNormalizedLabel.set(normalized, label);
-    });
-    return Array.from(byNormalizedLabel.values()).sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
-  }, [rows]);
+    return Array.from(byVendorId.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es', { sensitivity: 'base' }));
+  }, [vendors]);
 
   const shown = rows
     .filter((row) => {
       if (categoryFilter === 'ALL') return true;
       if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categoría';
-      if (categoryFilter.startsWith('HINT::')) {
-        return normalizeOptionLabel(getCategoryHintName(row)) === normalizeOptionLabel(categoryFilter.replace('HINT::', ''));
-      }
       return row.category_id === categoryFilter;
     })
     .filter((row) => {
@@ -1301,9 +1264,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
           <select value={categoryFilter} onChange={(e) => { setPage(1); setCategoryFilter(e.target.value); }}>
             <option value="ALL">Todas las categorías</option>
             <option value={UNCATEGORIZED_FILTER}>Sin categoría</option>
-            {hintCategoryOptions.map((name) => (
-              <option key={`hint-${name}`} value={`HINT::${name}`}>{name} (SAP)</option>
-            ))}
             {cats.map((c) => (
               <option key={c.id} value={c.id}>{c.name}</option>
             ))}

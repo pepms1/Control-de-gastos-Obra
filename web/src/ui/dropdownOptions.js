@@ -1,14 +1,17 @@
 export function normalizeOptionLabel(label) {
   return String(label || '')
     .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
+    .replace(/\s+/g, ' ');
+}
+
+function normalizeKey(label) {
+  return normalizeOptionLabel(label).toLowerCase();
 }
 
 function buildOptionEntry(rawOption, getValue, getLabel) {
   const label = String(getLabel(rawOption) || '').trim().replace(/\s+/g, ' ');
   const value = String(getValue(rawOption) || '').trim();
-  return { rawOption, label, value, normalizedLabel: normalizeOptionLabel(label) };
+  return { rawOption, label, value, normalizedLabel: normalizeKey(label) };
 }
 
 export function dedupeOptions(options, { getValue, getLabel }) {
@@ -34,17 +37,63 @@ export function dedupeOptions(options, { getValue, getLabel }) {
 }
 
 export function dedupeCategories(categories = []) {
-  return dedupeOptions(categories, {
-    getValue: (category) => category?.id || category?._id || category?.categoryId,
-    getLabel: (category) => category?.name || category?.label,
+  const byValue = new Map();
+
+  categories.forEach((category) => {
+    const value = String(category?._id || category?.id || category?.categoryId || '').trim();
+    if (!value) return;
+
+    const name = normalizeOptionLabel(category?.name || category?.label || '');
+    if (!byValue.has(value)) {
+      byValue.set(value, {
+        ...category,
+        _id: category?._id || value,
+        id: category?.id || value,
+        name,
+      });
+      return;
+    }
+
+    const existing = byValue.get(value);
+    if (!existing?.name && name) {
+      byValue.set(value, {
+        ...existing,
+        name,
+      });
+    }
   });
+
+  return Array.from(byValue.values()).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'es', { sensitivity: 'base' }));
 }
 
 export function dedupeVendors(vendors = []) {
-  return dedupeOptions(vendors, {
-    getValue: (vendor) => vendor?.id || vendor?._id || vendor?.vendorId || vendor?.supplierId,
-    getLabel: (vendor) => vendor?.name || vendor?.label,
+  const byValue = new Map();
+
+  vendors.forEach((vendor) => {
+    const value = String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
+    if (!value) return;
+
+    const name = normalizeOptionLabel(vendor?.name || vendor?.label || '');
+    if (!byValue.has(value)) {
+      byValue.set(value, {
+        ...vendor,
+        _id: vendor?._id || value,
+        id: vendor?.id || value,
+        name,
+      });
+      return;
+    }
+
+    const existing = byValue.get(value);
+    if (!existing?.name && name) {
+      byValue.set(value, {
+        ...existing,
+        name,
+      });
+    }
   });
+
+  return Array.from(byValue.values()).sort((a, b) => (a.name || '').localeCompare(b.name || '', 'es', { sensitivity: 'base' }));
 }
 
 export function dedupeSupplierOptions(options = []) {
