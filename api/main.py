@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pymongo import MongoClient, UpdateOne
-from pymongo.errors import BulkWriteError, OperationFailure
+from pymongo.errors import BulkWriteError, OperationFailure, DuplicateKeyError
 from bson import ObjectId
 from datetime import date, datetime, timedelta, timezone
 from jose import JWTError, jwt
@@ -50,6 +50,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 TELEGRAM_SETTINGS_KEY = "telegram_default_chat_id"
 TELEGRAM_ACCESS_REQUEST_WINDOW_HOURS = 24
+DEFAULT_PROJECT_S3_BUCKET = "calderon-sap-exports"
 
 
 # ---------- helpers ----------
@@ -170,6 +171,29 @@ def normalize_raw_value(value):
         if ObjectId.is_valid(trimmed):
             return ObjectId(trimmed)
     return value
+
+
+def normalize_project_slug(raw_slug: str | None) -> str:
+    slug = (raw_slug or "").strip().lower().replace(" ", "-")
+    if not slug:
+        raise HTTPException(status_code=400, detail="slug is required")
+    if not re.fullmatch(r"[a-z0-9-]+", slug):
+        raise HTTPException(status_code=400, detail="slug must contain only lowercase letters, numbers and dashes")
+    return slug
+
+
+def normalize_project_prefix(raw_prefix: str | None, slug: str) -> str:
+    prefix = (raw_prefix or "").strip()
+    if not prefix:
+        raise HTTPException(status_code=400, detail="s3Prefix is required")
+
+    if prefix in {slug, f"{slug}/"}:
+        prefix = f"exports/{slug}"
+
+    prefix = prefix.rstrip("/")
+    if not prefix.startswith("exports/"):
+        raise HTTPException(status_code=400, detail="s3Prefix must start with exports/")
+    return prefix
 
 
 def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dict] | None = None):
@@ -1916,6 +1940,7 @@ def ensure_indexes():
             raise
     db.supplierCategories.create_index("name", unique=True)
     db.projects.create_index("name", unique=True)
+    db.projects.create_index("slug", unique=True)
     db.payments.create_index([("projectId", 1), ("sapPaymentNum", 1)], unique=True)
     db.apInvoices.create_index([("projectId", 1), ("sapInvoiceNum", 1)], unique=True)
     db.paymentLines.create_index([("paymentId", 1), ("apInvoiceId", 1), ("appliedAmount", 1)], unique=True)
@@ -3197,6 +3222,44 @@ def list_supplier_categories(_: dict = Depends(require_authenticated)):
 def list_projects(_: dict = Depends(require_authenticated)):
     rows = db.projects.find({}, {"name": 1, "slug": 1}).sort("name", 1)
     return [{"_id": str(row["_id"]), "name": row.get("name"), "slug": row.get("slug")} for row in rows]
+
+
+@app.post("/api/admin/projects", status_code=201)
+def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    slug = normalize_project_slug(payload.get("slug"))
+    s3_prefix = normalize_project_prefix(payload.get("s3Prefix"), slug)
+
+    if db.projects.find_one({"slug": slug}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Project slug already exists")
+
+    if db.projects.find_one({"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Project name already exists")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "name": name,
+        "slug": slug,
+        "sap": {"s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix}},
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+    try:
+        project_id = db.projects.insert_one(doc).inserted_id
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Project name or slug already exists")
+
+    return {
+        "ok": True,
+        "projectId": str(project_id),
+        "name": name,
+        "slug": slug,
+        "sap": {"s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix}},
+    }
 
 
 @app.post("/api/supplier-categories")

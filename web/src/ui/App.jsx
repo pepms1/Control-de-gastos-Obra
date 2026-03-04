@@ -55,6 +55,25 @@ function getTransactionCategoryLabel(transaction, catMap) {
   return 'Sin categoría';
 }
 
+function normalizeSlug(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '');
+}
+
+function normalizeS3Prefix(value, slug = '') {
+  let normalized = String(value || '').trim();
+  const cleanSlug = normalizeSlug(slug);
+  if (!normalized) return normalized;
+  if (cleanSlug && (normalized === cleanSlug || normalized === `${cleanSlug}/`)) {
+    normalized = `exports/${cleanSlug}`;
+  }
+  normalized = normalized.replace(/\/+$/, '');
+  return normalized;
+}
+
 /* ================= NAV ================= */
 function Nav({
   tab,
@@ -221,6 +240,26 @@ export default function App() {
     setThemePreference((prev) => (prev === 'dark' ? 'light' : 'dark'));
   }
 
+  async function loadProjects() {
+    const data = await api.projects();
+    const list = Array.isArray(data) ? data : [];
+    setProjects(list);
+
+    if (!list.length) {
+      setSelectedProjectId('');
+      localStorage.removeItem(SELECTED_PROJECT_KEY);
+      return;
+    }
+
+    const currentProjectId = localStorage.getItem(SELECTED_PROJECT_KEY) || '';
+    const exists = list.some((project) => project._id === currentProjectId);
+    const fallbackProjectId = list[0]?._id || '';
+    const nextProjectId = exists ? currentProjectId : fallbackProjectId;
+
+    setSelectedProjectId(nextProjectId);
+    if (nextProjectId) localStorage.setItem(SELECTED_PROJECT_KEY, nextProjectId);
+  }
+
   async function refreshCatalog() {
     const [c, v] = await Promise.all([api.categories(), api.vendors()]);
     setCats(dedupeCategories(Array.isArray(c) ? c : []));
@@ -249,29 +288,9 @@ export default function App() {
 
     refreshCatalog().catch(() => {});
 
-    api
-      .projects()
-      .then((data) => {
-        const list = Array.isArray(data) ? data : [];
-        setProjects(list);
-
-        if (!list.length) {
-          setSelectedProjectId('');
-          localStorage.removeItem(SELECTED_PROJECT_KEY);
-          return;
-        }
-
-        const currentProjectId = localStorage.getItem(SELECTED_PROJECT_KEY) || '';
-        const exists = list.some((project) => project._id === currentProjectId);
-        const fallbackProjectId = list[0]?._id || '';
-        const nextProjectId = exists ? currentProjectId : fallbackProjectId;
-
-        setSelectedProjectId(nextProjectId);
-        if (nextProjectId) localStorage.setItem(SELECTED_PROJECT_KEY, nextProjectId);
-      })
-      .catch(() => {
-        setProjects([]);
-      });
+    loadProjects().catch(() => {
+      setProjects([]);
+    });
   }, [session.token]);
 
   // When switching projects, refresh vendors (and other catalogs) immediately.
@@ -343,6 +362,7 @@ export default function App() {
             isAdmin={isAdmin}
             cats={cats}
             vendors={vendors}
+            onProjectCreated={loadProjects}
             onCatalogChanged={async () => {
               await refreshCatalog();
               setToast('Catálogo actualizado');
@@ -354,7 +374,7 @@ export default function App() {
   );
 }
 
-function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
+function Settings({ isAdmin, cats, vendors, onCatalogChanged, onProjectCreated }) {
   const [section, setSection] = useState('catalog');
 
   return (
@@ -381,6 +401,15 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
         >
           Raw data
         </button>
+        {isAdmin && (
+          <button
+            type="button"
+            className={section === 'projects' ? '' : 'secondary'}
+            onClick={() => setSection('projects')}
+          >
+            Agregar proyecto
+          </button>
+        )}
       </div>
 
       {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
@@ -394,6 +423,101 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged }) {
 
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
+
+      {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
+    </div>
+  );
+}
+
+function AdminProjectCreateSection({ onProjectCreated }) {
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
+  const [s3Prefix, setS3Prefix] = useState('');
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [created, setCreated] = useState(null);
+
+  function onNameChange(nextName) {
+    setName(nextName);
+    if (!slugTouched) {
+      const generatedSlug = normalizeSlug(nextName);
+      setSlug(generatedSlug);
+      if (!s3Prefix.trim()) setS3Prefix(generatedSlug ? `exports/${generatedSlug}` : '');
+    }
+  }
+
+  function onSlugChange(nextSlug) {
+    const cleanSlug = normalizeSlug(nextSlug);
+    setSlugTouched(true);
+    setSlug(cleanSlug);
+  }
+
+  function onS3PrefixBlur() {
+    setS3Prefix((current) => normalizeS3Prefix(current, slug));
+  }
+
+  async function onSubmit(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    setCreated(null);
+
+    const payload = {
+      name: name.trim(),
+      slug: normalizeSlug(slug),
+      s3Prefix: normalizeS3Prefix(s3Prefix, slug),
+    };
+
+    try {
+      const response = await api.createProjectAdmin(payload);
+      setCreated(response);
+      setName('');
+      setSlug('');
+      setS3Prefix('');
+      setSlugTouched(false);
+      await onProjectCreated?.();
+    } catch (e) {
+      if (e?.status === 409) {
+        setError('Ya existe un proyecto con ese nombre o slug');
+      } else {
+        setError(e.message || 'No se pudo crear el proyecto');
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Agregar proyecto</h3>
+      <form className="grid" onSubmit={onSubmit}>
+        <div>
+          <label>Nombre</label>
+          <input value={name} onChange={(e) => onNameChange(e.target.value)} required />
+        </div>
+        <div>
+          <label>Slug</label>
+          <input value={slug} onChange={(e) => onSlugChange(e.target.value)} required />
+        </div>
+        <div>
+          <label>S3 Prefix</label>
+          <input
+            placeholder="exports/&lt;slug&gt;"
+            value={s3Prefix}
+            onChange={(e) => setS3Prefix(e.target.value)}
+            onBlur={onS3PrefixBlur}
+            required
+          />
+        </div>
+        {error && <div>{error}</div>}
+        {created?.projectId && (
+          <div>
+            Proyecto creado. ID: <code>{created.projectId}</code>
+          </div>
+        )}
+        <button type="submit" disabled={saving}>{saving ? 'Creando...' : 'Crear proyecto'}</button>
+      </form>
     </div>
   );
 }
