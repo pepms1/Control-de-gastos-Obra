@@ -278,11 +278,13 @@ export default function App() {
   useEffect(() => {
     if (!session.token) return;
     if (!selectedProjectId) return;
+    setCats([]);
     setVendors([]);
     refreshCatalog().catch(() => {});
   }, [session.token, selectedProjectId]);
 
   function handleProjectChange(nextProjectId) {
+    setCats([]);
     setVendors([]);
     setSelectedProjectId(nextProjectId);
     if (nextProjectId) {

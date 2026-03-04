@@ -4702,21 +4702,34 @@ def seed(_: dict = Depends(require_admin)):
 
 
 # ---------- categories ----------
+@app.get("/api/categories")
 @app.get("/categories")
-def list_categories(active_only: bool = True, _: dict = Depends(require_authenticated)):
-    q = {"active": True} if active_only else {}
+def list_categories(active_only: bool = True, request: FastAPIRequest = None, _: dict = Depends(require_authenticated)):
+    active_project_id = get_active_project_id(request)
+    q = {"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}
+    if active_only:
+        q["active"] = True
     return [serialize(c) for c in db.categories.find(q).sort("name", 1)]
 
 
 @app.post("/api/categories")
 @app.post("/categories")
-def create_category(payload: dict, _: dict = Depends(require_admin)):
+def create_category(payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
+    active_project_id = get_active_project_id(request)
     name = (payload.get("name") or "").strip()
     if len(name) < 2:
         raise HTTPException(status_code=400, detail="name is required")
-    if db.categories.find_one({"name": name}):
+    if db.categories.find_one({
+        "name": name,
+        "$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}],
+    }):
         raise HTTPException(status_code=409, detail="Category already exists")
-    _id = db.categories.insert_one({"name": name, "active": True}).inserted_id
+    _id = db.categories.insert_one({
+        "name": name,
+        "active": True,
+        "projectId": active_project_id,
+        "projectIds": [active_project_id],
+    }).inserted_id
     return serialize(db.categories.find_one({"_id": _id}))
 
 

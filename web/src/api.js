@@ -32,6 +32,7 @@ function shouldInjectProjectId(method, path) {
     '/api/expenses/summary-by-supplier',
     '/api/suppliers',
     '/stats/spend-by-category',
+    '/categories',
     '/vendors',
   ].some((target) => pathname === target || pathname.startsWith(`${target}/`));
 }
