@@ -84,6 +84,7 @@ async function request(baseUrl, path, opts = {}) {
     selectedProjectId
       && !cleanPathname.startsWith('/auth/')
       && cleanPathname !== '/api/projects'
+      && cleanPathname !== '/api/admin/projects'
       && cleanPathname !== '/auth'
   );
   const isFormData = opts.body instanceof FormData;
@@ -111,7 +112,9 @@ async function request(baseUrl, path, opts = {}) {
       clearSession();
     }
 
-    throw new Error(msg);
+    const error = new Error(msg);
+    error.status = res.status;
+    throw error;
   }
 
   if (res.status === 204) return null;
@@ -298,5 +301,11 @@ export const api = {
     backendReq(`/api/admin/raw-data/${encodeURIComponent(collection)}/${rowId}`, {
       method: 'PATCH',
       body: JSON.stringify({ changes }),
+    }),
+
+  createProjectAdmin: ({ name, slug, s3Prefix }) =>
+    backendReq('/api/admin/projects', {
+      method: 'POST',
+      body: JSON.stringify({ name, slug, s3Prefix }),
     }),
 };
