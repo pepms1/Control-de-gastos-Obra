@@ -39,6 +39,24 @@ function getCategoryHintCode(transaction) {
   ).trim();
 }
 
+function getCategory2Label(transaction) {
+  return (
+    transaction?.categoryManualName
+    || transaction?.categoryManualCode
+    || ''
+  ).trim();
+}
+
+function getSapCategoryLabel(transaction) {
+  return (
+    transaction?.categoryHintName
+    || transaction?.category_hint_name
+    || transaction?.categoryHintCode
+    || transaction?.category_hint_code
+    || ''
+  ).trim();
+}
+
 function getTransactionCategoryLabel(transaction, catMap) {
   const effectiveName = (transaction?.categoryEffectiveName || '').trim();
   if (effectiveName) return effectiveName;
@@ -1220,6 +1238,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [sapCategoryFilter, setSapCategoryFilter] = useState('ALL');
   const [supplierFilter, setSupplierFilter] = useState('ALL');
   const [sourceDbFilter, setSourceDbFilter] = useState('ALL');
   const [searchFilter, setSearchFilter] = useState('');
@@ -1250,7 +1269,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
         page: String(targetPage),
         limit: String(limit),
         type: filter === 'ALL' ? '' : filter,
-        category_id: categoryFilter === 'ALL' || isUncategorizedFilter ? '' : categoryFilter,
+        category_id: '',
         supplierId: supplierFilter === 'ALL' ? '' : supplierFilter,
         sourceDb: sourceDbFilter === 'ALL' ? '' : sourceDbFilter,
         q: searchFilter.trim(),
@@ -1273,7 +1292,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setPage(1);
     setRows([]);
     load(1);
-  }, [filter, categoryFilter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId]);
+  }, [filter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId]);
 
   useEffect(() => {
     setSelectedRows([]);
@@ -1298,6 +1317,23 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   useEffect(() => {
     setSupplierFilter('ALL');
   }, [selectedProjectId]);
+
+  const sapCategoryOptions = useMemo(() => {
+    const map = new Map();
+    cats
+      .filter((c) => c?.source === 'sap')
+      .forEach((c) => {
+        const value = String(c?.code || c?.name || '').trim();
+        if (!value || map.has(value)) return;
+        map.set(value, c?.displayLabel || c?.name || value);
+      });
+    rows.forEach((row) => {
+      const value = String(row?.categoryHintCode || row?.categoryHintName || '').trim();
+      if (!value || map.has(value)) return;
+      map.set(value, row?.categoryHintName || row?.categoryHintCode || value);
+    });
+    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es', { sensitivity: 'base' }));
+  }, [cats, rows]);
 
   const shown = rows
     .filter((row) => {
@@ -1482,8 +1518,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <option value="EXPENSE">Egresos</option>
           </select>
           <select value={categoryFilter} onChange={(e) => { setPage(1); setCategoryFilter(e.target.value); }}>
-            <option value="ALL">Todas las categorías</option>
-            <option value={UNCATEGORIZED_FILTER}>Sin categoría</option>
+            <option value="ALL">Todas las categorías 2</option>
+            <option value={UNCATEGORIZED_FILTER}>Sin categoría 2</option>
             {cats.map((c) => (
               <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
             ))}
@@ -1562,7 +1598,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <th>Origen</th>
                 <th>Base</th>
                 <th>Descripción</th>
-                <th>Categoría</th>
+                <th>Categoría 2</th>
+                <th>Categoría SAP</th>
                 <th>Proveedor</th>
                 <th>Monto</th>
                 <th>IVA</th>
@@ -1574,7 +1611,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <tbody>
               {isAdmin && (
                 <tr>
-                  <td colSpan={isAdmin ? 12 : 10} style={{ textAlign: 'right' }}>
+                  <td colSpan={isAdmin ? 13 : 11} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (página actual)
@@ -1598,6 +1635,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                       <span className="badge" style={{ marginLeft: 6 }}>SAP: {getCategoryHintName(r)}</span>
                     )}
                   </td>
+                  <td>{getSapCategoryLabel(r) || '—'}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>${formatMoney(r.subtotal ?? r.amount)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
