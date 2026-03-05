@@ -257,6 +257,19 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  assignCategory2BySupplier: (projectId, supplierId, categoryManualCode, categoryManualName) =>
+    backendReq(`/api/projects/${projectId}/transactions/bulk-update-category`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filter: {
+          supplierId,
+          type: 'EXPENSE',
+        },
+        categoryManualCode,
+        categoryManualName,
+      }),
+    }),
+
   deleteTransaction: (id) =>
     req(`/transactions/${id}`, {
       method: 'DELETE',

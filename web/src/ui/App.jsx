@@ -384,6 +384,7 @@ export default function App() {
             isAdmin={isAdmin}
             cats={cats}
             vendors={vendors}
+            selectedProjectId={selectedProjectId}
             onProjectCreated={loadProjects}
             onCatalogChanged={async () => {
               await refreshCatalog();
@@ -396,7 +397,7 @@ export default function App() {
   );
 }
 
-function Settings({ isAdmin, cats, vendors, onCatalogChanged, onProjectCreated }) {
+function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged, onProjectCreated }) {
   const [section, setSection] = useState('catalog');
 
   return (
@@ -413,6 +414,15 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged, onProjectCreated }
           title={!isAdmin ? 'Solo disponible para administradores' : undefined}
         >
           Importar a SAP
+        </button>
+        <button
+          type="button"
+          className={section === 'supplier-category2' ? '' : 'secondary'}
+          onClick={() => setSection('supplier-category2')}
+          disabled={!isAdmin}
+          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+        >
+          Proveedor → Categoría 2
         </button>
         <button
           type="button"
@@ -452,12 +462,116 @@ function Settings({ isAdmin, cats, vendors, onCatalogChanged, onProjectCreated }
           <div className="card">Solo los administradores pueden importar pagos SAP.</div>
         ))}
 
+      {section === 'supplier-category2' &&
+        (isAdmin ? (
+          <SupplierCategory2Assignment cats={cats} selectedProjectId={selectedProjectId} />
+        ) : (
+          <div className="card">Solo los administradores pueden asignar categoría por proveedor.</div>
+        ))}
+
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
 
       {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
 
       {section === 's3-prefix' && isAdmin && <AdminS3PrefixCreateSection />}
+    </div>
+  );
+}
+
+function SupplierCategory2Assignment({ cats, selectedProjectId }) {
+  const [suppliers, setSuppliers] = useState([]);
+  const [supplierId, setSupplierId] = useState('');
+  const [categoryCode, setCategoryCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+    setSuccess('');
+    api.suppliers()
+      .then((rows) => {
+        if (!active) return;
+        const list = Array.isArray(rows) ? rows : [];
+        setSuppliers(list);
+        setSupplierId((prev) => prev || String(list[0]?._id || list[0]?.id || ''));
+      })
+      .catch((e) => {
+        if (!active) return;
+        setError(e.message || 'No se pudieron cargar proveedores.');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedProjectId]);
+
+  async function onApply(event) {
+    event.preventDefault();
+    setError('');
+    setSuccess('');
+    if (!selectedProjectId) return setError('Selecciona un proyecto para continuar.');
+    if (!supplierId || !categoryCode) return setError('Selecciona proveedor y categoría 2.');
+
+    const selectedCategory = cats.find((cat) => String(cat.code || cat.id) === String(categoryCode));
+    setSaving(true);
+    try {
+      const result = await api.assignCategory2BySupplier(
+        selectedProjectId,
+        supplierId,
+        categoryCode,
+        selectedCategory?.name || selectedCategory?.nombre || categoryCode,
+      );
+      setSuccess(`Categoría 2 aplicada. Movimientos actualizados: ${result?.modified ?? 0}.`);
+    } catch (e) {
+      setError(e.message || 'No se pudo aplicar la categoría.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Asignar categoría 2 manual por proveedor</h3>
+      <div className="small" style={{ marginBottom: 10 }}>
+        Esta acción aplica la categoría 2 seleccionada a todos los egresos del proveedor en el proyecto activo.
+      </div>
+      <form className="grid" onSubmit={onApply}>
+        <div>
+          <label>Proveedor</label>
+          <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} disabled={loading || !suppliers.length}>
+            {!suppliers.length && <option value="">Sin proveedores</option>}
+            {suppliers.map((supplier) => (
+              <option key={supplier._id || supplier.id} value={supplier._id || supplier.id}>
+                {supplier.name || supplier.nombre || supplier.cardCode || supplier._id}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label>Categoría 2</label>
+          <select value={categoryCode} onChange={(e) => setCategoryCode(e.target.value)} disabled={!cats.length}>
+            <option value="">Selecciona una categoría</option>
+            {cats.map((category) => (
+              <option key={category.id || category.code} value={category.code || category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        {error && <div>{error}</div>}
+        {success && <div>{success}</div>}
+        <button type="submit" disabled={saving || loading || !suppliers.length || !cats.length}>
+          {saving ? 'Aplicando...' : 'Aplicar a todos los egresos del proveedor'}
+        </button>
+      </form>
     </div>
   );
 }
