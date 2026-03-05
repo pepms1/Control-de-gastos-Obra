@@ -5003,16 +5003,30 @@ def create_category(payload: dict, request: FastAPIRequest, _: dict = Depends(re
     name = (payload.get("name") or "").strip()
     if len(name) < 2:
         raise HTTPException(status_code=400, detail="name is required")
-    if db.categories.find_one({
-        "name": name,
-        "$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}],
-    }):
-        raise HTTPException(status_code=409, detail="Category already exists")
+
+    # Categoría 2 manual: si ya existe globalmente por nombre, reutilizarla y
+    # asociarla al proyecto activo para que quede compartida entre proyectos.
+    existing = db.categories.find_one({"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}})
+    if existing:
+        update_ops = {
+            "$set": {
+                "active": True,
+                "projectId": existing.get("projectId") or active_project_id,
+            },
+            "$addToSet": {"projectIds": active_project_id},
+        }
+        db.categories.update_one({"_id": existing["_id"]}, update_ops)
+        return serialize(db.categories.find_one({"_id": existing["_id"]}))
+
+    all_project_ids = [str(project.get("_id")) for project in db.projects.find({}, {"_id": 1}) if project.get("_id")]
+    if active_project_id not in all_project_ids:
+        all_project_ids.append(active_project_id)
+
     _id = db.categories.insert_one({
         "name": name,
         "active": True,
         "projectId": active_project_id,
-        "projectIds": [active_project_id],
+        "projectIds": all_project_ids,
     }).inserted_id
     return serialize(db.categories.find_one({"_id": _id}))
 
