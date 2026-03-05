@@ -5384,6 +5384,66 @@ def update_project_transaction(project_id: str, transaction_id: str, payload: di
         raise HTTPException(status_code=400, detail="No fields to update")
 
     db.transactions.update_one(transaction_filter, {"$set": updates})
+
+    category_id = updates.get("category_id")
+    existing_category_id = tx.get("category_id") or tx.get("categoryId") or tx.get("categoryManualCode")
+    should_apply_category_to_related = bool(category_id and not existing_category_id)
+
+    if should_apply_category_to_related:
+        propagation_updates = {
+            "category_id": updates.get("category_id"),
+            "categoryId": updates.get("categoryId"),
+            "categoryManualCode": updates.get("categoryManualCode"),
+            "categoryManualName": updates.get("categoryManualName"),
+            "categoryManualUpdatedAt": updates.get("categoryManualUpdatedAt"),
+            "categoryManualUpdatedBy": updates.get("categoryManualUpdatedBy"),
+            "category_source": updates.get("category_source"),
+            "category_locked": updates.get("category_locked"),
+            "category_override_id": updates.get("category_override_id"),
+            "categoryEffectiveCode": updates.get("categoryEffectiveCode"),
+            "categoryEffectiveName": updates.get("categoryEffectiveName"),
+        }
+        uncategorized_filter = {
+            "$and": [
+                {
+                    "$or": [
+                        {"category_id": {"$exists": False}},
+                        {"category_id": None},
+                        {"category_id": ""},
+                    ]
+                },
+                {
+                    "$or": [
+                        {"categoryManualCode": {"$exists": False}},
+                        {"categoryManualCode": None},
+                        {"categoryManualCode": ""},
+                    ]
+                },
+            ]
+        }
+
+        supplier_id = tx.get("supplierId")
+        if supplier_id:
+            db.transactions.update_many(
+                {
+                    "supplierId": supplier_id,
+                    "type": "EXPENSE",
+                    "projectId": project_id,
+                    **uncategorized_filter,
+                },
+                {"$set": propagation_updates},
+            )
+        elif tx.get("vendor_id"):
+            db.transactions.update_many(
+                {
+                    "vendor_id": tx.get("vendor_id"),
+                    "type": "EXPENSE",
+                    "projectId": project_id,
+                    **uncategorized_filter,
+                },
+                {"$set": propagation_updates},
+            )
+
     return serialize(db.transactions.find_one(transaction_filter))
 
 
