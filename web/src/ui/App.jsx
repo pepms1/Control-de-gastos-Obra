@@ -1338,13 +1338,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   const shown = rows
     .filter((row) => {
       if (categoryFilter === 'ALL') return true;
-      if (categoryFilter === UNCATEGORIZED_FILTER) return !getCategory2Label(row);
-      return (row.categoryManualCode || row.categoryManualName || '') === categoryFilter;
-    })
-    .filter((row) => {
-      if (sapCategoryFilter === 'ALL') return true;
-      if (sapCategoryFilter === UNCATEGORIZED_FILTER) return !getSapCategoryLabel(row);
-      return (row.categoryHintCode || row.categoryHintName || '') === sapCategoryFilter;
+      if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categoría';
+      return (row.categoryEffectiveCode || row.categoryEffectiveName || row.category_id || row.categoryId) === categoryFilter;
     })
     .filter((row) => {
       const query = searchFilter.trim().toLowerCase();
@@ -1459,7 +1454,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       await api.bulkUpdateProjectTransactionCategory(selectedProjectId, {
         ids: selectedRows,
         categoryManualCode: bulkCategoryId,
-        categoryManualName: cats.find((c) => (c.code || c.id) === bulkCategoryId)?.name || bulkCategoryId || '',
+      categoryManualName: cats.find((c) => (c.code || c.id) === bulkCategoryId)?.name || bulkCategoryId || "",
       });
       await Promise.all([
         onTransactionsChanged?.(),
@@ -1527,13 +1522,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <option value={UNCATEGORIZED_FILTER}>Sin categoría 2</option>
             {cats.map((c) => (
               <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
-            ))}
-          </select>
-          <select value={sapCategoryFilter} onChange={(e) => { setPage(1); setSapCategoryFilter(e.target.value); }}>
-            <option value="ALL">Todas las categorías SAP</option>
-            <option value={UNCATEGORIZED_FILTER}>Sin categoría SAP</option>
-            {sapCategoryOptions.map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
             ))}
           </select>
           <select value={supplierFilter} onChange={(e) => { setPage(1); setSupplierFilter(e.target.value); }}>
@@ -1641,8 +1629,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                   <td>{r.sourceDb ? <span className="badge">{String(r.sourceDb).toUpperCase()}</span> : 'LEGACY/UNKNOWN'}</td>
                   <td>{r.description || r.concept || ''}</td>
                   <td>
-                    {getCategory2Label(r) || '—'}
-                    {getCategory2Label(r) && <span className="badge" style={{ marginLeft: 6 }}>Manual</span>}
+                    {getTransactionCategoryLabel(r, catMap)}
+                    {r.categoryManualName && <span className="badge" style={{ marginLeft: 6 }}>Manual</span>}
+                    {getCategoryHintName(r) && r.categoryManualName && getCategoryHintName(r) !== r.categoryManualName && (
+                      <span className="badge" style={{ marginLeft: 6 }}>SAP: {getCategoryHintName(r)}</span>
+                    )}
                   </td>
                   <td>{getSapCategoryLabel(r) || '—'}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
