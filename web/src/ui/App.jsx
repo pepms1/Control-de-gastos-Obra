@@ -1631,9 +1631,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                   <td>
                     {getTransactionCategoryLabel(r, catMap)}
                     {r.categoryManualName && <span className="badge" style={{ marginLeft: 6 }}>Manual</span>}
-                    {getCategoryHintName(r) && r.categoryManualName && getCategoryHintName(r) !== r.categoryManualName && (
-                      <span className="badge" style={{ marginLeft: 6 }}>SAP: {getCategoryHintName(r)}</span>
-                    )}
                   </td>
                   <td>{getSapCategoryLabel(r) || '—'}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
