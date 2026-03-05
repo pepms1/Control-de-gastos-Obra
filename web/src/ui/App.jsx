@@ -96,6 +96,10 @@ function normalizeS3Prefix(value, slug = '') {
   return normalized;
 }
 
+function isMongoObjectId(value) {
+  return /^[a-fA-F0-9]{24}$/.test(String(value || '').trim());
+}
+
 /* ================= NAV ================= */
 function Nav({
   tab,
@@ -2129,11 +2133,18 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
               <span className="badge">{c.name}</span>
               {isAdmin && (
                 <span>
-                  <button className="secondary" onClick={() => setCatEdit({ ...c })}>
+                  <button
+                    className="secondary"
+                    onClick={() => setCatEdit({ ...c })}
+                    disabled={!isMongoObjectId(c.id)}
+                    title={!isMongoObjectId(c.id) ? 'Solo se pueden editar categorías del catálogo manual.' : ''}
+                  >
                     Editar
                   </button>{' '}
                   <button
                     className="secondary"
+                    disabled={!isMongoObjectId(c.id)}
+                    title={!isMongoObjectId(c.id) ? 'Solo se pueden eliminar categorías del catálogo manual.' : ''}
                     onClick={async () => {
                       await api.deleteCategory(c.id);
                       onChanged();
