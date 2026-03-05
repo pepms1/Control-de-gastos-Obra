@@ -5307,20 +5307,62 @@ def update_transaction(transaction_id: str, payload: dict, request: FastAPIReque
     db.transactions.update_one(transaction_filter, {"$set": updates})
 
     category_id = updates.get("category_id")
-    existing_category_id = tx.get("category_id") or tx.get("categoryId")
+    existing_category_id = tx.get("category_id") or tx.get("categoryId") or tx.get("categoryManualCode")
     should_apply_category_to_related = bool(category_id and not existing_category_id)
 
     if should_apply_category_to_related:
+        propagation_updates = {
+            "category_id": category_override_updates.get("category_id"),
+            "categoryId": category_override_updates.get("categoryId"),
+            "categoryManualCode": category_override_updates.get("categoryManualCode"),
+            "categoryManualName": category_override_updates.get("categoryManualName"),
+            "categoryManualUpdatedAt": category_override_updates.get("categoryManualUpdatedAt"),
+            "categoryManualUpdatedBy": category_override_updates.get("categoryManualUpdatedBy"),
+            "category_source": category_override_updates.get("category_source"),
+            "category_locked": category_override_updates.get("category_locked"),
+            "category_override_id": category_override_updates.get("category_override_id"),
+            "categoryEffectiveCode": category_override_updates.get("categoryEffectiveCode"),
+            "categoryEffectiveName": category_override_updates.get("categoryEffectiveName"),
+        }
+        uncategorized_filter = {
+            "$and": [
+                {
+                    "$or": [
+                        {"category_id": {"$exists": False}},
+                        {"category_id": None},
+                        {"category_id": ""},
+                    ]
+                },
+                {
+                    "$or": [
+                        {"categoryManualCode": {"$exists": False}},
+                        {"categoryManualCode": None},
+                        {"categoryManualCode": ""},
+                    ]
+                },
+            ]
+        }
+
         supplier_id = tx.get("supplierId")
         if supplier_id:
             db.transactions.update_many(
-                {"supplierId": supplier_id, "type": "EXPENSE", "projectId": active_project_id},
-                {"$set": {"category_id": category_id, "categoryId": category_id}},
+                {
+                    "supplierId": supplier_id,
+                    "type": "EXPENSE",
+                    "projectId": active_project_id,
+                    **uncategorized_filter,
+                },
+                {"$set": propagation_updates},
             )
         elif tx.get("vendor_id"):
             db.transactions.update_many(
-                {"vendor_id": tx.get("vendor_id"), "type": "EXPENSE", "projectId": active_project_id},
-                {"$set": {"category_id": category_id}},
+                {
+                    "vendor_id": tx.get("vendor_id"),
+                    "type": "EXPENSE",
+                    "projectId": active_project_id,
+                    **uncategorized_filter,
+                },
+                {"$set": propagation_updates},
             )
 
     return serialize(db.transactions.find_one(transaction_filter))
