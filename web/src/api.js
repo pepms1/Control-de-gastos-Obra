@@ -137,22 +137,32 @@ async function backendReq(path, opts = {}) {
  * @property {string=} CategoryHintName
  */
 
-function normalizeTransaction(transaction) {
+export function normalizeTransaction(transaction) {
   if (!transaction || typeof transaction !== 'object') return transaction;
 
   const categoryHintName = transaction.categoryHintName
     || transaction.category_hint_name
     || transaction.CategoryHintName
+    || transaction.categorySapName
     || '';
   const categoryHintCode = transaction.categoryHintCode
     || transaction.category_hint_code
     || transaction.CategoryHintCode
+    || transaction.categorySapCode
     || '';
+  const categoryManualName = transaction.categoryManualName || '';
+  const categoryManualCode = transaction.categoryManualCode || '';
+  const categoryEffectiveName = transaction.categoryEffectiveName || categoryManualName || categoryHintName || '';
+  const categoryEffectiveCode = transaction.categoryEffectiveCode || categoryManualCode || categoryHintCode || '';
 
   return {
     ...transaction,
     categoryHintName,
     categoryHintCode,
+    categoryManualName,
+    categoryManualCode,
+    categoryEffectiveName,
+    categoryEffectiveCode,
     category_hint_name: transaction.category_hint_name || categoryHintName,
     category_hint_code: transaction.category_hint_code || categoryHintCode,
   };
