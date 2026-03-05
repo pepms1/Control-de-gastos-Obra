@@ -220,6 +220,34 @@ def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dic
     if supplier:
         tx_doc["proveedor"] = serialize(supplier)
 
+    category_hint_code = normalize_non_empty_string(
+        tx_doc.get("categoryHintCode") or tx_doc.get("category_hint_code") or tx_doc.get("categorySapCode")
+    )
+    category_hint_name = normalize_non_empty_string(
+        tx_doc.get("categoryHintName") or tx_doc.get("category_hint_name") or tx_doc.get("categorySapName")
+    )
+    category_manual_code = normalize_non_empty_string(tx_doc.get("categoryManualCode"))
+    category_manual_name = normalize_non_empty_string(tx_doc.get("categoryManualName"))
+    effective_fields = build_effective_category_fields(
+        category_manual_code,
+        category_manual_name,
+        category_hint_code,
+        category_hint_name,
+    )
+
+    tx_doc["categoryHintCode"] = category_hint_code
+    tx_doc["categoryHintName"] = category_hint_name
+    tx_doc["categorySapCode"] = category_hint_code
+    tx_doc["categorySapName"] = category_hint_name
+    tx_doc["categoryManualCode"] = category_manual_code
+    tx_doc["categoryManualName"] = category_manual_name
+    tx_doc["categoryEffectiveCode"] = normalize_non_empty_string(
+        tx_doc.get("categoryEffectiveCode") or effective_fields.get("categoryEffectiveCode")
+    )
+    tx_doc["categoryEffectiveName"] = normalize_non_empty_string(
+        tx_doc.get("categoryEffectiveName") or effective_fields.get("categoryEffectiveName")
+    )
+
     return tx_doc
 
 
@@ -2465,6 +2493,28 @@ def normalize_category_name(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip()).lower()
 
 
+def normalize_non_empty_string(value) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    if normalized.upper() in {"N/A", "NA"}:
+        return None
+    return normalized
+
+
+def build_effective_category_fields(manual_code, manual_name, hint_code, hint_name) -> dict:
+    normalized_manual_code = normalize_non_empty_string(manual_code)
+    normalized_manual_name = normalize_non_empty_string(manual_name)
+    normalized_hint_code = normalize_non_empty_string(hint_code)
+    normalized_hint_name = normalize_non_empty_string(hint_name)
+    return {
+        "categoryEffectiveCode": normalized_manual_code or normalized_hint_code,
+        "categoryEffectiveName": normalized_manual_name or normalized_hint_name,
+    }
+
+
 def parse_optional_decimal(value):
     if value is None:
         return None
@@ -2539,28 +2589,19 @@ def build_transactions_query(
     if category_id:
         if category_id == "__UNCATEGORIZED__":
             q["$or"] = [
-                {"category_id": None},
-                {"category_id": ""},
-                {"category_id": {"$exists": False}},
-                {"categoryId": None},
-                {"categoryId": ""},
-                {"categoryId": {"$exists": False}},
+                {"categoryEffectiveCode": None},
+                {"categoryEffectiveCode": ""},
+                {"categoryEffectiveCode": {"$exists": False}},
+                {"categoryEffectiveName": None},
+                {"categoryEffectiveName": ""},
+                {"categoryEffectiveName": {"$exists": False}},
             ]
         else:
             q["$or"] = [
-                {"category_id": category_id},
-                {
-                    "$and": [
-                        {"categoryId": category_id},
-                        {
-                            "$or": [
-                                {"category_id": None},
-                                {"category_id": ""},
-                                {"category_id": {"$exists": False}},
-                            ]
-                        },
-                    ]
-                },
+                {"categoryEffectiveCode": category_id},
+                {"categoryEffectiveName": category_id},
+                {"categoryManualCode": category_id},
+                {"categoryHintCode": category_id},
             ]
     if vendor_id:
         q["vendor_id"] = vendor_id
@@ -3499,36 +3540,68 @@ def normalize_category_override_update(
     payload: dict,
     *,
     lock_override: bool,
+    updated_by: str | None = None,
 ) -> dict:
-    category_id_value = payload.get("category_id", payload.get("categoryId"))
-    if category_id_value is None:
+    has_manual_payload = any(
+        key in payload
+        for key in ("category_id", "categoryId", "categoryManualCode", "categoryManualName")
+    )
+    if not has_manual_payload:
         return {}
 
-    normalized_category_id = str(category_id_value).strip()
-    if not normalized_category_id:
-        if lock_override:
-            return {
+    now_iso = datetime.now(timezone.utc).isoformat()
+    raw_category_id = payload.get("category_id", payload.get("categoryId"))
+
+    if raw_category_id is not None:
+        normalized_category_id = normalize_non_empty_string(raw_category_id)
+        if not normalized_category_id:
+            updates = {
+                "categoryManualCode": None,
+                "categoryManualName": None,
+                "categoryManualUpdatedAt": now_iso,
+                "categoryManualUpdatedBy": updated_by,
                 "category_override_id": None,
                 "category_locked": False,
                 "category_source": "sap",
+                "category_id": None,
+                "categoryId": None,
             }
-        return {"category_id": None, "categoryId": None}
+            updates.update(build_effective_category_fields(None, None, payload.get("categoryHintCode"), payload.get("categoryHintName")))
+            return updates
 
-    if not db.categories.find_one({"_id": oid(normalized_category_id), "active": True}):
-        raise HTTPException(status_code=400, detail="Invalid category_id")
+        category_doc = db.categories.find_one({"_id": oid(normalized_category_id), "active": True}, {"name": 1})
+        if not category_doc:
+            raise HTTPException(status_code=400, detail="Invalid category_id")
 
+        manual_name = normalize_non_empty_string(category_doc.get("name")) or normalized_category_id
+        updates = {
+            "categoryManualCode": normalized_category_id,
+            "categoryManualName": manual_name,
+            "categoryManualUpdatedAt": now_iso,
+            "categoryManualUpdatedBy": updated_by,
+            "category_override_id": normalized_category_id if lock_override else None,
+            "category_locked": bool(lock_override),
+            "category_source": "manual",
+            "category_id": normalized_category_id,
+            "categoryId": normalized_category_id,
+        }
+        updates.update(build_effective_category_fields(normalized_category_id, manual_name, payload.get("categoryHintCode"), payload.get("categoryHintName")))
+        return updates
+
+    manual_code = normalize_non_empty_string(payload.get("categoryManualCode"))
+    manual_name = normalize_non_empty_string(payload.get("categoryManualName"))
     updates = {
-        "category_id": normalized_category_id,
-        "categoryId": normalized_category_id,
+        "categoryManualCode": manual_code,
+        "categoryManualName": manual_name,
+        "categoryManualUpdatedAt": now_iso,
+        "categoryManualUpdatedBy": updated_by,
+        "category_source": "manual" if (manual_code or manual_name) else "sap",
+        "category_locked": bool(lock_override and (manual_code or manual_name)),
+        "category_override_id": manual_code if lock_override and manual_code else None,
+        "category_id": manual_code,
+        "categoryId": manual_code,
     }
-    if lock_override:
-        updates.update(
-            {
-                "category_override_id": normalized_category_id,
-                "category_locked": True,
-                "category_source": "manual",
-            }
-        )
+    updates.update(build_effective_category_fields(manual_code, manual_name, payload.get("categoryHintCode"), payload.get("categoryHintName")))
     return updates
 
 
@@ -3891,6 +3964,7 @@ def run_sap_import(
     sap_expenses_updated = 0
     category_preserved_count = 0
     category_would_have_changed_count = 0
+    category_hint_updated_count = 0
     duplicates_skipped = 0
     rows_ok = 0
     rows_error = 0
@@ -4133,6 +4207,10 @@ def run_sap_import(
                     "category_auto_id": 1,
                     "category_override_id": 1,
                     "category_locked": 1,
+                    "categoryHintCode": 1,
+                    "categoryHintName": 1,
+                    "categoryManualCode": 1,
+                    "categoryManualName": 1,
                 },
             )
 
@@ -4142,6 +4220,13 @@ def run_sap_import(
             supplier_name = record["beneficiary"] or record["cardCode"]
             # For UI/vendor filtering we link to vendors collection when possible.
             vendor_id = vendor_map.get(record["cardCode"]) or supplier_id
+            existing_hint_code = normalize_non_empty_string((existing_tx or {}).get("categoryHintCode"))
+            existing_hint_name = normalize_non_empty_string((existing_tx or {}).get("categoryHintName"))
+            existing_manual_code = normalize_non_empty_string((existing_tx or {}).get("categoryManualCode"))
+            existing_manual_name = normalize_non_empty_string((existing_tx or {}).get("categoryManualName"))
+            incoming_hint_code = normalize_non_empty_string(record.get("categoryHintCode"))
+            incoming_hint_name = normalize_non_empty_string(record.get("categoryHintName"))
+
             sap_set_doc = {
                 "type": "EXPENSE",
                 "projectId": project_id,
@@ -4158,12 +4243,6 @@ def run_sap_import(
                 "source": "sap",
                 "sourceDb": record["sourceDb"],
                 "importRunId": str(import_run_id),
-                "category_hint_code": record["categoryHintCode"],
-                "category_hint_name": record["categoryHintName"],
-                "category_hint_project": record["categoryHintProject"],
-                "categoryHintCode": record["categoryHintCode"],
-                "categoryHintName": record["categoryHintName"],
-                "category_name": record["categoryHintName"],
                 "tax": record["tax"],
                 "sap": {
                     "pagoNum": str(record["paymentNum"]).strip(),
@@ -4174,17 +4253,31 @@ def run_sap_import(
                     "sourceFile": source_file_value,
                     "sourceSbo": record["sourceDb"],
                     "projectId": project_id,
-                    "categoryHintCode": record["categoryHintCode"],
-                    "categoryHintName": record["categoryHintName"],
                 },
             }
-            locked_by_override = bool(
-                existing_tx
-                and (
-                    existing_tx.get("category_locked") is True
-                    or str(existing_tx.get("category_override_id") or "").strip()
-                )
-            )
+
+            if incoming_hint_code or incoming_hint_name:
+                if incoming_hint_code:
+                    sap_set_doc["category_hint_code"] = incoming_hint_code
+                    sap_set_doc["categoryHintCode"] = incoming_hint_code
+                    sap_set_doc["categorySapCode"] = incoming_hint_code
+                    sap_set_doc["sap"]["categoryHintCode"] = incoming_hint_code
+                if incoming_hint_name:
+                    sap_set_doc["category_hint_name"] = incoming_hint_name
+                    sap_set_doc["categoryHintName"] = incoming_hint_name
+                    sap_set_doc["categorySapName"] = incoming_hint_name
+                    sap_set_doc["category_name"] = incoming_hint_name
+                    sap_set_doc["sap"]["categoryHintName"] = incoming_hint_name
+                sap_set_doc["category_hint_project"] = record["categoryHintProject"]
+
+                if incoming_hint_code != existing_hint_code or incoming_hint_name != existing_hint_name:
+                    category_hint_updated_count += 1
+
+            locked_by_override = bool(existing_manual_code or existing_manual_name)
+            if locked_by_override:
+                category_preserved_count += 1
+                if incoming_hint_code and incoming_hint_code != existing_hint_code:
+                    category_would_have_changed_count += 1
 
             if inferred_category_id:
                 sap_set_doc["category_auto_id"] = inferred_category_id
@@ -4192,14 +4285,16 @@ def run_sap_import(
                     sap_set_doc["categoryId"] = inferred_category_id
                     sap_set_doc["category_id"] = inferred_category_id
                     sap_set_doc["category_source"] = "sap"
-                elif existing_tx:
-                    category_preserved_count += 1
-                    current_effective_category = str(existing_tx.get("categoryId") or existing_tx.get("category_id") or "").strip()
-                    if current_effective_category and current_effective_category != inferred_category_id:
-                        category_would_have_changed_count += 1
             elif not locked_by_override:
                 sap_set_doc["category_auto_id"] = None
 
+            effective_fields = build_effective_category_fields(
+                existing_manual_code,
+                existing_manual_name,
+                incoming_hint_code or existing_hint_code,
+                incoming_hint_name or existing_hint_name,
+            )
+            sap_set_doc.update(effective_fields)
             sap_expense_ops_by_key[
                 (
                     record["paymentNum"],
@@ -4284,6 +4379,7 @@ def run_sap_import(
                 "errorsSample": errors_sample[:50],
                 "categoryPreservedCount": category_preserved_count,
                 "categoryWouldHaveChangedCount": category_would_have_changed_count,
+                "categoryHintUpdatedCount": category_hint_updated_count,
             }
         },
     )
@@ -4302,6 +4398,7 @@ def run_sap_import(
         "updatedCount": sap_expenses_updated,
         "categoryPreservedCount": category_preserved_count,
         "categoryWouldHaveChangedCount": category_would_have_changed_count,
+        "categoryHintUpdatedCount": category_hint_updated_count,
         "duplicatesSkipped": duplicates_skipped,
         "rowsError": rows_error,
         "errorsSample": errors_sample[:50],
@@ -4842,7 +4939,61 @@ def list_categories(active_only: bool = True, request: FastAPIRequest = None, _:
     q = {"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}
     if active_only:
         q["active"] = True
-    return [serialize(c) for c in db.categories.find(q).sort("name", 1)]
+
+    categories = [serialize(c) for c in db.categories.find(q).sort("name", 1)]
+    combined = []
+    seen_keys = set()
+
+    for category in categories:
+        cat_id = str(category.get("id") or "").strip()
+        name = normalize_non_empty_string(category.get("name"))
+        code = normalize_non_empty_string(category.get("code")) or cat_id
+        if not name:
+            continue
+        key = f"code:{code}" if code else f"name:{normalize_category_name(name)}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        combined.append({
+            **category,
+            "code": code,
+            "name": name,
+            "source": category.get("source") or "catalog",
+            "displayLabel": f"{name} ({code})" if code and code != name else name,
+        })
+
+    tx_query = {"projectId": active_project_id}
+    projection = {
+        "categoryManualCode": 1,
+        "categoryManualName": 1,
+        "categoryHintCode": 1,
+        "categoryHintName": 1,
+    }
+    for tx in db.transactions.find(tx_query, projection):
+        for source, code_key, name_key in (
+            ("manual", "categoryManualCode", "categoryManualName"),
+            ("sap", "categoryHintCode", "categoryHintName"),
+        ):
+            code = normalize_non_empty_string(tx.get(code_key))
+            name = normalize_non_empty_string(tx.get(name_key))
+            if not code and not name:
+                continue
+            normalized_name = normalize_category_name(name or code or "")
+            key = f"code:{code}" if code else f"name:{normalized_name}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            option_value = code or name
+            combined.append({
+                "id": f"{source}:{option_value}",
+                "name": name or code,
+                "code": code,
+                "source": source,
+                "displayLabel": f"{name or code} ({code})" if code and name and code != name else (name or code),
+            })
+
+    combined.sort(key=lambda c: normalize_category_name(str(c.get("name") or "")))
+    return combined
 
 
 @app.post("/api/categories")
@@ -5064,9 +5215,13 @@ def create_transaction(
         "category_id": category_id,
         "categoryId": category_id,
         "category_auto_id": category_id,
-        "category_override_id": None,
-        "category_locked": False,
+        "category_override_id": category_id,
+        "category_locked": bool(category_id),
         "category_source": "manual" if category_id else None,
+        "categoryManualCode": category_id,
+        "categoryManualName": None,
+        "categoryManualUpdatedAt": datetime.now(timezone.utc).isoformat(),
+        "categoryManualUpdatedBy": str(_.get("username") or _.get("email") or "system"),
         "vendor_id": vendor_id,
         "description": payload.get("description"),
         "reference": payload.get("reference"),
@@ -5074,6 +5229,7 @@ def create_transaction(
         "created_at": datetime.utcnow().isoformat(),
         "projectId": active_project_id,
     }
+    doc.update(build_effective_category_fields(doc.get("categoryManualCode"), doc.get("categoryManualName"), None, None))
     _id = db.transactions.insert_one(doc).inserted_id
     return serialize(db.transactions.find_one({"_id": _id}))
 
@@ -5114,6 +5270,7 @@ def update_transaction(transaction_id: str, payload: dict, request: FastAPIReque
     category_override_updates = normalize_category_override_update(
         payload,
         lock_override=("category_id" in payload or "categoryId" in payload),
+        updated_by=str(_.get("username") or _.get("email") or "system"),
     )
     if category_override_updates:
         updates.update(category_override_updates)
@@ -5176,7 +5333,11 @@ def update_project_transaction(project_id: str, transaction_id: str, payload: di
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    updates = normalize_category_override_update(payload, lock_override=True)
+    updates = normalize_category_override_update(
+        payload,
+        lock_override=True,
+        updated_by=str(_.get("username") or _.get("email") or "system"),
+    )
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
@@ -5188,8 +5349,16 @@ def update_project_transaction(project_id: str, transaction_id: str, payload: di
 def bulk_update_project_transactions_category(project_id: str, payload: dict, _: dict = Depends(require_admin)):
     ids = payload.get("ids") or []
     raw_filter = payload.get("filter") or {}
-    category_payload = {"category_id": payload.get("category_id", payload.get("categoryId"))}
-    updates = normalize_category_override_update(category_payload, lock_override=True)
+    category_payload = {
+        "category_id": payload.get("category_id", payload.get("categoryId")),
+        "categoryManualCode": payload.get("categoryManualCode"),
+        "categoryManualName": payload.get("categoryManualName"),
+    }
+    updates = normalize_category_override_update(
+        category_payload,
+        lock_override=True,
+        updated_by=str(_.get("username") or _.get("email") or "system"),
+    )
     if not updates:
         raise HTTPException(status_code=400, detail="categoryId/category_id is required")
 

@@ -39,11 +39,33 @@ function getCategoryHintCode(transaction) {
   ).trim();
 }
 
+function getCategory2Label(transaction) {
+  return (
+    transaction?.categoryManualName
+    || transaction?.categoryManualCode
+    || ''
+  ).trim();
+}
+
+function getSapCategoryLabel(transaction) {
+  return (
+    transaction?.categoryHintName
+    || transaction?.category_hint_name
+    || transaction?.categoryHintCode
+    || transaction?.category_hint_code
+    || ''
+  ).trim();
+}
+
 function getTransactionCategoryLabel(transaction, catMap) {
-  const effectiveCategoryId = transaction?.category_id || transaction?.categoryId;
-  if (effectiveCategoryId) {
-    const mappedCategory = (catMap[effectiveCategoryId] || '').trim();
+  const effectiveName = (transaction?.categoryEffectiveName || '').trim();
+  if (effectiveName) return effectiveName;
+
+  const effectiveCode = (transaction?.categoryEffectiveCode || '').trim();
+  if (effectiveCode) {
+    const mappedCategory = (catMap[effectiveCode] || '').trim();
     if (mappedCategory) return mappedCategory;
+    return effectiveCode;
   }
 
   const legacyCategory = (transaction?.category_name || transaction?.category || '').trim();
@@ -1216,6 +1238,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [sapCategoryFilter, setSapCategoryFilter] = useState('ALL');
   const [supplierFilter, setSupplierFilter] = useState('ALL');
   const [sourceDbFilter, setSourceDbFilter] = useState('ALL');
   const [searchFilter, setSearchFilter] = useState('');
@@ -1246,7 +1269,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
         page: String(targetPage),
         limit: String(limit),
         type: filter === 'ALL' ? '' : filter,
-        category_id: categoryFilter === 'ALL' || isUncategorizedFilter ? '' : categoryFilter,
+        category_id: '',
         supplierId: supplierFilter === 'ALL' ? '' : supplierFilter,
         sourceDb: sourceDbFilter === 'ALL' ? '' : sourceDbFilter,
         q: searchFilter.trim(),
@@ -1269,7 +1292,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setPage(1);
     setRows([]);
     load(1);
-  }, [filter, categoryFilter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId]);
+  }, [filter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId]);
 
   useEffect(() => {
     setSelectedRows([]);
@@ -1295,11 +1318,33 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setSupplierFilter('ALL');
   }, [selectedProjectId]);
 
+  const sapCategoryOptions = useMemo(() => {
+    const map = new Map();
+    cats
+      .filter((c) => c?.source === 'sap')
+      .forEach((c) => {
+        const value = String(c?.code || c?.name || '').trim();
+        if (!value || map.has(value)) return;
+        map.set(value, c?.displayLabel || c?.name || value);
+      });
+    rows.forEach((row) => {
+      const value = String(row?.categoryHintCode || row?.categoryHintName || '').trim();
+      if (!value || map.has(value)) return;
+      map.set(value, row?.categoryHintName || row?.categoryHintCode || value);
+    });
+    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es', { sensitivity: 'base' }));
+  }, [cats, rows]);
+
   const shown = rows
     .filter((row) => {
       if (categoryFilter === 'ALL') return true;
-      if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categoría';
-      return row.category_id === categoryFilter;
+      if (categoryFilter === UNCATEGORIZED_FILTER) return !getCategory2Label(row);
+      return (row.categoryManualCode || row.categoryManualName || '') === categoryFilter;
+    })
+    .filter((row) => {
+      if (sapCategoryFilter === 'ALL') return true;
+      if (sapCategoryFilter === UNCATEGORIZED_FILTER) return !getSapCategoryLabel(row);
+      return (row.categoryHintCode || row.categoryHintName || '') === sapCategoryFilter;
     })
     .filter((row) => {
       const query = searchFilter.trim().toLowerCase();
@@ -1343,12 +1388,13 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setEditErr('');
     const isSapIva = isSapIvaTransaction(editing);
     const payload = isSapIva
-      ? { categoryId: editing.category_id ?? '' }
+      ? { categoryManualCode: editing.categoryManualCode ?? '', categoryManualName: editing.categoryManualName ?? '' }
       : {
         date: editing.date,
         amount: parseMoneyInput(editing.amount),
         description: editing.description,
-        categoryId: editing.category_id || null,
+        categoryManualCode: editing.categoryManualCode || '',
+        categoryManualName: editing.categoryManualName || '',
       };
     if (isSapIva) {
       await api.updateProjectTransaction(selectedProjectId, editing.id, payload);
@@ -1374,7 +1420,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       const created = await api.createCategory(cleanName);
       await onCatalogChanged?.();
       await onTransactionsChanged?.();
-      setEditing((prev) => (prev ? { ...prev, category_id: created.id } : prev));
+      setEditing((prev) => (prev ? { ...prev, categoryManualCode: created.code || created.id, categoryManualName: created.name } : prev));
       setNewCategoryName('');
     } catch (e) {
       setEditErr(e.message || 'No se pudo crear la categoría.');
@@ -1412,7 +1458,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     try {
       await api.bulkUpdateProjectTransactionCategory(selectedProjectId, {
         ids: selectedRows,
-        categoryId: bulkCategoryId,
+        categoryManualCode: bulkCategoryId,
+        categoryManualName: cats.find((c) => (c.code || c.id) === bulkCategoryId)?.name || bulkCategoryId || '',
       });
       await Promise.all([
         onTransactionsChanged?.(),
@@ -1476,10 +1523,17 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <option value="EXPENSE">Egresos</option>
           </select>
           <select value={categoryFilter} onChange={(e) => { setPage(1); setCategoryFilter(e.target.value); }}>
-            <option value="ALL">Todas las categorías</option>
-            <option value={UNCATEGORIZED_FILTER}>Sin categoría</option>
+            <option value="ALL">Todas las categorías 2</option>
+            <option value={UNCATEGORIZED_FILTER}>Sin categoría 2</option>
             {cats.map((c) => (
-              <option key={c.id} value={c.id}>{c.displayLabel || c.name}</option>
+              <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
+            ))}
+          </select>
+          <select value={sapCategoryFilter} onChange={(e) => { setPage(1); setSapCategoryFilter(e.target.value); }}>
+            <option value="ALL">Todas las categorías SAP</option>
+            <option value={UNCATEGORIZED_FILTER}>Sin categoría SAP</option>
+            {sapCategoryOptions.map(([value, label]) => (
+              <option key={value} value={value}>{label}</option>
             ))}
           </select>
           <select value={supplierFilter} onChange={(e) => { setPage(1); setSupplierFilter(e.target.value); }}>
@@ -1521,7 +1575,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <select value={bulkCategoryId} onChange={(e) => setBulkCategoryId(e.target.value)}>
               <option value="">Sin categoría</option>
               {cats.map((c) => (
-                <option key={c.id} value={c.id}>{c.displayLabel || c.name}</option>
+                <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
               ))}
             </select>
             <button
@@ -1556,7 +1610,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <th>Origen</th>
                 <th>Base</th>
                 <th>Descripción</th>
-                <th>Categoría</th>
+                <th>Categoría 2</th>
+                <th>Categoría SAP</th>
                 <th>Proveedor</th>
                 <th>Monto</th>
                 <th>IVA</th>
@@ -1568,7 +1623,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <tbody>
               {isAdmin && (
                 <tr>
-                  <td colSpan={isAdmin ? 12 : 10} style={{ textAlign: 'right' }}>
+                  <td colSpan={isAdmin ? 13 : 11} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (página actual)
@@ -1586,9 +1641,10 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                   <td>{r.sourceDb ? <span className="badge">{String(r.sourceDb).toUpperCase()}</span> : 'LEGACY/UNKNOWN'}</td>
                   <td>{r.description || r.concept || ''}</td>
                   <td>
-                    {getTransactionCategoryLabel(r, catMap)}
-                    {getCategoryHintCode(r) && <span className="badge" style={{ marginLeft: 6 }}>{getCategoryHintCode(r)}</span>}
+                    {getCategory2Label(r) || '—'}
+                    {getCategory2Label(r) && <span className="badge" style={{ marginLeft: 6 }}>Manual</span>}
                   </td>
+                  <td>{getSapCategoryLabel(r) || '—'}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                   <td style={{ fontWeight: 800 }}>${formatMoney(r.subtotal ?? r.amount)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
@@ -1670,12 +1726,22 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
               </>
             )}
             <label>Categoría</label>
-            <select value={editing.category_id || ''} onChange={(e) => setEditing({ ...editing, category_id: e.target.value || null })}>
+            <select value={editing.categoryManualCode || editing.categoryEffectiveCode || ''} onChange={(e) => {
+              const selected = cats.find((c) => (c.code || c.id) === e.target.value);
+              setEditing({ ...editing, categoryManualCode: e.target.value || null, categoryManualName: selected?.name || null });
+            }}>
               <option value="">Sin categoría</option>
               {cats.map((c) => (
-                <option key={c.id} value={c.id}>{c.displayLabel || c.name}</option>
+                <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
               ))}
             </select>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => setEditing({ ...editing, categoryManualCode: null, categoryManualName: null })}
+            >
+              Revertir a SAP
+            </button>
             <label>Crear categoría nueva</label>
             <div className="row">
               <input
