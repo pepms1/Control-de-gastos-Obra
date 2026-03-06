@@ -297,6 +297,12 @@ export const api = {
     });
   },
 
+  adminImportSapLatest: ({ projectId, sources = [] }) =>
+    backendReq('/api/admin/import/sap-latest', {
+      method: 'POST',
+      body: JSON.stringify({ projectId, sources }),
+    }),
+
   supplierCategories: () => backendReq('/api/supplier-categories'),
 
   createSupplierCategory: (name) =>
