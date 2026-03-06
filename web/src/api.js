@@ -257,18 +257,13 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  assignCategory2BySupplier: (projectId, supplierId, categoryManualCode, categoryManualName) =>
-    backendReq(`/api/projects/${projectId}/transactions/bulk-update-category`, {
-      method: 'POST',
-      body: JSON.stringify({
-        filter: {
-          supplierId,
-          type: 'EXPENSE',
-        },
-        categoryManualCode,
-        categoryManualName,
-      }),
+  setSupplierCategory2Rule: (projectId, supplierId, categoryId, applyToExisting = false) =>
+    backendReq(`/api/projects/${projectId}/suppliers/${supplierId}/category2`, {
+      method: 'PUT',
+      body: JSON.stringify({ categoryId, applyToExisting }),
     }),
+
+  projectSupplierCategories: (projectId) => backendReq(`/api/projects/${projectId}/supplier-categories`),
 
   deleteTransaction: (id) =>
     req(`/transactions/${id}`, {

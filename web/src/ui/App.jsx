@@ -630,6 +630,7 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
   const [suppliers, setSuppliers] = useState([]);
   const [supplierId, setSupplierId] = useState('');
   const [categoryCode, setCategoryCode] = useState('');
+  const [applyToExisting, setApplyToExisting] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -667,16 +668,15 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
     if (!selectedProjectId) return setError('Selecciona un proyecto para continuar.');
     if (!supplierId || !categoryCode) return setError('Selecciona proveedor y categoría 2.');
 
-    const selectedCategory = cats.find((cat) => String(cat.code || cat.id) === String(categoryCode));
     setSaving(true);
     try {
-      const result = await api.assignCategory2BySupplier(
+      const result = await api.setSupplierCategory2Rule(
         selectedProjectId,
         supplierId,
         categoryCode,
-        selectedCategory?.name || selectedCategory?.nombre || categoryCode,
+        applyToExisting,
       );
-      setSuccess(`Categoría 2 aplicada. Movimientos actualizados: ${result?.modified ?? 0}.`);
+      setSuccess(`Regla guardada. Movimientos actualizados: ${result?.applyToExistingModified ?? 0}.`);
     } catch (e) {
       setError(e.message || 'No se pudo aplicar la categoría.');
     } finally {
@@ -713,10 +713,18 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
             ))}
           </select>
         </div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="checkbox"
+            checked={applyToExisting}
+            onChange={(e) => setApplyToExisting(e.target.checked)}
+          />
+          Aplicar a existentes (solo donde no hay manual)
+        </label>
         {error && <div>{error}</div>}
         {success && <div>{success}</div>}
         <button type="submit" disabled={saving || loading || !suppliers.length || !cats.length}>
-          {saving ? 'Aplicando...' : 'Aplicar a todos los egresos del proveedor'}
+          {saving ? 'Guardando...' : 'Guardar regla de categoría 2'}
         </button>
       </form>
     </div>
@@ -761,6 +769,14 @@ function AdminS3PrefixCreateSection() {
             required
           />
         </div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="checkbox"
+            checked={applyToExisting}
+            onChange={(e) => setApplyToExisting(e.target.checked)}
+          />
+          Aplicar a existentes (solo donde no hay manual)
+        </label>
         {error && <div>{error}</div>}
         {createdPath && <div>Creado: <code>{createdPath}</code></div>}
         <button type="submit" disabled={saving}>{saving ? 'Creando...' : 'Crear carpeta en S3'}</button>
@@ -850,6 +866,14 @@ function AdminProjectCreateSection({ onProjectCreated }) {
             required
           />
         </div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="checkbox"
+            checked={applyToExisting}
+            onChange={(e) => setApplyToExisting(e.target.checked)}
+          />
+          Aplicar a existentes (solo donde no hay manual)
+        </label>
         {error && <div>{error}</div>}
         {created?.projectId && (
           <div>

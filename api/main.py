@@ -1971,7 +1971,16 @@ def ensure_indexes():
             )
         else:
             raise
-    db.supplierCategories.create_index("name", unique=True)
+    db.supplierCategoryCatalog.create_index("name", unique=True)
+    try:
+        db.supplierCategories.drop_index("name_1")
+    except OperationFailure:
+        pass
+    db.supplierCategories.create_index(
+        [("projectId", 1), ("supplierId", 1)],
+        unique=True,
+        name="supplier_categories_project_supplier_unique",
+    )
     db.projects.create_index("name", unique=True)
     db.projects.create_index("slug", unique=True)
     db.payments.create_index([("projectId", 1), ("sapPaymentNum", 1)], unique=True)
@@ -3268,7 +3277,7 @@ def raw_data_update_row(collection: str, row_id: str, payload: dict, _: dict = D
 
 @app.get("/api/supplier-categories")
 def list_supplier_categories(_: dict = Depends(require_authenticated)):
-    return [serialize(c) for c in db.supplierCategories.find({}).sort("name", 1)]
+    return [serialize(c) for c in db.supplierCategoryCatalog.find({}).sort("name", 1)]
 
 
 @app.get("/api/projects")
@@ -3342,10 +3351,10 @@ def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
     name = (payload.get("name") or "").strip()
     if len(name) < 2:
         raise HTTPException(status_code=400, detail="name is required")
-    if db.supplierCategories.find_one({"name": name}):
+    if db.supplierCategoryCatalog.find_one({"name": name}):
         raise HTTPException(status_code=409, detail="Supplier category already exists")
-    _id = db.supplierCategories.insert_one({"name": name}).inserted_id
-    return serialize(db.supplierCategories.find_one({"_id": _id}))
+    _id = db.supplierCategoryCatalog.insert_one({"name": name}).inserted_id
+    return serialize(db.supplierCategoryCatalog.find_one({"_id": _id}))
 
 
 @app.get("/api/suppliers")
@@ -3370,13 +3379,130 @@ def update_supplier(supplier_id: str, payload: dict, request: FastAPIRequest, _:
 
     category_id = payload.get("categoryId")
     if category_id is not None:
-        if not db.supplierCategories.find_one({"_id": oid(category_id)}):
+        if not db.supplierCategoryCatalog.find_one({"_id": oid(category_id)}):
             raise HTTPException(status_code=400, detail="Invalid categoryId")
         db.suppliers.update_one(supplier_filter, {"$set": {"categoryId": category_id}})
     else:
         db.suppliers.update_one(supplier_filter, {"$set": {"categoryId": None}})
 
     return serialize(db.suppliers.find_one(supplier_filter))
+
+
+@app.get("/api/projects/{project_id}/supplier-categories")
+def list_project_supplier_categories(project_id: str, _: dict = Depends(require_authenticated)):
+    resolved_project_id = resolve_project_id(project_id)
+    rows = list(db.supplierCategories.find({"projectId": resolved_project_id}).sort("updatedAt", -1))
+
+    supplier_ids = [oid(row.get("supplierId")) for row in rows if ObjectId.is_valid(str(row.get("supplierId") or ""))]
+    category_ids = [oid(row.get("categoryId")) for row in rows if ObjectId.is_valid(str(row.get("categoryId") or ""))]
+
+    suppliers_by_id = {
+        str(s.get("_id")): s
+        for s in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1, "cardCode": 1})
+    } if supplier_ids else {}
+    categories_by_id = {
+        str(c.get("_id")): c
+        for c in db.categories.find({"_id": {"$in": category_ids}}, {"name": 1, "code": 1})
+    } if category_ids else {}
+
+    result = []
+    for row in rows:
+        item = serialize(row)
+        supplier = suppliers_by_id.get(str(row.get("supplierId") or ""))
+        category = categories_by_id.get(str(row.get("categoryId") or ""))
+        if supplier:
+            item["supplierName"] = supplier.get("name") or supplier.get("cardCode")
+            item["supplierCardCode"] = supplier.get("cardCode")
+        if category:
+            item["categoryName"] = category.get("name") or category.get("code")
+            item["categoryCode"] = category.get("code") or str(category.get("_id"))
+        result.append(item)
+    return result
+
+
+@app.put("/api/projects/{project_id}/suppliers/{supplier_id}/category2")
+def upsert_project_supplier_category_rule(project_id: str, supplier_id: str, payload: dict, user: dict = Depends(require_admin)):
+    resolved_project_id = resolve_project_id(project_id)
+    if not ObjectId.is_valid(supplier_id):
+        raise HTTPException(status_code=400, detail="Invalid supplierId")
+
+    supplier_filter = {
+        "_id": ObjectId(supplier_id),
+        "$or": [{"projectId": resolved_project_id}, {"projectIds": resolved_project_id}],
+    }
+    supplier = db.suppliers.find_one(supplier_filter, {"_id": 1})
+    if not supplier:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    category_id = normalize_non_empty_string(payload.get("categoryId"))
+    if not category_id or not ObjectId.is_valid(category_id):
+        raise HTTPException(status_code=400, detail="categoryId is required")
+
+    category = db.categories.find_one(
+        {"_id": ObjectId(category_id), "$or": [{"projectId": resolved_project_id}, {"projectIds": resolved_project_id}]},
+        {"name": 1},
+    )
+    if not category:
+        raise HTTPException(status_code=400, detail="Invalid categoryId")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updated_by = normalize_non_empty_string(user.get("username") if isinstance(user, dict) else None) or "system"
+
+    db.supplierCategories.update_one(
+        {"projectId": resolved_project_id, "supplierId": supplier_id},
+        {
+            "$set": {
+                "projectId": resolved_project_id,
+                "supplierId": supplier_id,
+                "categoryId": category_id,
+                "updatedAt": now_iso,
+                "updatedBy": updated_by,
+            },
+            "$setOnInsert": {"createdAt": now_iso},
+        },
+        upsert=True,
+    )
+
+    apply_to_existing = bool(payload.get("applyToExisting"))
+    modified = 0
+    if apply_to_existing:
+        category_name = normalize_non_empty_string(category.get("name")) or category_id
+        manual_absent_query = {
+            "$and": [
+                {"$or": [{"categoryManualCode": {"$exists": False}}, {"categoryManualCode": None}, {"categoryManualCode": ""}]},
+                {"$or": [{"category_override_id": {"$exists": False}}, {"category_override_id": None}, {"category_override_id": ""}]},
+                {"$or": [{"category_locked": {"$exists": False}}, {"category_locked": False}, {"category_locked": None}]},
+            ]
+        }
+        update_result = db.transactions.update_many(
+            {
+                "projectId": resolved_project_id,
+                "source": "sap",
+                "supplierId": supplier_id,
+                **manual_absent_query,
+            },
+            {
+                "$set": {
+                    "categoryManualCode": category_id,
+                    "categoryManualName": category_name,
+                    "categoryEffectiveCode": category_id,
+                    "categoryEffectiveName": category_name,
+                    "category_source": "vendor_rule",
+                    "category_override_id": category_id,
+                    "category_id": category_id,
+                    "categoryId": category_id,
+                    "categoryManualUpdatedAt": now_iso,
+                    "categoryManualUpdatedBy": updated_by,
+                    "category_locked": False,
+                }
+            },
+        )
+        modified = update_result.modified_count or 0
+
+    stored = db.supplierCategories.find_one({"projectId": resolved_project_id, "supplierId": supplier_id})
+    response = serialize(stored)
+    response["applyToExistingModified"] = modified
+    return response
 
 
 def build_sap_vendor_upsert(card_code: str, beneficiary: str, project_id: str):
@@ -3460,6 +3586,51 @@ def get_or_create_project_id(project: str):
             )
 
     return str(project_doc["_id"])
+
+
+def build_supplier_rule_cache(project_id: str, supplier_ids: list[str]) -> dict[str, dict]:
+    if not supplier_ids:
+        return {}
+
+    rules = {}
+    for row in db.supplierCategories.find(
+        {"projectId": project_id, "supplierId": {"$in": supplier_ids}},
+        {"supplierId": 1, "categoryId": 1},
+    ):
+        supplier_id = normalize_non_empty_string(row.get("supplierId"))
+        category_id = normalize_non_empty_string(row.get("categoryId"))
+        if not supplier_id or not category_id:
+            continue
+        rules[supplier_id] = {"categoryId": category_id}
+    return rules
+
+
+def build_category_name_cache_for_ids(project_id: str, category_ids: list[str]) -> dict[str, str]:
+    normalized_ids = []
+    for category_id in category_ids:
+        normalized = normalize_non_empty_string(category_id)
+        if not normalized or not ObjectId.is_valid(normalized):
+            continue
+        normalized_ids.append(ObjectId(normalized))
+
+    if not normalized_ids:
+        return {}
+
+    names = {}
+    for category in db.categories.find(
+        {"_id": {"$in": normalized_ids}, "$or": [{"projectId": project_id}, {"projectIds": project_id}]},
+        {"name": 1},
+    ):
+        names[str(category.get("_id"))] = normalize_non_empty_string(category.get("name")) or str(category.get("_id"))
+    return names
+
+
+def transaction_has_manual_category(tx: dict | None) -> bool:
+    tx_doc = tx if isinstance(tx, dict) else {}
+    manual_code = normalize_non_empty_string(tx_doc.get("categoryManualCode"))
+    override_id = normalize_non_empty_string(tx_doc.get("category_override_id"))
+    locked = bool(tx_doc.get("category_locked"))
+    return bool(manual_code or override_id or locked)
 
 
 def build_supplier_auto_category_map(supplier_ids: list[str]) -> dict[str, str]:
@@ -4035,6 +4206,8 @@ def run_sap_import(
     category_preserved_count = 0
     category_would_have_changed_count = 0
     category_hint_updated_count = 0
+    vendor_rule_applied_count = 0
+    vendor_rule_skipped_because_manual_count = 0
     duplicates_skipped = 0
     rows_ok = 0
     rows_error = 0
@@ -4239,6 +4412,11 @@ def run_sap_import(
     )
     supplier_auto_category_map = build_supplier_auto_category_map(supplier_ids_in_file)
     sap_category_ids_by_code = upsert_sap_categories_from_hints(project_id, line_records)
+    supplier_rule_cache = build_supplier_rule_cache(project_id, supplier_ids_in_file)
+    category_name_cache = build_category_name_cache_for_ids(
+        project_id,
+        [row.get("categoryId") for row in supplier_rule_cache.values() if isinstance(row, dict)],
+    )
 
     lines_ops = []
     sap_expense_ops_by_key = {}
@@ -4296,6 +4474,8 @@ def run_sap_import(
             existing_manual_name = normalize_non_empty_string((existing_tx or {}).get("categoryManualName"))
             incoming_hint_code = normalize_non_empty_string(record.get("categoryHintCode"))
             incoming_hint_name = normalize_non_empty_string(record.get("categoryHintName"))
+            has_manual_category = transaction_has_manual_category(existing_tx)
+            vendor_rule = supplier_rule_cache.get(supplier_id) if supplier_id else None
 
             sap_set_doc = {
                 "type": "EXPENSE",
@@ -4343,19 +4523,19 @@ def run_sap_import(
                 if incoming_hint_code != existing_hint_code or incoming_hint_name != existing_hint_name:
                     category_hint_updated_count += 1
 
-            locked_by_override = bool(existing_manual_code or existing_manual_name)
-            if locked_by_override:
+            if has_manual_category:
                 category_preserved_count += 1
+                vendor_rule_skipped_because_manual_count += 1
                 if incoming_hint_code and incoming_hint_code != existing_hint_code:
                     category_would_have_changed_count += 1
 
             if inferred_category_id:
                 sap_set_doc["category_auto_id"] = inferred_category_id
-                if not locked_by_override:
+                if not has_manual_category:
                     sap_set_doc["categoryId"] = inferred_category_id
                     sap_set_doc["category_id"] = inferred_category_id
                     sap_set_doc["category_source"] = "sap"
-            elif not locked_by_override:
+            elif not has_manual_category:
                 sap_set_doc["category_auto_id"] = None
 
             effective_fields = build_effective_category_fields(
@@ -4364,6 +4544,26 @@ def run_sap_import(
                 incoming_hint_code or existing_hint_code,
                 incoming_hint_name or existing_hint_name,
             )
+
+            if (not has_manual_category) and vendor_rule:
+                vendor_rule_category_id = normalize_non_empty_string(vendor_rule.get("categoryId"))
+                if vendor_rule_category_id:
+                    vendor_rule_category_name = category_name_cache.get(vendor_rule_category_id) or vendor_rule_category_id
+                    sap_set_doc["categoryManualCode"] = vendor_rule_category_id
+                    sap_set_doc["categoryManualName"] = vendor_rule_category_name
+                    sap_set_doc["categoryManualUpdatedAt"] = datetime.now(timezone.utc).isoformat()
+                    sap_set_doc["categoryManualUpdatedBy"] = "vendor_rule"
+                    sap_set_doc["categoryEffectiveCode"] = vendor_rule_category_id
+                    sap_set_doc["categoryEffectiveName"] = vendor_rule_category_name
+                    sap_set_doc["category_source"] = "vendor_rule"
+                    sap_set_doc["category_override_id"] = vendor_rule_category_id
+                    sap_set_doc["category_id"] = vendor_rule_category_id
+                    sap_set_doc["categoryId"] = vendor_rule_category_id
+                    effective_fields = {
+                        "categoryEffectiveCode": vendor_rule_category_id,
+                        "categoryEffectiveName": vendor_rule_category_name,
+                    }
+                    vendor_rule_applied_count += 1
             sap_set_doc.update(effective_fields)
             sap_expense_ops_by_key[
                 (
@@ -4450,6 +4650,8 @@ def run_sap_import(
                 "categoryPreservedCount": category_preserved_count,
                 "categoryWouldHaveChangedCount": category_would_have_changed_count,
                 "categoryHintUpdatedCount": category_hint_updated_count,
+                "vendorRuleAppliedCount": vendor_rule_applied_count,
+                "vendorRuleSkippedBecauseManualCount": vendor_rule_skipped_because_manual_count,
             }
         },
     )
@@ -4469,6 +4671,8 @@ def run_sap_import(
         "categoryPreservedCount": category_preserved_count,
         "categoryWouldHaveChangedCount": category_would_have_changed_count,
         "categoryHintUpdatedCount": category_hint_updated_count,
+        "vendorRuleAppliedCount": vendor_rule_applied_count,
+        "vendorRuleSkippedBecauseManualCount": vendor_rule_skipped_because_manual_count,
         "duplicatesSkipped": duplicates_skipped,
         "rowsError": rows_error,
         "errorsSample": errors_sample[:50],
