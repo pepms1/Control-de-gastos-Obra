@@ -5648,11 +5648,37 @@ def spend_by_category(
     rows.sort(key=lambda row: row["amount"], reverse=True)
     total = round(sum(float(r["amount"]) for r in rows), 2) if rows else 0.0
 
-    cat_ids = [oid(r["_id"]) for r in rows if r.get("_id")]
+    cat_object_ids = []
+    cat_codes = []
+    for row in rows:
+        raw_category_id = normalize_non_empty_string(row.get("_id"))
+        if not raw_category_id:
+            continue
+        if ObjectId.is_valid(raw_category_id):
+            cat_object_ids.append(ObjectId(raw_category_id))
+        else:
+            cat_codes.append(raw_category_id)
+
     cats = {}
-    if cat_ids:
-        for c in db.categories.find({"_id": {"$in": cat_ids}}, {"name": 1}):
-            cats[str(c["_id"])] = c["name"]
+    category_query = {"$or": []}
+    if cat_object_ids:
+        category_query["$or"].append({"_id": {"$in": cat_object_ids}})
+    if cat_codes:
+        category_query["$or"].append({"code": {"$in": cat_codes}})
+
+    if category_query["$or"]:
+        for c in db.categories.find(category_query, {"name": 1, "code": 1}):
+            category_name = c.get("name") or c.get("code")
+            if not category_name:
+                continue
+
+            category_id = c.get("_id")
+            if category_id is not None:
+                cats[str(category_id)] = category_name
+
+            category_code = normalize_non_empty_string(c.get("code"))
+            if category_code:
+                cats[category_code] = category_name
 
     out = []
     for r in rows:
