@@ -417,7 +417,7 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
           disabled={!isAdmin}
           title={!isAdmin ? 'Solo disponible para administradores' : undefined}
         >
-          Importar a SAP
+          Subir CSV
         </button>
         <button
           type="button"
@@ -427,15 +427,6 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
           title={!isAdmin ? 'Solo disponible para administradores' : undefined}
         >
           Proveedor → Categoría 2
-        </button>
-        <button
-          type="button"
-          className={section === 'raw-data' ? '' : 'secondary'}
-          onClick={() => setSection('raw-data')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
-        >
-          Raw data
         </button>
         {isAdmin && (
           <button
@@ -455,6 +446,15 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
             Crear carpeta S3
           </button>
         )}
+        <button
+          type="button"
+          className={section === 'raw-data' ? '' : 'secondary'}
+          onClick={() => setSection('raw-data')}
+          disabled={!isAdmin}
+          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+        >
+          Raw data
+        </button>
       </div>
 
       {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
@@ -473,12 +473,12 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
           <div className="card">Solo los administradores pueden asignar categoría por proveedor.</div>
         ))}
 
-      {section === 'raw-data' &&
-        (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
-
       {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
 
       {section === 's3-prefix' && isAdmin && <AdminS3PrefixCreateSection />}
+
+      {section === 'raw-data' &&
+        (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
     </div>
   );
 }
