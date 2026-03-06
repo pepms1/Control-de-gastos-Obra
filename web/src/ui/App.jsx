@@ -381,7 +381,14 @@ export default function App() {
           />
         )}
 
-        {tab === 'search' && <SearchTransactions cats={cats} vendors={vendors} selectedProjectId={selectedProjectId} />}
+        {tab === 'search' && (
+          <SearchTransactions
+            cats={cats}
+            vendors={vendors}
+            projects={projects}
+            selectedProjectId={selectedProjectId}
+          />
+        )}
 
         {tab === 'settings' && (
           <Settings
@@ -2003,7 +2010,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   );
 }
 
-function SearchTransactions({ cats, vendors, selectedProjectId }) {
+function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -2014,6 +2021,11 @@ function SearchTransactions({ cats, vendors, selectedProjectId }) {
   const limit = 50;
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
+  const selectedProjectName = useMemo(
+    () => projects.find((project) => String(project?._id || '') === String(selectedProjectId || ''))?.name || 'SIN PROYECTO',
+    [projects, selectedProjectId],
+  );
+  const reportTitle = `${selectedProjectName} - REPORTE DE EGRESOS`;
 
   useEffect(() => {
     setPage(1);
@@ -2107,7 +2119,7 @@ function SearchTransactions({ cats, vendors, selectedProjectId }) {
         <html lang="es">
           <head>
             <meta charset="UTF-8" />
-            <title>CALDERON DE LA BARCA - REPORTE DE EGRESOS</title>
+            <title>${reportTitle}</title>
             <style>
               :root { --primary:#1f4d96; --primary-dark:#12305f; --soft:#e3ebf8; --gray:#334155; --line:#e2e8f0; }
               * { box-sizing: border-box; }
@@ -2135,7 +2147,7 @@ function SearchTransactions({ cats, vendors, selectedProjectId }) {
           <body>
             <section class="sheet">
               <header class="header">
-                <h1>CALDERON DE LA BARCA - REPORTE DE EGRESOS</h1>
+                <h1>${reportTitle}</h1>
                 <p>Generado: ${new Date().toLocaleString('es-MX')} · Consulta: ${query.trim() || 'Sin filtro de texto'}</p>
               </header>
               <div class="summary">
