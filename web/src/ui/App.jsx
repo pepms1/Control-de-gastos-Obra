@@ -388,6 +388,7 @@ export default function App() {
             isAdmin={isAdmin}
             cats={cats}
             vendors={vendors}
+            projects={projects}
             selectedProjectId={selectedProjectId}
             onProjectCreated={loadProjects}
             onCatalogChanged={async () => {
@@ -401,7 +402,7 @@ export default function App() {
   );
 }
 
-function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged, onProjectCreated }) {
+function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatalogChanged, onProjectCreated }) {
   const [section, setSection] = useState('catalog');
 
   return (
@@ -477,7 +478,7 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
 
       {section === 'sap-latest' &&
         (isAdmin ? (
-          <SapLatestImportSection selectedProjectId={selectedProjectId} />
+          <SapLatestImportSection projects={projects} selectedProjectId={selectedProjectId} />
         ) : (
           <div className="card">Solo los administradores pueden ejecutar el import SAP latest.</div>
         ))}
@@ -499,11 +500,14 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
   );
 }
 
-function SapLatestImportSection({ selectedProjectId }) {
+function SapLatestImportSection({ projects, selectedProjectId }) {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const [sources, setSources] = useState({ IVA: false, EFECTIVO: false });
+  const selectedProject =
+    projects.find((project) => String(project?._id || '') === String(selectedProjectId || '')) || null;
+  const destinationProjectName = selectedProject?.name || 'Sin proyecto seleccionado';
 
   function toggleSource(sourceKey) {
     setSources((prev) => ({ ...prev, [sourceKey]: !prev[sourceKey] }));
@@ -520,6 +524,12 @@ function SapLatestImportSection({ selectedProjectId }) {
     const selectedSources = Object.entries(sources)
       .filter(([, value]) => Boolean(value))
       .map(([key]) => key);
+
+    const sourceLabel = selectedSources.length ? selectedSources.join(', ') : 'TODAS';
+    const accepted = window.confirm(
+      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nFuentes: ${sourceLabel}.\n\n¿Deseas continuar?`
+    );
+    if (!accepted) return;
 
     setImporting(true);
     try {
@@ -545,6 +555,9 @@ function SapLatestImportSection({ selectedProjectId }) {
       <div>
         <h3 style={{ margin: 0 }}>SAP Import</h3>
         <div className="small">Ejecuta manualmente el import de latest CSV (IVA/EFECTIVO).</div>
+        <div className="small" style={{ marginTop: 4 }}>
+          Proyecto destino: <strong>{destinationProjectName}</strong>
+        </div>
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
