@@ -4542,22 +4542,6 @@ async def import_sap_payments(
     )
 
 
-@app.post("/api/admin/import/sap-latest")
-def admin_import_sap_latest(
-    project: str = "CALDERON DE LA BARCA",
-    force: int = 0,
-    mode: str = "upsert",
-    _: dict = Depends(require_admin),
-):
-    try:
-        result = run_s3_latest_sap_import(project=project, force=force, mode=mode, source="sap-latest-admin")
-        notify_sap_latest_import_success(project=project, result=result)
-        return result
-    except Exception as exc:
-        notify_sap_latest_import_failure(project=project, exc=exc)
-        raise
-
-
 @app.post("/api/cron/import/sap-payments")
 def cron_import_sap_payments(
     project: str = "CALDERON DE LA BARCA",
