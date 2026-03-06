@@ -13,6 +13,7 @@ export function ImportSapScreen() {
   const [summary, setSummary] = useState(null);
   const [errors, setErrors] = useState([]);
   const [message, setMessage] = useState('');
+  const [mismatchError, setMismatchError] = useState(null);
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(localStorage.getItem(SELECTED_PROJECT_KEY) || '');
 
@@ -35,7 +36,7 @@ export function ImportSapScreen() {
   const destinationProject = projects.find((project) => String(project?._id || '') === String(selectedProjectId || '')) || null;
   const canImport = Boolean(file && destinationProject?.name && !loading);
 
-  async function onSubmit(e) {
+  async function onSubmit(e, options = {}) {
     e.preventDefault();
     if (!selectedProjectId || !destinationProject?.name) {
       setMessage('Selecciona un proyecto activo antes de importar.');
@@ -50,17 +51,32 @@ export function ImportSapScreen() {
     setMessage('');
     setSummary(null);
     setErrors([]);
+    setMismatchError(null);
 
     try {
-      const response = await api.importSapPayments(file, destinationProject.name, selectedProjectId);
+      const response = await api.importSapPayments(file, destinationProject.name, selectedProjectId, Boolean(options.force));
       setSummary(response?.summary || response || null);
       setErrors(valueToArray(response?.errors));
       setMessage('Importación finalizada.');
     } catch (err) {
-      setMessage(err.message || 'No se pudo importar el archivo.');
+      const mismatchPayload = err?.detail?.error === 'PROJECT_MISMATCH' ? err.detail : null;
+      if (mismatchPayload) {
+        setMismatchError(mismatchPayload);
+        setMessage(mismatchPayload.message || 'Archivo posiblemente de otro proyecto.');
+      } else {
+        setMessage(err.message || 'No se pudo importar el archivo.');
+      }
     } finally {
       setLoading(false);
     }
+  }
+
+
+
+  async function forceImport() {
+    if (!file || loading) return;
+    const fakeEvent = { preventDefault() {} };
+    await onSubmit(fakeEvent, { force: true });
   }
 
   return (
@@ -80,6 +96,20 @@ export function ImportSapScreen() {
           </button>
         </form>
         {message && <p className="small" style={{ marginBottom: 0 }}>{message}</p>}
+
+        {mismatchError && (
+          <div className="card" style={{ border: '1px solid #f59e0b', marginTop: 12 }}>
+            <h3 style={{ marginTop: 0 }}>Posible archivo de otro proyecto</h3>
+            <p className="small">{mismatchError.message}</p>
+            <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(mismatchError.details || {}, null, 2)}</pre>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={() => setMismatchError(null)} disabled={loading}>Cancelar</button>
+              <button type="button" onClick={forceImport} disabled={loading}>
+                {loading ? 'Importando...' : 'Importar de todas formas'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {summary && (
