@@ -769,14 +769,6 @@ function AdminS3PrefixCreateSection() {
             required
           />
         </div>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="checkbox"
-            checked={applyToExisting}
-            onChange={(e) => setApplyToExisting(e.target.checked)}
-          />
-          Aplicar a existentes (solo donde no hay manual)
-        </label>
         {error && <div>{error}</div>}
         {createdPath && <div>Creado: <code>{createdPath}</code></div>}
         <button type="submit" disabled={saving}>{saving ? 'Creando...' : 'Crear carpeta en S3'}</button>
@@ -866,14 +858,6 @@ function AdminProjectCreateSection({ onProjectCreated }) {
             required
           />
         </div>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="checkbox"
-            checked={applyToExisting}
-            onChange={(e) => setApplyToExisting(e.target.checked)}
-          />
-          Aplicar a existentes (solo donde no hay manual)
-        </label>
         {error && <div>{error}</div>}
         {created?.projectId && (
           <div>
