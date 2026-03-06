@@ -7,7 +7,7 @@ from bson import ObjectId
 from datetime import date, datetime, timedelta, timezone
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from hashlib import sha256
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
@@ -21,6 +21,8 @@ import openpyxl
 import os
 import logging
 import unicodedata
+import threading
+import time
 
 app = FastAPI(title="Control de Obra API")
 
@@ -51,6 +53,10 @@ bearer_scheme = HTTPBearer(auto_error=False)
 TELEGRAM_SETTINGS_KEY = "telegram_default_chat_id"
 TELEGRAM_ACCESS_REQUEST_WINDOW_HOURS = 24
 DEFAULT_PROJECT_S3_BUCKET = "calderon-sap-exports"
+SAP_LATEST_MANUAL_RATE_LIMIT_SECONDS = 60
+sap_latest_import_locks: dict[str, threading.Lock] = {}
+sap_latest_import_rate_limit_state: dict[str, float] = {}
+sap_latest_import_guard_lock = threading.Lock()
 
 
 # ---------- helpers ----------
@@ -3713,6 +3719,8 @@ def run_s3_latest_sap_import(
     force: int = 0,
     mode: str = "upsert",
     source: str = "sap-latest",
+    sources: list[str] | None = None,
+    import_metadata: dict | None = None,
 ):
     project_id = get_or_create_project_id(project)
     project_doc = db.projects.find_one({"_id": ObjectId(project_id)}, {"sap": 1, "s3Prefix": 1}) or {}
@@ -3749,8 +3757,22 @@ def run_s3_latest_sap_import(
         },
     ]
 
+    requested_sources = {
+        str(source_label or "").strip().upper()
+        for source_label in (sources or ["IVA", "EFECTIVO"])
+        if str(source_label or "").strip()
+    }
+    allowed_sources = {"IVA", "EFECTIVO"}
+    invalid_sources = sorted(requested_sources - allowed_sources)
+    if invalid_sources:
+        raise HTTPException(status_code=400, detail=f"Invalid sources: {', '.join(invalid_sources)}")
+
+    selected_configs = [config for config in source_configs if config["sourceDb"] in requested_sources]
+    if not selected_configs:
+        raise HTTPException(status_code=400, detail="At least one source is required: IVA or EFECTIVO")
+
     result = {}
-    for config in source_configs:
+    for config in selected_configs:
         source_db = config["sourceDb"]
         source_sbo = config["sourceSbo"]
         s3_key = config["s3Key"]
@@ -3775,6 +3797,11 @@ def run_s3_latest_sap_import(
             summary = {
                 "already_imported": True,
                 "importRunId": str(existing_state.get("lastImportRunId") or ""),
+                "fingerprint": {
+                    "etag": fingerprint.get("etag"),
+                    "lastModified": fingerprint.get("lastModified"),
+                    "contentLength": fingerprint.get("contentLength"),
+                },
                 "etag": fingerprint.get("etag"),
                 "lastModified": fingerprint.get("lastModified"),
                 "contentLength": fingerprint.get("contentLength"),
@@ -3793,8 +3820,14 @@ def run_s3_latest_sap_import(
             mode=mode,
             source_file=s3_key,
             source_sbo=source_sbo,
+            metadata=import_metadata,
         )
 
+        summary["fingerprint"] = {
+            "etag": fingerprint.get("etag"),
+            "lastModified": fingerprint.get("lastModified"),
+            "contentLength": fingerprint.get("contentLength"),
+        }
         summary["etag"] = fingerprint.get("etag")
         summary["lastModified"] = fingerprint.get("lastModified")
         summary["contentLength"] = fingerprint.get("contentLength")
@@ -3945,6 +3978,7 @@ def run_sap_import(
     source_db_override: str | None = None,
     source_file: str | None = None,
     source_sbo: str | None = None,
+    metadata: dict | None = None,
 ):
     resolved_project_id = (project_id or "").strip()
     if resolved_project_id:
@@ -4002,6 +4036,7 @@ def run_sap_import(
         "startedAt": now,
         "finishedAt": None,
         "errorsSample": [],
+        "metadata": metadata if isinstance(metadata, dict) else {},
     }
 
     reusable_run = existing_run
@@ -4477,6 +4512,36 @@ def run_sap_import(
     return summary
 
 
+
+
+def _acquire_sap_latest_project_lock(project_id: str) -> threading.Lock:
+    with sap_latest_import_guard_lock:
+        lock = sap_latest_import_locks.get(project_id)
+        if lock is None:
+            lock = threading.Lock()
+            sap_latest_import_locks[project_id] = lock
+        return lock
+
+
+def _enforce_sap_latest_rate_limit(project_id: str):
+    now = time.time()
+    with sap_latest_import_guard_lock:
+        last_run = sap_latest_import_rate_limit_state.get(project_id)
+        if last_run is not None and now - last_run < SAP_LATEST_MANUAL_RATE_LIMIT_SECONDS:
+            retry_after_seconds = int(max(1, SAP_LATEST_MANUAL_RATE_LIMIT_SECONDS - (now - last_run)))
+            raise HTTPException(
+                status_code=429,
+                detail=f"SAP latest import rate limited for project. Retry in {retry_after_seconds}s",
+                headers={"Retry-After": str(retry_after_seconds)},
+            )
+        sap_latest_import_rate_limit_state[project_id] = now
+
+
+class AdminImportSapLatestRequest(BaseModel):
+    projectId: str
+    sources: list[str] | None = Field(default=None, description='Subset of sources: IVA and/or EFECTIVO')
+
+
 def resolve_sap_import_project_id(
     request: FastAPIRequest,
     project_id_query: str | None,
@@ -4537,18 +4602,48 @@ async def import_sap_payments(
 
 @app.post("/api/admin/import/sap-latest")
 def admin_import_sap_latest(
-    project: str = "CALDERON DE LA BARCA",
+    payload: AdminImportSapLatestRequest,
     force: int = 0,
     mode: str = "upsert",
-    _: dict = Depends(require_admin),
+    admin_user: dict = Depends(require_admin),
 ):
+    project_id = (payload.projectId or "").strip()
+    if not ObjectId.is_valid(project_id):
+        raise HTTPException(status_code=400, detail="Invalid projectId")
+
+    project_doc = db.projects.find_one({"_id": ObjectId(project_id)}, {"name": 1})
+    if not project_doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_name = str(project_doc.get("name") or "").strip()
+    if not project_name:
+        raise HTTPException(status_code=400, detail="Project has no name configured")
+
+    _enforce_sap_latest_rate_limit(project_id)
+    project_lock = _acquire_sap_latest_project_lock(project_id)
+    if not project_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="SAP latest import already running for this project")
+
     try:
-        result = run_s3_latest_sap_import(project=project, force=force, mode=mode, source="sap-latest-admin")
-        notify_sap_latest_import_success(project=project, result=result)
+        trigger_user = str(admin_user.get("username") or admin_user.get("displayName") or "admin").strip() or "admin"
+        result = run_s3_latest_sap_import(
+            project=project_name,
+            force=force,
+            mode=mode,
+            source="sap-latest-admin",
+            sources=payload.sources,
+            import_metadata={
+                "triggerType": "manual",
+                "triggeredBy": trigger_user,
+            },
+        )
+        notify_sap_latest_import_success(project=project_name, result=result)
         return result
     except Exception as exc:
-        notify_sap_latest_import_failure(project=project, exc=exc)
+        notify_sap_latest_import_failure(project=project_name, exc=exc)
         raise
+    finally:
+        project_lock.release()
 
 
 @app.post("/api/cron/import/sap-payments")
