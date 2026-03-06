@@ -103,9 +103,11 @@ async function request(baseUrl, path, opts = {}) {
 
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
+    let errorBody = null;
     try {
       const j = await res.json();
-      msg = j.detail || JSON.stringify(j);
+      errorBody = j;
+      msg = (j && (j.detail?.message || j.detail || j.message)) || JSON.stringify(j);
     } catch {}
 
     if (res.status === 401) {
@@ -114,6 +116,8 @@ async function request(baseUrl, path, opts = {}) {
 
     const error = new Error(msg);
     error.status = res.status;
+    error.body = errorBody;
+    error.detail = errorBody?.detail;
     throw error;
   }
 
@@ -280,12 +284,13 @@ export const api = {
     return backendReq(`/api/expenses/summary-by-supplier${qs ? `?${qs}` : ''}`);
   },
 
-  importSapPayments: (file, project, projectId) => {
+  importSapPayments: (file, project, projectId, force = false) => {
     const formData = new FormData();
     formData.append('file', file);
     const qs = new URLSearchParams();
     if (project) qs.set('project', project);
     if (projectId) qs.set('projectId', projectId);
+    if (force) qs.set('force', '1');
     return backendReq(`/api/import/sap-payments${qs ? `?${qs}` : ''}`, {
       method: 'POST',
       body: formData,

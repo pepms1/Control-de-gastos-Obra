@@ -4720,6 +4720,204 @@ def resolve_sap_import_project_id(
     )
 
 
+def _normalize_guardrail_token(value: str | None) -> str:
+    token = str(value or "").strip().lower()
+    token = token.replace("_", "-").replace(" ", "-")
+    return re.sub(r"[^a-z0-9-]", "", token)
+
+
+def _normalize_project_code_for_guardrail(value: str | None) -> str:
+    cleaned = str(value or "").strip().upper()
+    return re.sub(r"\s+", " ", cleaned)
+
+
+def _extract_filename_slug_match(file_name: str, expected_slug: str, all_project_slugs: list[str]) -> str | None:
+    normalized_file_name = _normalize_guardrail_token(file_name)
+    if not normalized_file_name:
+        return None
+
+    expected_token = _normalize_guardrail_token(expected_slug)
+    compact_file_name = normalized_file_name.replace("-", "")
+    expected_present = bool(
+        expected_token
+        and (expected_token in normalized_file_name or expected_token.replace("-", "") in compact_file_name)
+    )
+    if expected_present:
+        return None
+
+    for slug in all_project_slugs:
+        candidate = _normalize_guardrail_token(slug)
+        if not candidate:
+            continue
+        if candidate in normalized_file_name or candidate.replace("-", "") in compact_file_name:
+            if candidate != expected_token:
+                return slug
+    return None
+
+
+def _detect_project_code_from_csv_sample(file_name: str, file_bytes: bytes, sample_limit: int = 200) -> dict:
+    if not str(file_name or "").lower().endswith(".csv"):
+        return {
+            "topProjectCode": None,
+            "topShare": 0.0,
+            "sampleSize": 0,
+            "totalNonEmpty": 0,
+            "isMixed": False,
+            "insufficientEvidence": True,
+            "error": None,
+        }
+
+    header_aliases = {
+        "pagoprjcode": "projectcode",
+        "projectcode": "projectcode",
+    }
+
+    def normalize_header(header_value: str | None) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(header_value or "").replace("\ufeff", "").strip().lower())
+
+    try:
+        decoded = file_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return {
+            "topProjectCode": None,
+            "topShare": 0.0,
+            "sampleSize": 0,
+            "totalNonEmpty": 0,
+            "isMixed": False,
+            "insufficientEvidence": True,
+            "error": "decode_error",
+        }
+
+    reader = csv.reader(decoded.splitlines())
+    rows = list(reader)
+    if not rows:
+        return {
+            "topProjectCode": None,
+            "topShare": 0.0,
+            "sampleSize": 0,
+            "totalNonEmpty": 0,
+            "isMixed": False,
+            "insufficientEvidence": True,
+            "error": None,
+        }
+
+    header_row = rows[0]
+    project_code_idx = None
+    for idx, header in enumerate(header_row):
+        canonical = header_aliases.get(normalize_header(header))
+        if canonical == "projectcode":
+            project_code_idx = idx
+            break
+
+    if project_code_idx is None:
+        return {
+            "topProjectCode": None,
+            "topShare": 0.0,
+            "sampleSize": min(sample_limit, max(0, len(rows) - 1)),
+            "totalNonEmpty": 0,
+            "isMixed": False,
+            "insufficientEvidence": True,
+            "error": None,
+        }
+
+    frequencies: dict[str, int] = {}
+    sample_size = 0
+    for row in rows[1 : sample_limit + 1]:
+        sample_size += 1
+        value = row[project_code_idx] if project_code_idx < len(row) else ""
+        normalized = _normalize_project_code_for_guardrail(value)
+        if not normalized:
+            continue
+        frequencies[normalized] = frequencies.get(normalized, 0) + 1
+
+    total_non_empty = sum(frequencies.values())
+    if total_non_empty == 0:
+        return {
+            "topProjectCode": None,
+            "topShare": 0.0,
+            "sampleSize": sample_size,
+            "totalNonEmpty": 0,
+            "isMixed": False,
+            "insufficientEvidence": True,
+            "error": None,
+        }
+
+    top_code, top_count = max(frequencies.items(), key=lambda item: item[1])
+    top_share = top_count / total_non_empty
+    return {
+        "topProjectCode": top_code,
+        "topShare": top_share,
+        "sampleSize": sample_size,
+        "totalNonEmpty": total_non_empty,
+        "isMixed": top_share < 0.5,
+        "insufficientEvidence": total_non_empty < 10,
+        "error": None,
+    }
+
+
+def evaluate_manual_import_project_guardrail(project_id: str, file_name: str, file_bytes: bytes) -> dict:
+    project_doc = db.projects.find_one({"_id": ObjectId(project_id)}, {"name": 1, "slug": 1, "sap": 1}) or {}
+    expected_name = str(project_doc.get("name") or "").strip()
+    expected_slug = str(project_doc.get("slug") or "").strip()
+    sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+    expected_project_code = _normalize_project_code_for_guardrail(
+        sap_doc.get("projectCode") or sap_doc.get("sapName") or expected_name
+    )
+
+    all_project_slugs = [
+        str(row.get("slug") or "").strip()
+        for row in db.projects.find({}, {"slug": 1})
+        if str(row.get("slug") or "").strip()
+    ]
+    by_filename_slug = _extract_filename_slug_match(file_name=file_name, expected_slug=expected_slug, all_project_slugs=all_project_slugs)
+    content_detection = _detect_project_code_from_csv_sample(file_name=file_name, file_bytes=file_bytes)
+    top_project_code = _normalize_project_code_for_guardrail(content_detection.get("topProjectCode"))
+    top_share = float(content_detection.get("topShare") or 0.0)
+    insufficient_evidence = bool(content_detection.get("insufficientEvidence"))
+
+    mismatch_level = "none"
+    reason = "none"
+    if top_project_code and expected_project_code and top_project_code != expected_project_code:
+        if not insufficient_evidence and top_share >= 0.8:
+            mismatch_level = "strong"
+            reason = "content_top_share"
+        elif not insufficient_evidence and top_share >= 0.5:
+            mismatch_level = "moderate"
+            reason = "content_mixed_majority"
+        elif by_filename_slug:
+            mismatch_level = "moderate"
+            reason = "filename_plus_weak_content"
+    elif by_filename_slug:
+        mismatch_level = "moderate"
+        reason = "filename_slug"
+
+    should_block = mismatch_level in {"strong", "moderate"}
+    warning_soft = bool(by_filename_slug or content_detection.get("isMixed") or insufficient_evidence)
+
+    return {
+        "shouldBlock": should_block,
+        "mismatchLevel": mismatch_level,
+        "reason": reason,
+        "warningSoft": warning_soft,
+        "expectedProject": {
+            "projectId": project_id,
+            "name": expected_name,
+            "slug": expected_slug,
+            "sapProjectCode": expected_project_code,
+        },
+        "detected": {
+            "byFilename": by_filename_slug,
+            "byContentTopCode": top_project_code or None,
+            "topShare": round(top_share, 4),
+            "sampleSize": int(content_detection.get("sampleSize") or 0),
+            "totalNonEmpty": int(content_detection.get("totalNonEmpty") or 0),
+            "insufficientEvidence": insufficient_evidence,
+            "mixed": bool(content_detection.get("isMixed")),
+            "parseError": content_detection.get("error"),
+        },
+    }
+
+
 @app.post("/api/import/sap-payments")
 async def import_sap_payments(
     request: FastAPIRequest,
@@ -4731,10 +4929,37 @@ async def import_sap_payments(
     confirm_rebuild: int = 0,
     admin_user: dict = Depends(require_admin),
 ):
+    file_name = file.filename or ""
     file_bytes = await file.read()
     resolved_project_id = resolve_sap_import_project_id(request, project_id_query=projectId, project_name_query=project)
-    return run_sap_import(
-        file.filename or "",
+
+    guardrail = evaluate_manual_import_project_guardrail(
+        project_id=resolved_project_id,
+        file_name=file_name,
+        file_bytes=file_bytes,
+    )
+
+    if guardrail.get("shouldBlock") and force != 1:
+        expected = guardrail.get("expectedProject") if isinstance(guardrail.get("expectedProject"), dict) else {}
+        detected = guardrail.get("detected") if isinstance(guardrail.get("detected"), dict) else {}
+        detected_project = detected.get("byContentTopCode") or detected.get("byFilename") or "otro proyecto"
+        expected_project = expected.get("name") or expected.get("slug") or "proyecto actual"
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "PROJECT_MISMATCH",
+                "message": f"Este archivo parece ser del proyecto {detected_project}, pero estás en {expected_project}.",
+                "details": {
+                    "expectedProject": expected,
+                    "detected": detected,
+                    "mismatchLevel": guardrail.get("mismatchLevel"),
+                    "reason": guardrail.get("reason"),
+                },
+            },
+        )
+
+    summary = run_sap_import(
+        file_name,
         file_bytes,
         project,
         force,
@@ -4744,6 +4969,37 @@ async def import_sap_payments(
         confirm_rebuild=confirm_rebuild,
         allow_rebuild=admin_user["role"] == "ADMIN",
     )
+
+    import_run_id = str((summary or {}).get("importRunId") or "").strip()
+    if import_run_id and ObjectId.is_valid(import_run_id):
+        db.importRuns.update_one(
+            {"_id": ObjectId(import_run_id)},
+            {
+                "$set": {
+                    "uploadedFileName": file_name,
+                    "guardrail": {
+                        "expectedProjectCode": guardrail.get("expectedProject", {}).get("sapProjectCode"),
+                        "detectedByFilenameSlug": guardrail.get("detected", {}).get("byFilename"),
+                        "detectedTopProjectCode": guardrail.get("detected", {}).get("byContentTopCode"),
+                        "topShare": guardrail.get("detected", {}).get("topShare"),
+                        "sampleSize": guardrail.get("detected", {}).get("sampleSize"),
+                        "forceUsed": bool(force == 1),
+                        "mismatchDetected": bool(guardrail.get("shouldBlock")),
+                        "mismatchLevel": guardrail.get("mismatchLevel"),
+                        "reason": guardrail.get("reason"),
+                    },
+                    "mismatchOverride": bool(force == 1 and guardrail.get("shouldBlock")),
+                    "mismatchDetected": {
+                        "expectedProject": guardrail.get("expectedProject"),
+                        "detected": guardrail.get("detected"),
+                        "mismatchLevel": guardrail.get("mismatchLevel"),
+                        "reason": guardrail.get("reason"),
+                    },
+                }
+            },
+        )
+
+    return summary
 
 
 @app.post("/api/cron/import/sap-payments")
