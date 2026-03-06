@@ -339,4 +339,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ slug }),
     }),
+
+  adminImportSapLatestNow: ({ projectId, sources }) =>
+    backendReq('/api/admin/import/sap-latest', {
+      method: 'POST',
+      body: JSON.stringify({ projectId, ...(Array.isArray(sources) && sources.length ? { sources } : {}) }),
+    }),
 };

@@ -421,6 +421,15 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
         </button>
         <button
           type="button"
+          className={section === 'sap-import-latest' ? '' : 'secondary'}
+          onClick={() => setSection('sap-import-latest')}
+          disabled={!isAdmin}
+          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+        >
+          SAP Import
+        </button>
+        <button
+          type="button"
           className={section === 'supplier-category2' ? '' : 'secondary'}
           onClick={() => setSection('supplier-category2')}
           disabled={!isAdmin}
@@ -466,6 +475,13 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
           <div className="card">Solo los administradores pueden importar pagos SAP.</div>
         ))}
 
+      {section === 'sap-import-latest' &&
+        (isAdmin ? (
+          <SapImportLatestSection selectedProjectId={selectedProjectId} />
+        ) : (
+          <div className="card">Solo los administradores pueden ejecutar import SAP latest.</div>
+        ))}
+
       {section === 'supplier-category2' &&
         (isAdmin ? (
           <SupplierCategory2Assignment cats={cats} selectedProjectId={selectedProjectId} />
@@ -482,6 +498,127 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
     </div>
   );
 }
+
+
+function SapImportLatestSection({ selectedProjectId }) {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState(null);
+  const [sourceSelection, setSourceSelection] = useState({ IVA: true, EFECTIVO: true });
+
+  const selectedSources = useMemo(
+    () => Object.entries(sourceSelection).filter(([, enabled]) => enabled).map(([source]) => source),
+    [sourceSelection],
+  );
+
+  async function onImportNow() {
+    if (!selectedProjectId) {
+      window.alert('Selecciona un proyecto activo.');
+      return;
+    }
+    if (!selectedSources.length) {
+      window.alert('Selecciona al menos un origen (IVA o EFECTIVO).');
+      return;
+    }
+
+    const confirmed = window.confirm(`Se importará latest SAP para: ${selectedSources.join(', ')}. ¿Continuar?`);
+    if (!confirmed) return;
+
+    setRunning(true);
+    setResult(null);
+    try {
+      const response = await api.adminImportSapLatestNow({
+        projectId: selectedProjectId,
+        sources: selectedSources,
+      });
+      setResult(response || null);
+      window.alert('Importación SAP latest finalizada.');
+    } catch (error) {
+      window.alert(error?.message || 'No se pudo ejecutar la importación SAP latest.');
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  const rows = [
+    { key: 'iva', label: 'IVA', data: result?.iva || null },
+    { key: 'efectivo', label: 'EFECTIVO', data: result?.efectivo || null },
+  ];
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>SAP Import</h3>
+      <div className="small" style={{ marginBottom: 10 }}>
+        Ejecuta importación manual del latest SAP para el proyecto seleccionado.
+      </div>
+      <div style={{ display: 'flex', gap: 14, marginBottom: 10 }}>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={sourceSelection.IVA}
+            onChange={(e) => setSourceSelection((prev) => ({ ...prev, IVA: e.target.checked }))}
+            disabled={running}
+          />
+          IVA
+        </label>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={sourceSelection.EFECTIVO}
+            onChange={(e) => setSourceSelection((prev) => ({ ...prev, EFECTIVO: e.target.checked }))}
+            disabled={running}
+          />
+          EFECTIVO
+        </label>
+      </div>
+
+      <button type="button" onClick={onImportNow} disabled={running || !selectedProjectId || !selectedSources.length}>
+        {running ? 'Importando latest...' : 'Importar latest ahora'}
+      </button>
+
+      {result && (
+        <div style={{ marginTop: 14 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Fuente</th>
+                <th>already_imported</th>
+                <th>importRunId</th>
+                <th>fingerprint</th>
+                <th>rowsOk</th>
+                <th>duplicatesSkipped</th>
+                <th>rowsError</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                if (!row.data) {
+                  return (
+                    <tr key={row.key}>
+                      <td>{row.label}</td>
+                      <td colSpan={6} className="small">No ejecutado</td>
+                    </tr>
+                  );
+                }
+                return (
+                  <tr key={row.key}>
+                    <td>{row.label}</td>
+                    <td>{row.data.already_imported ? 'Sí' : 'No'}</td>
+                    <td>{row.data.importRunId || '-'}</td>
+                    <td className="small">{row.data?.fingerprint?.etag || row.data?.etag || '-'} </td>
+                    <td>{row.data.rowsOk ?? '-'}</td>
+                    <td>{row.data.duplicatesSkipped ?? '-'}</td>
+                    <td>{row.data.rowsError ?? '-'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function SupplierCategory2Assignment({ cats, selectedProjectId }) {
   const [suppliers, setSuppliers] = useState([]);
