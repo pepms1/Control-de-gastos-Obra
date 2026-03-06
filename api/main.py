@@ -1978,6 +1978,11 @@ def ensure_indexes():
         db.importRuns.drop_index("sha256_1")
     db.importRuns.create_index([("projectId", 1), ("sha256", 1)], unique=True, name="import_runs_project_sha256_unique")
     db.importRuns.create_index([("projectId", 1), ("importKey", 1)], name="import_runs_project_import_key_idx")
+    db.sap_import_state.create_index(
+        [("projectId", 1), ("sourceDb", 1), ("sourceSbo", 1)],
+        unique=True,
+        name="sap_import_state_project_source_unique",
+    )
     db.settings.create_index("key", unique=True)
     db.telegram_users.create_index("chat_id", unique=True)
     db.telegram_users.create_index([("status", 1), ("updated_at", -1)])
@@ -3605,18 +3610,38 @@ def normalize_category_override_update(
     return updates
 
 
-def downloadFromS3(key: str) -> bytes:
+def downloadFromS3Object(bucket: str, key: str) -> bytes:
     region = (os.getenv("AWS_REGION") or "").strip()
-    bucket = (os.getenv("S3_BUCKET") or "").strip()
-
     if not region:
         raise HTTPException(status_code=500, detail="Missing AWS_REGION env var")
-    if not bucket:
-        raise HTTPException(status_code=500, detail="Missing S3_BUCKET env var")
 
     s3_client = boto3.client("s3", region_name=region)
     response = s3_client.get_object(Bucket=bucket, Key=key)
     return response["Body"].read()
+
+
+def downloadFromS3(key: str) -> bytes:
+    bucket = (os.getenv("S3_BUCKET") or "").strip()
+    if not bucket:
+        raise HTTPException(status_code=500, detail="Missing S3_BUCKET env var")
+    return downloadFromS3Object(bucket=bucket, key=key)
+
+
+def build_s3_object_fingerprint(bucket: str, key: str) -> dict:
+    region = (os.getenv("AWS_REGION") or "").strip()
+    s3_client = boto3.client("s3", region_name=region or None)
+    response = s3_client.head_object(Bucket=bucket, Key=key)
+
+    etag = str(response.get("ETag") or "").strip().strip('"')
+    last_modified = response.get("LastModified")
+    last_modified_iso = last_modified.astimezone(timezone.utc).isoformat() if last_modified else None
+    content_length = int(response.get("ContentLength") or 0)
+
+    return {
+        "etag": etag,
+        "lastModified": last_modified_iso,
+        "contentLength": content_length,
+    }
 
 
 def build_s3_key(filename: str) -> str:
@@ -3704,43 +3729,99 @@ def run_s3_latest_sap_import(
     if not prefijo:
         raise RuntimeError(f"Missing S3 prefix for project '{project}' (project_id={project_id})")
 
-    iva_key = f"{prefijo}/latest_IVA.csv"
-    efectivo_key = f"{prefijo}/latest_EFECTIVO.csv"
+    bucket = str(sap_s3_doc.get("bucket") or "").strip() or DEFAULT_PROJECT_S3_BUCKET
+
     logger.info(
-        "Running latest SAP import project=%s project_id=%s iva_key=%s efectivo_key=%s",
+        "Running latest SAP import project=%s project_id=%s bucket=%s prefix=%s",
         project,
         project_id,
-        iva_key,
-        efectivo_key,
+        bucket,
+        prefijo,
     )
 
-    logger.info("Attempting S3 download for iva_key=%s", iva_key)
-    iva_bytes = downloadFromS3(iva_key)
-    logger.info("Attempting S3 download for efectivo_key=%s", efectivo_key)
-    efectivo_bytes = downloadFromS3(efectivo_key)
+    source_configs = [
+        {"label": "iva", "sourceDb": "IVA", "sourceSbo": "SBO_GMDI", "s3Key": f"{prefijo}/latest_IVA.csv"},
+        {
+            "label": "efectivo",
+            "sourceDb": "EFECTIVO",
+            "sourceSbo": "SBO_RAFAEL",
+            "s3Key": f"{prefijo}/latest_EFECTIVO.csv",
+        },
+    ]
 
-    iva_summary = importCsv(
-        iva_bytes,
-        sourceDb="IVA",
-        project=project,
-        force=force,
-        source=source,
-        mode=mode,
-        source_file=iva_key,
-        source_sbo="SBO_GMDI",
-    )
-    efectivo_summary = importCsv(
-        efectivo_bytes,
-        sourceDb="EFECTIVO",
-        project=project,
-        force=force,
-        source=source,
-        mode=mode,
-        source_file=efectivo_key,
-        source_sbo="SBO_RAFAEL",
-    )
+    result = {}
+    for config in source_configs:
+        source_db = config["sourceDb"]
+        source_sbo = config["sourceSbo"]
+        s3_key = config["s3Key"]
 
-    return {"iva": iva_summary, "efectivo": efectivo_summary}
+        fingerprint = build_s3_object_fingerprint(bucket=bucket, key=s3_key)
+        state_query = {
+            "projectId": project_id,
+            "sourceDb": source_db,
+            "sourceSbo": source_sbo,
+        }
+        existing_state = db.sap_import_state.find_one(state_query)
+
+        fingerprint_matches = bool(
+            existing_state
+            and str(existing_state.get("s3Key") or "") == s3_key
+            and str(existing_state.get("etag") or "") == str(fingerprint.get("etag") or "")
+            and str(existing_state.get("lastModified") or "") == str(fingerprint.get("lastModified") or "")
+            and int(existing_state.get("contentLength") or 0) == int(fingerprint.get("contentLength") or 0)
+        )
+
+        if fingerprint_matches and force != 1:
+            summary = {
+                "already_imported": True,
+                "importRunId": str(existing_state.get("lastImportRunId") or ""),
+                "etag": fingerprint.get("etag"),
+                "lastModified": fingerprint.get("lastModified"),
+                "contentLength": fingerprint.get("contentLength"),
+            }
+            result[config["label"]] = summary
+            continue
+
+        logger.info("Attempting S3 download for source_db=%s key=%s", source_db, s3_key)
+        file_bytes = downloadFromS3Object(bucket=bucket, key=s3_key)
+        summary = importCsv(
+            file_bytes,
+            sourceDb=source_db,
+            project=project,
+            force=force,
+            source=source,
+            mode=mode,
+            source_file=s3_key,
+            source_sbo=source_sbo,
+        )
+
+        summary["etag"] = fingerprint.get("etag")
+        summary["lastModified"] = fingerprint.get("lastModified")
+        summary["contentLength"] = fingerprint.get("contentLength")
+
+        import_run_id = str(summary.get("importRunId") or "").strip()
+        if import_run_id:
+            db.sap_import_state.update_one(
+                state_query,
+                {
+                    "$set": {
+                        "projectId": project_id,
+                        "sourceDb": source_db,
+                        "sourceSbo": source_sbo,
+                        "s3Key": s3_key,
+                        "etag": str(fingerprint.get("etag") or ""),
+                        "lastModified": fingerprint.get("lastModified"),
+                        "contentLength": int(fingerprint.get("contentLength") or 0),
+                        "lastImportRunId": import_run_id,
+                        "updatedAt": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+                upsert=True,
+            )
+
+        result[config["label"]] = summary
+
+    return result
 
 
 @app.post("/api/telegram/webhook")
@@ -3885,20 +3966,8 @@ def run_sap_import(
     existing_run = db.importRuns.find_one({"projectId": project_id, "sha256": file_hash})
     existing_ok_run = existing_run and existing_run.get("status") == "ok"
 
-    existing_source_key_run = None
-    is_automated_import_source = source in {"sap-latest", "sap-latest-admin", "sap-latest-cron", "sap-payments-cron"}
-    if is_automated_import_source and source_file_value and source_db_value:
-        existing_source_key_run = db.importRuns.find_one(
-            {
-                "projectId": project_id,
-                "importKey": import_key,
-                "status": "ok",
-            }
-        )
-
-    if (existing_ok_run or existing_source_key_run) and force != 1:
-        run_doc = existing_source_key_run or existing_run
-        return {"already_imported": True, "importRunId": str(run_doc["_id"])}
+    if existing_ok_run and force != 1:
+        return {"already_imported": True, "importRunId": str(existing_run["_id"])}
 
     now = datetime.now(timezone.utc).isoformat()
     import_mode = (mode or "upsert").strip().lower()
@@ -3936,12 +4005,6 @@ def run_sap_import(
     }
 
     reusable_run = existing_run
-    if existing_source_key_run and (
-        force == 1
-        or existing_source_key_run.get("status") != "ok"
-        or (existing_source_key_run.get("rowsOk") or 0) == 0
-    ):
-        reusable_run = existing_source_key_run
 
     should_reuse_existing_run = reusable_run and (
         force == 1 or reusable_run.get("status") != "ok" or (reusable_run.get("rowsOk") or 0) == 0
