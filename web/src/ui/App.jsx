@@ -421,6 +421,15 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
         </button>
         <button
           type="button"
+          className={section === 'sap-latest' ? '' : 'secondary'}
+          onClick={() => setSection('sap-latest')}
+          disabled={!isAdmin}
+          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+        >
+          SAP Import
+        </button>
+        <button
+          type="button"
           className={section === 'supplier-category2' ? '' : 'secondary'}
           onClick={() => setSection('supplier-category2')}
           disabled={!isAdmin}
@@ -466,6 +475,13 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
           <div className="card">Solo los administradores pueden importar pagos SAP.</div>
         ))}
 
+      {section === 'sap-latest' &&
+        (isAdmin ? (
+          <SapLatestImportSection selectedProjectId={selectedProjectId} />
+        ) : (
+          <div className="card">Solo los administradores pueden ejecutar el import SAP latest.</div>
+        ))}
+
       {section === 'supplier-category2' &&
         (isAdmin ? (
           <SupplierCategory2Assignment cats={cats} selectedProjectId={selectedProjectId} />
@@ -479,6 +495,113 @@ function Settings({ isAdmin, cats, vendors, selectedProjectId, onCatalogChanged,
 
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
+    </div>
+  );
+}
+
+function SapLatestImportSection({ selectedProjectId }) {
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+  const [sources, setSources] = useState({ IVA: false, EFECTIVO: false });
+
+  function toggleSource(sourceKey) {
+    setSources((prev) => ({ ...prev, [sourceKey]: !prev[sourceKey] }));
+  }
+
+  async function onImportNow() {
+    setError('');
+    setResult(null);
+    if (!selectedProjectId) {
+      setError('Selecciona un proyecto activo antes de ejecutar el import.');
+      return;
+    }
+
+    const selectedSources = Object.entries(sources)
+      .filter(([, value]) => Boolean(value))
+      .map(([key]) => key);
+
+    setImporting(true);
+    try {
+      const response = await api.adminImportSapLatest({
+        projectId: selectedProjectId,
+        sources: selectedSources,
+      });
+      setResult(response);
+    } catch (e) {
+      setError(e.message || 'No se pudo ejecutar el import SAP latest.');
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  const rows = [
+    ['IVA', result?.iva],
+    ['EFECTIVO', result?.efectivo],
+  ];
+
+  return (
+    <div className="card grid" style={{ gap: 12 }}>
+      <div>
+        <h3 style={{ margin: 0 }}>SAP Import</h3>
+        <div className="small">Ejecuta manualmente el import de latest CSV (IVA/EFECTIVO).</div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input type="checkbox" checked={sources.IVA} onChange={() => toggleSource('IVA')} disabled={importing} /> IVA
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={sources.EFECTIVO}
+            onChange={() => toggleSource('EFECTIVO')}
+            disabled={importing}
+          />{' '}
+          EFECTIVO
+        </label>
+      </div>
+
+      <div>
+        <button type="button" onClick={onImportNow} disabled={importing || !selectedProjectId}>
+          {importing ? 'Importando...' : 'Importar latest ahora'}
+        </button>
+      </div>
+
+      {error && <div className="small" style={{ color: '#b00020' }}>{error}</div>}
+
+      {result && (
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Fuente</th>
+                <th>already_imported</th>
+                <th>importRunId</th>
+                <th>etag</th>
+                <th>lastModified</th>
+                <th>contentLength</th>
+                <th>rowsOk</th>
+                <th>rowsError</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(([label, bucket]) => (
+                <tr key={label}>
+                  <td>{label}</td>
+                  <td>{String(bucket?.already_imported ?? '')}</td>
+                  <td>{bucket?.importRunId || ''}</td>
+                  <td>{bucket?.etag || ''}</td>
+                  <td>{bucket?.lastModified || ''}</td>
+                  <td>{bucket?.contentLength ?? ''}</td>
+                  <td>{bucket?.rowsOk ?? ''}</td>
+                  <td>{bucket?.rowsError ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

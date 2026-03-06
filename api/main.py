@@ -21,6 +21,7 @@ import openpyxl
 import os
 import logging
 import unicodedata
+import threading
 
 app = FastAPI(title="Control de Obra API")
 
@@ -51,6 +52,10 @@ bearer_scheme = HTTPBearer(auto_error=False)
 TELEGRAM_SETTINGS_KEY = "telegram_default_chat_id"
 TELEGRAM_ACCESS_REQUEST_WINDOW_HOURS = 24
 DEFAULT_PROJECT_S3_BUCKET = "calderon-sap-exports"
+SAP_LATEST_ADMIN_RATE_LIMIT_SECONDS = 60
+sap_latest_admin_locks: dict[str, bool] = {}
+sap_latest_admin_last_request_at: dict[str, datetime] = {}
+sap_latest_admin_guard = threading.Lock()
 
 
 # ---------- helpers ----------
@@ -1983,6 +1988,8 @@ def ensure_indexes():
         unique=True,
         name="sap_import_state_project_source_unique",
     )
+    db.adminActions.create_index([("projectId", 1), ("requestedAt", -1)])
+    db.adminActions.create_index([("action", 1), ("requestedAt", -1)])
     db.settings.create_index("key", unique=True)
     db.telegram_users.create_index("chat_id", unique=True)
     db.telegram_users.create_index([("status", 1), ("updated_at", -1)])
@@ -4619,20 +4626,31 @@ def cron_import_sap_latest(
     mode: str = "upsert",
     _: dict = Depends(require_admin),
 ):
+    return handle_sap_latest_import(project=project, force=force, mode=mode, source="sap-latest-cron")
+
+
+def handle_sap_latest_import(
+    project: str,
+    force: int = 0,
+    mode: str = "upsert",
+    source: str = "sap-latest-cron",
+    sources: list[str] | None = None,
+):
+    del sources
     now = datetime.now(timezone.utc).isoformat()
     try:
-        result = run_s3_latest_sap_import(project=project, force=force, mode=mode, source="sap-latest-cron")
+        result = run_s3_latest_sap_import(project=project, force=force, mode=mode, source=source)
         notify_sap_latest_import_success(project=project, result=result)
-        print(f"sap_latest_cron ok iva={result['iva']} efectivo={result['efectivo']}")
+        print(f"sap_latest_import ok source={source} iva={result['iva']} efectivo={result['efectivo']}")
         return result
     except Exception as exc:
         notify_sap_latest_import_failure(project=project, exc=exc)
-        error_hash = sha256(f"sap_latest_cron_error:{now}:{str(exc)}".encode("utf-8")).hexdigest()
+        error_hash = sha256(f"sap_latest_import_error:{source}:{now}:{str(exc)}".encode("utf-8")).hexdigest()
         import_run_id = db.importRuns.insert_one(
             {
                 "sha256": error_hash,
                 "fileName": None,
-                "source": "sap-latest-cron",
+                "source": source,
                 "projectId": None,
                 "rowsTotal": 0,
                 "rowsOk": 0,
@@ -4644,8 +4662,116 @@ def cron_import_sap_latest(
                 "errorsSample": [{"error": str(exc)}],
             }
         ).inserted_id
-        print(f"sap_latest_cron failed importRunId={import_run_id} error={str(exc)}")
+        print(f"sap_latest_import failed source={source} importRunId={import_run_id} error={str(exc)}")
         raise
+
+
+def _normalize_sap_latest_sources(sources: list[str] | None) -> list[str]:
+    if not isinstance(sources, list):
+        return []
+    normalized = []
+    for source in sources:
+        source_value = str(source or "").strip().upper()
+        if source_value in ("IVA", "EFECTIVO") and source_value not in normalized:
+            normalized.append(source_value)
+    return normalized
+
+
+def _sap_latest_result_summary(result: dict | None) -> dict:
+    if not isinstance(result, dict):
+        return {"already_imported": None, "importRunIds": []}
+
+    import_run_ids = []
+    already_imported = {}
+    for label in ("iva", "efectivo"):
+        bucket = result.get(label) if isinstance(result.get(label), dict) else {}
+        run_id = str(bucket.get("importRunId") or "").strip()
+        if run_id:
+            import_run_ids.append(run_id)
+        already_imported[label] = bool(bucket.get("already_imported"))
+
+    return {"already_imported": already_imported, "importRunIds": import_run_ids}
+
+
+@app.post("/api/admin/import/sap-latest")
+def admin_import_sap_latest(payload: dict, user: dict = Depends(require_admin)):
+    project_id = str((payload or {}).get("projectId") or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="projectId is required")
+    if not ObjectId.is_valid(project_id):
+        raise HTTPException(status_code=400, detail="Invalid projectId")
+
+    project_doc = db.projects.find_one({"_id": ObjectId(project_id)}, {"name": 1})
+    if not project_doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    sources = _normalize_sap_latest_sources((payload or {}).get("sources"))
+    now = datetime.now(timezone.utc)
+
+    with sap_latest_admin_guard:
+        lock_is_active = bool(sap_latest_admin_locks.get(project_id))
+        if lock_is_active:
+            raise HTTPException(status_code=409, detail="Import already running")
+
+        last_requested_at = sap_latest_admin_last_request_at.get(project_id)
+        if isinstance(last_requested_at, datetime):
+            elapsed = (now - last_requested_at).total_seconds()
+            if elapsed < SAP_LATEST_ADMIN_RATE_LIMIT_SECONDS:
+                raise HTTPException(status_code=429, detail="Too Many Requests")
+
+        sap_latest_admin_locks[project_id] = True
+        sap_latest_admin_last_request_at[project_id] = now
+
+    requested_by = {
+        "userId": user.get("username"),
+        "email": user.get("username"),
+        "displayName": user.get("displayName"),
+    }
+    audit_id = db.adminActions.insert_one(
+        {
+            "action": "sap_latest_import",
+            "projectId": project_id,
+            "sources": sources,
+            "requestedBy": requested_by,
+            "requestedAt": now.isoformat(),
+            "status": "running",
+        }
+    ).inserted_id
+
+    try:
+        result = handle_sap_latest_import(
+            project=str(project_doc.get("name") or ""),
+            force=0,
+            mode="upsert",
+            source="sap-latest-admin",
+            sources=sources,
+        )
+        db.adminActions.update_one(
+            {"_id": audit_id},
+            {
+                "$set": {
+                    "status": "success",
+                    "finishedAt": datetime.now(timezone.utc).isoformat(),
+                    "resultSummary": _sap_latest_result_summary(result),
+                }
+            },
+        )
+        return result
+    except Exception as exc:
+        db.adminActions.update_one(
+            {"_id": audit_id},
+            {
+                "$set": {
+                    "status": "error",
+                    "finishedAt": datetime.now(timezone.utc).isoformat(),
+                    "errorMessage": str(exc),
+                }
+            },
+        )
+        raise
+    finally:
+        with sap_latest_admin_guard:
+            sap_latest_admin_locks.pop(project_id, None)
 
 
 @app.get("/api/expenses/summary-by-supplier")
@@ -5758,5 +5884,6 @@ def spend_by_category(
     return {"total_expenses": round(total, 2), "rows": out}
 
 
-ensure_indexes()
-ensure_default_users()
+if os.getenv("SKIP_STARTUP_INIT") != "1":
+    ensure_indexes()
+    ensure_default_users()

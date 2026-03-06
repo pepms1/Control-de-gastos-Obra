@@ -6,6 +6,10 @@ Frontend: Placeholder
 
 Deploy backend from api/ folder.
 
+## Guardrail de imports
+
+- Ejecutar `./scripts/check_no_import_metadata.sh` para verificar que no se agreguen `metadata=` en llamadas de import.
+
 ## Frontend multiproyecto
 
 - El frontend guarda el proyecto seleccionado en `localStorage` usando la llave `selectedProjectId`.
