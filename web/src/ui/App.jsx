@@ -251,9 +251,24 @@ export default function App() {
     if (storedPreference === 'dark') return 'dark';
     return 'light';
   });
+  const [showHackOverlay, setShowHackOverlay] = useState(false);
 
   const isAdmin = session.role === 'ADMIN';
   const isDarkMode = themePreference === 'dark';
+
+  useEffect(() => {
+    if (!session.token) {
+      setShowHackOverlay(false);
+      return;
+    }
+
+    setShowHackOverlay(true);
+    const timeoutId = window.setTimeout(() => {
+      setShowHackOverlay(false);
+    }, 8000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [session.token]);
 
   useEffect(() => {
     document.body.classList.toggle('theme-dark', isDarkMode);
@@ -350,6 +365,8 @@ export default function App() {
 
   return (
     <>
+      {showHackOverlay && <HackIntroOverlay />}
+
       <Nav
         tab={tab}
         setTab={setTab}
@@ -409,6 +426,38 @@ export default function App() {
         )}
       </div>
     </>
+  );
+}
+
+function HackIntroOverlay() {
+  const lines = [
+    'Microsoft(R) Windows DOS Session',
+    'Copyright (C) Microsoft Corp 1981-1998.',
+    '',
+    'C:\\USERS\\OBRA> net user /active:1',
+    'Escalando privilegios...',
+    'Acceso total concedido.',
+    '',
+    'C:\\USERS\\OBRA> echo hackeado por José Luis Ortiz',
+    'hackeado por José Luis Ortiz',
+    '',
+    'C:\\USERS\\OBRA> exit',
+  ];
+
+  return (
+    <div className="hack-overlay" role="status" aria-live="assertive" aria-label="Animación retro de bienvenida">
+      <div className="hack-window">
+        <div className="hack-window-title">C:\\WINDOWS\\system32\\cmd.exe</div>
+        <div className="hack-terminal">
+          {lines.map((line, index) => (
+            <div key={`${line}-${index}`} className="hack-line" style={{ animationDelay: `${index * 0.2}s` }}>
+              {line || '\u00A0'}
+            </div>
+          ))}
+          <span className="hack-cursor" aria-hidden="true">_</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
