@@ -196,3 +196,14 @@ body.theme-dark .dashboard-column-track{background:#1e293b;}
 @media (min-width: 860px){
   .dashboard-experimental-grid{grid-template-columns:1.6fr 1fr;}
 }
+
+
+.retro-console-card{display:grid; gap:12px;}
+.retro-help-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; font-size:12px; color:var(--gray-500);} 
+.retro-screen{background:#020617; border:1px solid #1e293b; border-radius:12px; color:#22c55e; font-family:"Courier New", Courier, monospace; min-height:320px; max-height:420px; overflow:auto; padding:12px; line-height:1.4; white-space:pre-wrap;}
+.retro-form{display:flex; gap:8px; align-items:center;}
+.retro-prompt{font-family:"Courier New", Courier, monospace; color:var(--primary-dark); font-weight:700;}
+.retro-input{font-family:"Courier New", Courier, monospace; background:#0b1120; color:#22c55e; border-color:#1e293b;}
+
+body.theme-dark .retro-screen,
+body.theme-dark .retro-input{background:#020617; border-color:#334155; color:#22c55e;}

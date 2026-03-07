@@ -119,6 +119,7 @@ function Nav({
     ['dashboard', 'Dashboard', true],
     ['transactions', 'Movimientos', true],
     ['search', 'Buscar', true],
+    ['retro', 'Vista Retro', true],
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
@@ -390,6 +391,8 @@ export default function App() {
           />
         )}
 
+        {tab === 'retro' && <RetroConsole cats={cats} vendors={vendors} />}
+
         {tab === 'settings' && (
           <Settings
             isAdmin={isAdmin}
@@ -406,6 +409,133 @@ export default function App() {
         )}
       </div>
     </>
+  );
+}
+
+function RetroConsole({ cats, vendors }) {
+  const [command, setCommand] = useState('');
+  const [logs, setLogs] = useState([
+    'MDI Retro v0.1',
+    'Escribe un comando numérico y presiona Enter.',
+    '7 para ayuda rápida.',
+  ]);
+
+  const print = (...lines) => {
+    setLogs((prev) => [...prev, ...lines]);
+  };
+
+  function runRetroCommand(rawCommand) {
+    const clean = rawCommand.trim();
+    if (!clean) return;
+
+    print(`C:\\OBRA> ${clean}`);
+    const [option, ...rest] = clean.split(' ');
+    const term = rest.join(' ').trim().toLowerCase();
+
+    if (option === '1') {
+      if (!vendors.length) return print('No hay proveedores cargados.');
+      return print(
+        `Proveedores (${vendors.length}):`,
+        ...vendors.slice(0, 50).map((vendor, idx) => `${idx + 1}. ${vendor.name || 'Sin nombre'}`),
+        vendors.length > 50 ? '...resultado truncado a 50 filas' : 'Fin de lista.',
+      );
+    }
+
+    if (option === '2') {
+      if (!cats.length) return print('No hay categorías cargadas.');
+      return print(
+        `Categorías (${cats.length}):`,
+        ...cats.slice(0, 50).map((category, idx) => `${idx + 1}. ${category.displayLabel || category.name || 'Sin nombre'}`),
+        cats.length > 50 ? '...resultado truncado a 50 filas' : 'Fin de lista.',
+      );
+    }
+
+    if (option === '3') {
+      if (!term) return print('Uso: 3 <texto>. Ejemplo: 3 concreto');
+      const matches = vendors.filter((vendor) => String(vendor.name || '').toLowerCase().includes(term));
+      if (!matches.length) return print('Sin resultados de proveedores.');
+      return print(
+        `Proveedores que contienen "${term}" (${matches.length}):`,
+        ...matches.slice(0, 30).map((vendor, idx) => `${idx + 1}. ${vendor.name || 'Sin nombre'}`),
+      );
+    }
+
+    if (option === '4') {
+      if (!term) return print('Uso: 4 <texto>. Ejemplo: 4 acero');
+      const matches = cats.filter((category) => {
+        const label = `${category.displayLabel || ''} ${category.name || ''}`.toLowerCase();
+        return label.includes(term);
+      });
+      if (!matches.length) return print('Sin resultados de categorías.');
+      return print(
+        `Categorías que contienen "${term}" (${matches.length}):`,
+        ...matches.slice(0, 30).map((category, idx) => `${idx + 1}. ${category.displayLabel || category.name || 'Sin nombre'}`),
+      );
+    }
+
+    if (option === '5') {
+      setLogs((prev) => prev.slice(0, 3));
+      return;
+    }
+
+    if (option === '6') {
+      return print(`Estado: ${vendors.length} proveedores | ${cats.length} categorías`);
+    }
+
+    if (option === '7' || option.toLowerCase() === 'help') {
+      return print(
+        'Comandos disponibles:',
+        '1 = Listar proveedores',
+        '2 = Listar categorías',
+        '3 <texto> = Buscar proveedor',
+        '4 <texto> = Buscar categoría',
+        '5 = Limpiar consola',
+        '6 = Resumen rápido',
+        '7 o HELP = Ayuda',
+      );
+    }
+
+    return print('Comando no reconocido. Usa 7 para ver las opciones.');
+  }
+
+  function submitCommand(e) {
+    e.preventDefault();
+    runRetroCommand(command);
+    setCommand('');
+  }
+
+  return (
+    <div className="card retro-console-card">
+      <h2 style={{ marginTop: 0 }}>Vista Retro</h2>
+      <div className="small">Modo consola para consultar catálogo con comandos numéricos.</div>
+
+      <div className="retro-help-grid">
+        <span>1 proveedores</span>
+        <span>2 categorías</span>
+        <span>3 &lt;texto&gt; proveedor</span>
+        <span>4 &lt;texto&gt; categoría</span>
+        <span>5 limpiar</span>
+        <span>6 resumen</span>
+      </div>
+
+      <div className="retro-screen" role="log" aria-live="polite">
+        {logs.map((line, idx) => (
+          <div key={`${line}-${idx}`}>{line}</div>
+        ))}
+      </div>
+
+      <form className="retro-form" onSubmit={submitCommand}>
+        <span className="retro-prompt">C:\\OBRA&gt;</span>
+        <input
+          className="retro-input"
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          placeholder="Ej. 3 cemento"
+          aria-label="Comando retro"
+        />
+        <button type="submit">Ejecutar</button>
+      </form>
+    </div>
   );
 }
 
