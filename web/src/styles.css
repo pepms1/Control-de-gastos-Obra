@@ -209,7 +209,7 @@ body.theme-dark .retro-screen,
 body.theme-dark .retro-input{background:#020617; border-color:#334155; color:#22c55e;}
 
 
-.hack-overlay{position:fixed; inset:0; background:rgba(2,6,23,.88); display:flex; align-items:center; justify-content:center; z-index:3000; padding:16px; animation:hackOverlayFadeOut .5s ease-out 2.7s forwards;}
+.hack-overlay{position:fixed; inset:0; background:rgba(2,6,23,.88); display:flex; align-items:center; justify-content:center; z-index:3000; padding:16px; animation:hackOverlayFadeOut .5s ease-out 7.5s forwards;}
 .hack-window{width:min(760px,100%); border:1px solid #9ca3af; border-radius:8px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.5); background:#010409;}
 .hack-window-title{background:linear-gradient(180deg,#f3f4f6,#d1d5db); color:#111827; font-family:"Courier New", Courier, monospace; font-size:13px; padding:7px 10px; border-bottom:1px solid #9ca3af;}
 .hack-terminal{font-family:"Courier New", Courier, monospace; color:#22c55e; background:#010409; min-height:260px; padding:14px 16px; line-height:1.45; font-size:15px;}

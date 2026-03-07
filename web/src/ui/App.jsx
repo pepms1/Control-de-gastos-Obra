@@ -4,6 +4,7 @@ import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
+const HACK_OVERLAY_DURATION_MS = 8000;
 
 const moneyFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
@@ -265,7 +266,7 @@ export default function App() {
     setShowHackOverlay(true);
     const timeoutId = window.setTimeout(() => {
       setShowHackOverlay(false);
-    }, 3200);
+    }, HACK_OVERLAY_DURATION_MS);
 
     return () => window.clearTimeout(timeoutId);
   }, [session.token]);
