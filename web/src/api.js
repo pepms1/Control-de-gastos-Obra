@@ -315,6 +315,13 @@ export const api = {
       body: JSON.stringify({ projectId, sources }),
     }),
 
+  importSapMovementsBySbo: ({ sbo, mode }) => {
+    const qs = new URLSearchParams({ sbo, mode }).toString();
+    return backendReq(`/api/cron/import/sap-movements-by-sbo?${qs}`, {
+      method: 'POST',
+    });
+  },
+
   supplierCategories: () => backendReq('/api/supplier-categories'),
 
   createSupplierCategory: (name) =>
