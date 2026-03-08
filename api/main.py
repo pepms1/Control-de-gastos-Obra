@@ -3918,7 +3918,13 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
     import_key = f"sap-movements-by-sbo:{source_sbo}:{normalized_mode}:{s3_key}"
     now = datetime.now(timezone.utc).isoformat()
 
-    existing_run = db.importRuns.find_one({"importKey": import_key, "sha256": file_hash})
+    existing_run_filter = {
+        "source": "sap-movements-by-sbo",
+        "sourceSbo": source_sbo,
+        "mode": normalized_mode,
+        "$or": [{"importKey": import_key}, {"sha256": file_hash}],
+    }
+    existing_run = db.importRuns.find_one(existing_run_filter)
     if existing_run and existing_run.get("status") == "ok" and force != 1:
         return {"already_imported": True, "importRunId": str(existing_run.get("_id"))}
 
@@ -3944,7 +3950,19 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
         "s3Key": s3_key,
     }
 
-    import_run_id = db.importRuns.insert_one(import_run_doc).inserted_id
+    if existing_run:
+        db.importRuns.update_one({"_id": existing_run["_id"]}, {"$set": import_run_doc})
+        import_run_id = existing_run["_id"]
+    else:
+        try:
+            import_run_id = db.importRuns.insert_one(import_run_doc).inserted_id
+        except DuplicateKeyError:
+            reusable_run = db.importRuns.find_one(existing_run_filter)
+            if reusable_run:
+                db.importRuns.update_one({"_id": reusable_run["_id"]}, {"$set": import_run_doc})
+                import_run_id = reusable_run["_id"]
+            else:
+                raise
 
     rows_total = 0
     rows_ok = 0
