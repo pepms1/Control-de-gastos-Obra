@@ -510,14 +510,20 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
-  const [sources, setSources] = useState({ IVA: false, EFECTIVO: false });
+  const [sbo, setSbo] = useState('SBO_Rafael');
+  const [mode, setMode] = useState('latest');
   const selectedProject =
     projects.find((project) => String(project?._id || '') === String(selectedProjectId || '')) || null;
   const destinationProjectName = selectedProject?.name || 'Sin proyecto seleccionado';
-
-  function toggleSource(sourceKey) {
-    setSources((prev) => ({ ...prev, [sourceKey]: !prev[sourceKey] }));
-  }
+  const sboOptions = [
+    'SBO_Rafael',
+    'SBO_GMDI',
+    'SBOCitySur',
+    'SBO_CPSantaFE',
+    'SBO_Mazatlan',
+    'SBOIndiana',
+    'SBO_Colima334',
+  ];
 
   async function onImportNow() {
     setError('');
@@ -527,22 +533,14 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
       return;
     }
 
-    const selectedSources = Object.entries(sources)
-      .filter(([, value]) => Boolean(value))
-      .map(([key]) => key);
-
-    const sourceLabel = selectedSources.length ? selectedSources.join(', ') : 'TODAS';
     const accepted = window.confirm(
-      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nFuentes: ${sourceLabel}.\n\n¿Deseas continuar?`
+      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nSBO: ${sbo}.\nModo: ${mode}.\n\n¿Deseas continuar?`
     );
     if (!accepted) return;
 
     setImporting(true);
     try {
-      const response = await api.adminImportSapLatest({
-        projectId: selectedProjectId,
-        sources: selectedSources,
-      });
+      const response = await api.importSapMovementsBySbo({ sbo, mode });
       setResult(response);
     } catch (e) {
       setError(e.message || 'No se pudo ejecutar el import SAP latest.');
@@ -551,33 +549,33 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
     }
   }
 
-  const rows = [
-    ['IVA', result?.iva],
-    ['EFECTIVO', result?.efectivo],
-  ];
-
   return (
     <div className="card grid" style={{ gap: 12 }}>
       <div>
         <h3 style={{ margin: 0 }}>SAP Import</h3>
-        <div className="small">Ejecuta manualmente el import de latest CSV (IVA/EFECTIVO).</div>
+        <div className="small">Ejecuta manualmente el import SAP por SBO + modo.</div>
         <div className="small" style={{ marginTop: 4 }}>
           Proyecto destino: <strong>{destinationProjectName}</strong>
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input type="checkbox" checked={sources.IVA} onChange={() => toggleSource('IVA')} disabled={importing} /> IVA
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>SBO</span>
+          <select value={sbo} onChange={(e) => setSbo(e.target.value)} disabled={importing}>
+            {sboOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input
-            type="checkbox"
-            checked={sources.EFECTIVO}
-            onChange={() => toggleSource('EFECTIVO')}
-            disabled={importing}
-          />{' '}
-          EFECTIVO
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Modo</span>
+          <select value={mode} onChange={(e) => setMode(e.target.value)} disabled={importing}>
+            <option value="latest">latest</option>
+            <option value="backfill">backfill</option>
+          </select>
         </label>
       </div>
 
@@ -590,35 +588,14 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
       {error && <div className="small" style={{ color: '#b00020' }}>{error}</div>}
 
       {result && (
-        <div style={{ overflowX: 'auto' }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Fuente</th>
-                <th>already_imported</th>
-                <th>importRunId</th>
-                <th>etag</th>
-                <th>lastModified</th>
-                <th>contentLength</th>
-                <th>rowsOk</th>
-                <th>rowsError</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(([label, bucket]) => (
-                <tr key={label}>
-                  <td>{label}</td>
-                  <td>{String(bucket?.already_imported ?? '')}</td>
-                  <td>{bucket?.importRunId || ''}</td>
-                  <td>{bucket?.etag || ''}</td>
-                  <td>{bucket?.lastModified || ''}</td>
-                  <td>{bucket?.contentLength ?? ''}</td>
-                  <td>{bucket?.rowsOk ?? ''}</td>
-                  <td>{bucket?.rowsError ?? ''}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="card" style={{ margin: 0 }}>
+          <h4 style={{ margin: 0, marginBottom: 8 }}>Resultado</h4>
+          <div className="small">status: {result?.status ?? ''}</div>
+          <div className="small">rowsTotal: {result?.rowsTotal ?? ''}</div>
+          <div className="small">rowsOk: {result?.rowsOk ?? ''}</div>
+          <div className="small">imported: {result?.imported ?? ''}</div>
+          <div className="small">updated: {result?.updated ?? ''}</div>
+          <div className="small">unmatched: {result?.unmatched ?? ''}</div>
         </div>
       )}
     </div>
