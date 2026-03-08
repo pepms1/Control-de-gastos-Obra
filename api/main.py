@@ -1997,6 +1997,11 @@ def ensure_indexes():
         unique=True,
         name="sap_import_state_project_source_unique",
     )
+    db.unmatched_projects.create_index(
+        [("sourceSbo", 1), ("normalizedProjectName", 1)],
+        unique=True,
+        name="unmatched_projects_source_sbo_project_name_unique",
+    )
     db.adminActions.create_index([("projectId", 1), ("requestedAt", -1)])
     db.adminActions.create_index([("action", 1), ("requestedAt", -1)])
     db.settings.create_index("key", unique=True)
@@ -2023,6 +2028,7 @@ def ensure_indexes():
         partialFilterExpression={"source": "sap"},
         name="sap_transactions_unique_v2_cents",
     )
+    db.transactions.create_index([("dedupeKey", 1)], name="transactions_dedupe_key_idx")
     db.transactions.create_index([("projectId", 1), ("date", -1)])
     db.transactions.create_index([("projectId", 1)], name="transactions_project_id_idx")
     db.transactions.create_index(
@@ -3861,6 +3867,224 @@ def build_project_s3_key(project_id: str, filename: str) -> str:
     return f"{prefix}/{filename}"
 
 
+def normalize_project_name_for_matching(raw_value) -> str:
+    return str(raw_value or "").strip().upper()
+
+
+def build_sbo_dedupe_key(row: dict) -> str:
+    amount_applied = parse_optional_decimal(row.get("amount_applied"))
+    dedupe_parts = [
+        normalize_source_db_value(row.get("source_db")),
+        str(row.get("movement_type") or "").strip().upper(),
+        str(row.get("source_type") or "").strip().upper(),
+        str(row.get("payment_docentry") or "").strip(),
+        str(row.get("invoice_docentry") or "").strip(),
+        f"{float(amount_applied or 0):.2f}",
+    ]
+    return sha256("|".join(dedupe_parts).encode("utf-8")).hexdigest()
+
+
+def resolve_projects_by_sap_names() -> dict[str, str]:
+    project_map: dict[str, str] = {}
+    projection = {"sap.projectNames": 1}
+    for project_doc in db.projects.find({"sap.projectNames": {"$exists": True}}, projection):
+        project_id = str(project_doc.get("_id") or "")
+        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+        project_names = sap_doc.get("projectNames") if isinstance(sap_doc.get("projectNames"), list) else []
+        for project_name in project_names:
+            normalized = normalize_project_name_for_matching(project_name)
+            if normalized and normalized not in project_map:
+                project_map[normalized] = project_id
+    return project_map
+
+
+def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
+    source_sbo = str(sbo or "").strip()
+    if not source_sbo:
+        raise HTTPException(status_code=400, detail="sbo is required")
+
+    normalized_mode = str(mode or "latest").strip().lower()
+    if normalized_mode not in {"backfill", "latest"}:
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'backfill' or 'latest'.")
+
+    bucket = DEFAULT_PROJECT_S3_BUCKET
+    s3_file = "backfill_movements.csv" if normalized_mode == "backfill" else "latest_movements.csv"
+    s3_key = f"exports-v2/{source_sbo}/{s3_file}"
+    file_name = s3_file
+    source_file = s3_key
+    file_bytes = downloadFromS3Object(bucket=bucket, key=s3_key)
+    file_hash = sha256(file_bytes).hexdigest()
+
+    import_key = f"sap-movements-by-sbo:{source_sbo}:{normalized_mode}:{s3_key}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    existing_run = db.importRuns.find_one({"importKey": import_key, "sha256": file_hash})
+    if existing_run and existing_run.get("status") == "ok" and force != 1:
+        return {"already_imported": True, "importRunId": str(existing_run.get("_id"))}
+
+    import_run_doc = {
+        "sha256": file_hash,
+        "fileName": file_name,
+        "sourceFile": source_file,
+        "sourceSbo": source_sbo,
+        "sourceDb": "SBO",
+        "importKey": import_key,
+        "source": "sap-movements-by-sbo",
+        "projectId": None,
+        "rowsTotal": 0,
+        "rowsOk": 0,
+        "rowsSkipped": 0,
+        "rowsError": 0,
+        "status": "processing",
+        "startedAt": now,
+        "finishedAt": None,
+        "errorsSample": [],
+        "mode": normalized_mode,
+        "bucket": bucket,
+        "s3Key": s3_key,
+    }
+
+    import_run_id = db.importRuns.insert_one(import_run_doc).inserted_id
+
+    rows_total = 0
+    rows_ok = 0
+    rows_error = 0
+    rows_imported = 0
+    rows_updated = 0
+    rows_unmatched = 0
+    errors_sample = []
+
+    normalized_projects = resolve_projects_by_sap_names()
+    decoded = file_bytes.decode("utf-8-sig")
+    reader = csv.DictReader(decoded.splitlines())
+
+    for idx, row in enumerate(reader, start=2):
+        rows_total += 1
+        try:
+            raw_project_name = str(row.get("raw_project_name") or "").strip()
+            normalized_project_name = normalize_project_name_for_matching(raw_project_name)
+            project_id = normalized_projects.get(normalized_project_name)
+
+            if not project_id:
+                rows_unmatched += 1
+                db.unmatched_projects.update_one(
+                    {"sourceSbo": source_sbo, "normalizedProjectName": normalized_project_name},
+                    {
+                        "$setOnInsert": {
+                            "sourceSbo": source_sbo,
+                            "rawProjectName": raw_project_name,
+                            "normalizedProjectName": normalized_project_name,
+                            "firstSeenAt": now,
+                        },
+                        "$set": {
+                            "rawProjectName": raw_project_name,
+                            "lastSeenAt": now,
+                        },
+                        "$inc": {"count": 1},
+                    },
+                    upsert=True,
+                )
+
+            dedupe_key = build_sbo_dedupe_key(row)
+            source_db = normalize_source_db_value(row.get("source_db"))
+            movement_date = parse_excel_date(row.get("movement_date"))
+            invoice_date = parse_excel_date(row.get("invoice_date"))
+            amount_applied = parse_optional_decimal(row.get("amount_applied")) or 0.0
+
+            tx_doc = {
+                "projectId": project_id,
+                "source": "sap-sbo",
+                "sourceDb": source_db,
+                "sourceSbo": source_sbo,
+                "date": movement_date or invoice_date,
+                "amount": float(amount_applied),
+                "description": str(row.get("payment_comments") or "").strip() or str(row.get("invoice_comments") or "").strip(),
+                "supplierName": str(row.get("business_partner") or "").strip() or str(row.get("card_code") or "").strip(),
+                "dedupeKey": dedupe_key,
+                "sap": {
+                    "movementType": str(row.get("movement_type") or "").strip(),
+                    "sourceType": str(row.get("source_type") or "").strip(),
+                    "paymentDocEntry": str(row.get("payment_docentry") or "").strip(),
+                    "paymentNum": str(row.get("payment_num") or "").strip(),
+                    "invoiceDocEntry": str(row.get("invoice_docentry") or "").strip(),
+                    "invoiceNum": str(row.get("invoice_num") or "").strip(),
+                    "externalDocNum": str(row.get("external_doc_num") or "").strip(),
+                    "movementDate": movement_date,
+                    "invoiceDate": invoice_date,
+                    "montoAplicado": float(amount_applied),
+                    "montoAplicadoCents": to_monto_aplicado_cents(amount_applied),
+                    "invoiceSubtotal": parse_optional_decimal(row.get("invoice_subtotal")),
+                    "invoiceIva": parse_optional_decimal(row.get("invoice_iva")),
+                    "invoiceTotal": parse_optional_decimal(row.get("invoice_total")),
+                    "paymentCurrency": str(row.get("payment_currency") or "").strip(),
+                    "invoiceCurrency": str(row.get("invoice_currency") or "").strip(),
+                    "cardCode": str(row.get("card_code") or "").strip(),
+                    "businessPartner": str(row.get("business_partner") or "").strip(),
+                    "rawProjectName": raw_project_name,
+                    "normalizedProjectName": normalized_project_name,
+                    "sourceDb": source_db,
+                    "sourceSbo": source_sbo,
+                    "sourceSboMode": normalized_mode,
+                },
+                "updated_at": now,
+            }
+
+            update_doc = {"$set": tx_doc, "$setOnInsert": {"created_at": now}}
+            update_result = db.transactions.update_one({"dedupeKey": dedupe_key}, update_doc, upsert=True)
+            if update_result.upserted_id:
+                rows_imported += 1
+            else:
+                rows_updated += 1
+            rows_ok += 1
+        except Exception as exc:
+            rows_error += 1
+            if len(errors_sample) < 50:
+                errors_sample.append({"row": idx, "error": str(exc)})
+
+    finished_at = datetime.now(timezone.utc).isoformat()
+    status = "ok" if rows_error == 0 else "ok_with_errors"
+    db.importRuns.update_one(
+        {"_id": import_run_id},
+        {
+            "$set": {
+                "rowsTotal": rows_total,
+                "rowsOk": rows_ok,
+                "rowsSkipped": rows_unmatched,
+                "rowsError": rows_error,
+                "status": status,
+                "finishedAt": finished_at,
+                "errorsSample": errors_sample,
+                "summary": {
+                    "imported": rows_imported,
+                    "updated": rows_updated,
+                    "unmatched": rows_unmatched,
+                },
+            }
+        },
+    )
+
+    logger.info(
+        "sap-movements-by-sbo completed sbo=%s mode=%s imported=%s updated=%s unmatched=%s rows_error=%s",
+        source_sbo,
+        normalized_mode,
+        rows_imported,
+        rows_updated,
+        rows_unmatched,
+        rows_error,
+    )
+
+    return {
+        "status": status,
+        "importRunId": str(import_run_id),
+        "rowsTotal": rows_total,
+        "rowsOk": rows_ok,
+        "rowsError": rows_error,
+        "imported": rows_imported,
+        "updated": rows_updated,
+        "unmatched": rows_unmatched,
+    }
+
+
 def importCsv(
     file_bytes: bytes,
     sourceDb: str,
@@ -5071,6 +5295,16 @@ def cron_import_sap_latest(
     _: dict = Depends(require_admin),
 ):
     return handle_sap_latest_import(project=project, force=force, mode=mode, source="sap-latest-cron")
+
+
+@app.post("/api/cron/import/sap-movements-by-sbo")
+def cron_import_sap_movements_by_sbo(
+    sbo: str,
+    mode: str = "latest",
+    force: int = 0,
+    _: dict = Depends(require_admin),
+):
+    return import_sap_movements_by_sbo(sbo=sbo, mode=mode, force=force)
 
 
 def handle_sap_latest_import(
