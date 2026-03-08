@@ -1534,6 +1534,15 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   });
 
   const isUncategorizedFilter = categoryFilter === UNCATEGORIZED_FILTER;
+  const isSapSboFlowTransaction = (transaction) => {
+    const source = String(transaction?.source || '').trim().toLowerCase();
+    const sourceDb = String(transaction?.sourceDb || '').trim().toUpperCase();
+    const sourceSbo = String(transaction?.sourceSbo || '').trim();
+    return source === 'sap'
+      || source === 'sap-sbo'
+      || sourceDb.startsWith('SBO_')
+      || sourceSbo !== '';
+  };
   const isSapIvaTransaction = (transaction) =>
     transaction?.source === 'sap' && String(transaction?.sourceDb || '').trim().toUpperCase() === 'IVA';
 
@@ -1947,7 +1956,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <tr key={getTransactionStableKey(r)}>
                   <td>{r.date}</td>
                   <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
-                  <td>{r.source === 'sap' ? <span className="badge">SAP</span> : ''}</td>
+                  <td>{isSapSboFlowTransaction(r) ? <span className="badge">SAP</span> : ''}</td>
                   <td>{r.sourceDb ? <span className="badge">{String(r.sourceDb).toUpperCase()}</span> : 'LEGACY/UNKNOWN'}</td>
                   <td>{r.description || r.concept || ''}</td>
                   <td>
