@@ -1496,7 +1496,7 @@ function EditModal({ title, children, onClose, onSave }) {
 function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactionsChanged, selectedProjectId }) {
   const UNCATEGORIZED_FILTER = '__UNCATEGORIZED__';
   const getVendorIdentity = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
-  const getVendorSupplierId = (vendor) => String(vendor?.supplierId || vendor?._id || vendor?.id || vendor?.vendorId || '').trim();
+  const getVendorSupplierId = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
   const getTransactionStableKey = (tx) =>
     tx?._id ?? tx?.id ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sap?.pagoNum || ''}|${tx?.sap?.facturaNum || ''}|${tx?.sap?.montoAplicado || ''}`;
   const dedupeTransactions = (items) => Array.from(new Map((Array.isArray(items) ? items : []).map((tx) => [getTransactionStableKey(tx), tx])).values());
@@ -1556,6 +1556,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
         type: filter === 'ALL' ? '' : filter,
         category_id: '',
         supplierId: supplierIdParam,
+        projectId: String(selectedProjectId || ''),
         sourceDb: sourceDbFilter === 'ALL' ? '' : sourceDbFilter,
         q: searchFilter.trim(),
         from: dateFrom,

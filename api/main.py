@@ -2658,6 +2658,27 @@ def build_transactions_query(
         q["vendor_id"] = vendor_id
     if supplier_id:
         supplier_filter = [{"supplierId": supplier_id}, {"supplier_id": supplier_id}, {"vendor_id": supplier_id}]
+
+        stable_supplier_match = re.match(r"^sap-sbo:([^:]+):(.+)$", str(supplier_id).strip(), re.IGNORECASE)
+        if stable_supplier_match:
+            stable_project_id = stable_supplier_match.group(1).strip()
+            stable_vendor_key = stable_supplier_match.group(2).strip()
+            if stable_project_id and stable_vendor_key:
+                escaped_vendor_key = re.escape(stable_vendor_key)
+                supplier_filter.append(
+                    {
+                        "$and": [
+                            {"projectId": stable_project_id},
+                            {
+                                "$or": [
+                                    {"sap.cardCode": {"$regex": f"^{escaped_vendor_key}$", "$options": "i"}},
+                                    {"supplierName": {"$regex": f"^{escaped_vendor_key}$", "$options": "i"}},
+                                    {"sap.businessPartner": {"$regex": f"^{escaped_vendor_key}$", "$options": "i"}},
+                                ]
+                            },
+                        ]
+                    }
+                )
         if ObjectId.is_valid(supplier_id):
             supplier_filter.append({"supplierId": oid(supplier_id)})
 
