@@ -4047,6 +4047,7 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
             movement_date = parse_excel_date(row.get("movement_date"))
             invoice_date = parse_excel_date(row.get("invoice_date"))
             amount_applied = parse_optional_decimal(row.get("amount_applied")) or 0.0
+            movement_type = str(row.get("movement_type") or "").strip().lower()
 
             tx_doc = {
                 "projectId": project_id,
@@ -4055,7 +4056,7 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
                 "sourceSbo": source_sbo,
                 "date": movement_date or invoice_date,
                 "amount": float(amount_applied),
-                "type": "EXPENSE",
+                "type": "INCOME" if movement_type == "ingreso" else "EXPENSE",
                 "description": str(row.get("payment_comments") or "").strip() or str(row.get("invoice_comments") or "").strip(),
                 "supplierName": str(row.get("business_partner") or "").strip() or str(row.get("card_code") or "").strip(),
                 "dedupeKey": dedupe_key,
