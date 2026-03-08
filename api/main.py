@@ -3972,7 +3972,6 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
                     {
                         "$setOnInsert": {
                             "sourceSbo": source_sbo,
-                            "rawProjectName": raw_project_name,
                             "normalizedProjectName": normalized_project_name,
                             "firstSeenAt": now,
                         },
