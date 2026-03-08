@@ -1533,17 +1533,35 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setLoading(true);
     setErr('');
     try {
-      const response = await api.transactions({
+      const selectedVendor = vendors.find((vendor) => {
+        const vendorId = String(vendor?._id || vendor?.id || '').trim();
+        return vendorId && vendorId === supplierFilter;
+      }) || null;
+
+      const supplierIdParam = supplierFilter === 'ALL'
+        ? ''
+        : String(selectedVendor?._id || selectedVendor?.id || supplierFilter || '').trim();
+
+      const requestParams = {
         page: String(targetPage),
         limit: String(limit),
         type: filter === 'ALL' ? '' : filter,
         category_id: '',
-        supplierId: supplierFilter === 'ALL' ? '' : supplierFilter,
+        supplierId: supplierIdParam,
         sourceDb: sourceDbFilter === 'ALL' ? '' : sourceDbFilter,
         q: searchFilter.trim(),
         from: dateFrom,
         to: dateTo,
+      };
+
+      console.log('[Transactions] selected vendor:', {
+        supplierFilter,
+        selectedVendor,
+        supplierIdParam,
       });
+      console.log('[Transactions] params sent to /transactions:', requestParams);
+
+      const response = await api.transactions(requestParams);
 
       setRows(dedupeTransactions(response?.items));
       setServerTotals(response?.totals || null);
@@ -1560,7 +1578,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setPage(1);
     setRows([]);
     load(1);
-  }, [filter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId]);
+  }, [filter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId, vendors]);
 
   useEffect(() => {
     setSelectedRows([]);

@@ -265,7 +265,12 @@ export const api = {
 
   transactions: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
-    return req(`/transactions${qs ? `?${qs}` : ''}`).then((response) => {
+    const path = `/transactions${qs ? `?${qs}` : ''}`;
+    console.log('[api.transactions] params:', params);
+    console.log('[api.transactions] querystring:', qs);
+    console.log('[api.transactions] request path:', path);
+
+    return req(path).then((response) => {
       if (!response || typeof response !== 'object') return response;
       const items = Array.isArray(response.items)
         ? response.items
