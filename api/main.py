@@ -4271,6 +4271,15 @@ def run_sap_import(
                 or None
             )
             category_hint_project = str(row.get("categoryhintproject") or "").strip() or None
+            movement_type = (
+                str(
+                    row.get("movement_type")
+                    or row.get("MovementType")
+                    or row.get("movementType")
+                    or ""
+                ).strip().lower()
+                or None
+            )
 
             if card_code not in existing_cardcodes and card_code not in created_cardcodes:
                 suppliers_created += 1
@@ -4323,6 +4332,7 @@ def run_sap_import(
                     "categoryHintCode": category_hint_code,
                     "categoryHintName": category_hint_name,
                     "categoryHintProject": category_hint_project,
+                    "movementType": movement_type,
                 }
             )
             rows_ok += 1
@@ -4478,7 +4488,7 @@ def run_sap_import(
             vendor_rule = supplier_rule_cache.get(supplier_id) if supplier_id else None
 
             sap_set_doc = {
-                "type": "EXPENSE",
+                "type": "INCOME" if record.get("movementType") == "ingreso" else "EXPENSE",
                 "projectId": project_id,
                 "date": record["paymentDate"] or record["invoiceDate"],
                 "amount": record["appliedAmount"],
