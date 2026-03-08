@@ -297,11 +297,12 @@ export const api = {
     });
   },
 
-  adminImportSapLatest: ({ projectId, sources = [] }) =>
-    backendReq('/api/admin/import/sap-latest', {
+  adminImportSapMovementsBySbo: ({ sbo, mode }) => {
+    const qs = new URLSearchParams({ sbo, mode }).toString();
+    return backendReq(`/api/cron/import/sap-movements-by-sbo?${qs}`, {
       method: 'POST',
-      body: JSON.stringify({ projectId, sources }),
-    }),
+    });
+  },
 
   supplierCategories: () => backendReq('/api/supplier-categories'),
 
