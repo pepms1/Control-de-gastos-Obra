@@ -2660,6 +2660,46 @@ def build_transactions_query(
         supplier_filter = [{"supplierId": supplier_id}, {"supplier_id": supplier_id}, {"vendor_id": supplier_id}]
         if ObjectId.is_valid(supplier_id):
             supplier_filter.append({"supplierId": oid(supplier_id)})
+
+        vendor_lookup_filters = [{"_id": supplier_id}, {"id": supplier_id}]
+        if ObjectId.is_valid(supplier_id):
+            vendor_lookup_filters.append({"_id": oid(supplier_id)})
+
+        vendor_doc = db.vendors.find_one(
+            {"$or": vendor_lookup_filters},
+            {"_id": 1, "id": 1, "source": 1, "projectId": 1, "supplierCardCode": 1, "cardCode": 1, "name": 1},
+        )
+        if vendor_doc:
+            vendor_db_id = str(vendor_doc.get("_id") or "").strip()
+            vendor_stable_id = str(vendor_doc.get("id") or "").strip()
+            if vendor_db_id and vendor_db_id != supplier_id:
+                supplier_filter.append({"vendor_id": vendor_db_id})
+            if vendor_stable_id and vendor_stable_id != supplier_id:
+                supplier_filter.append({"vendor_id": vendor_stable_id})
+
+            vendor_source = str(vendor_doc.get("source") or "").strip().lower()
+            if vendor_source == "sap-sbo":
+                card_code = str(vendor_doc.get("supplierCardCode") or vendor_doc.get("cardCode") or "").strip()
+                vendor_name = str(vendor_doc.get("name") or "").strip()
+                sap_conditions = []
+                if card_code:
+                    sap_conditions.append({"sap.cardCode": {"$regex": f"^{re.escape(card_code)}$", "$options": "i"}})
+                if vendor_name:
+                    escaped_name = re.escape(vendor_name)
+                    sap_conditions.extend(
+                        [
+                            {"supplierName": {"$regex": f"^{escaped_name}$", "$options": "i"}},
+                            {"sap.businessPartner": {"$regex": f"^{escaped_name}$", "$options": "i"}},
+                        ]
+                    )
+
+                if sap_conditions:
+                    sap_query = {"source": "sap-sbo"}
+                    vendor_project_id = str(vendor_doc.get("projectId") or "").strip()
+                    if vendor_project_id:
+                        sap_query["projectId"] = vendor_project_id
+                    supplier_filter.append({"$and": [sap_query, {"$or": sap_conditions}]})
+
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": supplier_filter}]
         else:
