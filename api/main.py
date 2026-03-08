@@ -5613,7 +5613,8 @@ def summary_expenses_by_supplier(
     _: dict = Depends(require_authenticated),
 ):
     project_id = resolve_project_id(projectId or project)
-    movements_query = {"type": "EXPENSE", "projectId": project_id}
+    movements_query = build_transactions_query(type_value="EXPENSE")
+    movements_query = with_legacy_project_filter(movements_query, project_id)
     movements = list(
         db.transactions.find(
             movements_query,
@@ -5635,6 +5636,9 @@ def summary_expenses_by_supplier(
         )
     )
 
+    def normalize_provider_token(raw_value: str | None) -> str:
+        return re.sub(r"\s+", " ", str(raw_value or "").strip()).lower()
+
     supplier_totals = {}
     for tx in movements:
         source = str(tx.get("source") or "").strip().lower()
@@ -5652,29 +5656,34 @@ def summary_expenses_by_supplier(
             or ""
         )
         if source == "sap-sbo":
+            normalized_name = normalize_provider_token(supplier_name or sap_business_partner)
             provider_key = str(
                 sap_card_code
-                or supplier_name
-                or sap_business_partner
-                or supplier_id
-                or vendor_id
+                or normalized_name
                 or f"tx:{str(tx.get('_id') or '')}"
             ).strip()
+            display_name = supplier_name or sap_business_partner or sap_card_code
         else:
             provider_key = str(supplier_id or vendor_id or "").strip()
+            display_name = supplier_name
         bucket = supplier_totals.setdefault(
             provider_key,
             {
                 "supplierId": supplier_id,
                 "vendorId": vendor_id,
-                "supplierName": supplier_name,
+                "supplierName": display_name,
                 "sapCardCode": sap_card_code,
                 "sapBusinessPartner": sap_business_partner,
+                "source": source,
                 "totalAmount": 0.0,
                 "count": 0,
             },
         )
-        if not bucket.get("supplierName") and supplier_name:
+        if source == "sap-sbo":
+            stable_name = supplier_name or sap_business_partner or sap_card_code
+            if stable_name and (not bucket.get("supplierName") or bucket.get("supplierName") == bucket.get("sapCardCode")):
+                bucket["supplierName"] = stable_name
+        elif not bucket.get("supplierName") and supplier_name:
             bucket["supplierName"] = supplier_name
         if not bucket.get("sapBusinessPartner") and sap_business_partner:
             bucket["sapBusinessPartner"] = sap_business_partner
@@ -5692,6 +5701,7 @@ def summary_expenses_by_supplier(
             "supplierName": values.get("supplierName") or "",
             "sapCardCode": values.get("sapCardCode") or "",
             "sapBusinessPartner": values.get("sapBusinessPartner") or "",
+            "source": values.get("source") or "",
             "totalAmount": round(values["totalAmount"], 2),
             "count": values["count"],
         }
@@ -5730,6 +5740,16 @@ def summary_expenses_by_supplier(
         }
         for row in rows
     ]
+
+    for row, item in zip(rows, output):
+        logger.info(
+            "[summary-by-supplier][debug] provider_key=%s supplierName=%s source=%s count=%s total=%s",
+            row.get("_id"),
+            item.get("supplierName"),
+            row.get("source"),
+            item.get("count"),
+            item.get("totalAmount"),
+        )
 
     output.sort(key=lambda item: (item["supplierName"] or "").lower())
     return output
