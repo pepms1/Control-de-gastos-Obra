@@ -377,7 +377,16 @@ def resolve_project_id(project_id: str | None = None) -> str:
 
 def with_legacy_project_filter(query: dict, project_id: str) -> dict:
     # Multitenancy rule: nunca mezclar proyectos, contemplando registros legacy en sap.projectId.
-    legacy_filter = {"$or": [{"projectId": project_id}, {"sap.projectId": project_id}]}
+    project_candidates: list[str | ObjectId] = [project_id]
+    if ObjectId.is_valid(project_id):
+        project_candidates.append(ObjectId(project_id))
+
+    legacy_filter = {
+        "$or": [
+            {"projectId": {"$in": project_candidates}},
+            {"sap.projectId": {"$in": project_candidates}},
+        ]
+    }
     if not query:
         return legacy_filter
     return {"$and": [legacy_filter, query]}
@@ -6436,13 +6445,13 @@ def list_transactions(
         supplier_id=supplierId,
         date_from=effective_date_from,
         date_to=effective_date_to,
-        project_id=resolved_project_id,
+        project_id=None,
         origen=origen,
         source=source,
         source_db=sourceDb,
         search_query=q,
     )
-    match_query["projectId"] = resolved_project_id
+    match_query = with_legacy_project_filter(match_query, resolved_project_id)
 
     total_count = db.transactions.count_documents(match_query)
     totals = build_transaction_totals(match_query, search_query=q)
