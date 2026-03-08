@@ -691,72 +691,79 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
-  const sboOptions = [
-    'SBO_Rafael',
-    'SBO_GMDI',
-    'SBOCitySur',
-    'SBO_CPSantaFE',
-    'SBO_Mazatlan',
-    'SBOIndiana',
-    'SBO_Colima334',
-  ];
-  const [selectedSbo, setSelectedSbo] = useState(sboOptions[0]);
-  const [mode, setMode] = useState('latest');
+  const [sources, setSources] = useState({ IVA: false, EFECTIVO: false });
   const selectedProject =
     projects.find((project) => String(project?._id || '') === String(selectedProjectId || '')) || null;
   const destinationProjectName = selectedProject?.name || 'Sin proyecto seleccionado';
 
+  function toggleSource(sourceKey) {
+    setSources((prev) => ({ ...prev, [sourceKey]: !prev[sourceKey] }));
+  }
+
   async function onImportNow() {
     setError('');
     setResult(null);
+    if (!selectedProjectId) {
+      setError('Selecciona un proyecto activo antes de ejecutar el import.');
+      return;
+    }
+
+    const selectedSources = Object.entries(sources)
+      .filter(([, value]) => Boolean(value))
+      .map(([key]) => key);
+
+    const sourceLabel = selectedSources.length ? selectedSources.join(', ') : 'TODAS';
     const accepted = window.confirm(
-      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nSBO: ${selectedSbo}.\nModo: ${mode}.\n\n¿Deseas continuar?`
+      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nFuentes: ${sourceLabel}.\n\n¿Deseas continuar?`
     );
     if (!accepted) return;
 
     setImporting(true);
     try {
-      const response = await api.adminImportSapMovementsBySbo({ sbo: selectedSbo, mode });
+      const response = await api.adminImportSapLatest({
+        projectId: selectedProjectId,
+        sources: selectedSources,
+      });
       setResult(response);
     } catch (e) {
-      setError(e.message || 'No se pudo ejecutar el import SAP por SBO.');
+      setError(e.message || 'No se pudo ejecutar el import SAP latest.');
     } finally {
       setImporting(false);
     }
   }
 
+  const rows = [
+    ['IVA', result?.iva],
+    ['EFECTIVO', result?.efectivo],
+  ];
+
   return (
     <div className="card grid" style={{ gap: 12 }}>
       <div>
         <h3 style={{ margin: 0 }}>SAP Import</h3>
-        <div className="small">Ejecuta manualmente el import de movimientos SAP por SBO.</div>
+        <div className="small">Ejecuta manualmente el import de latest CSV (IVA/EFECTIVO).</div>
         <div className="small" style={{ marginTop: 4 }}>
           Proyecto destino: <strong>{destinationProjectName}</strong>
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <label style={{ display: 'grid', gap: 6 }}>
-          <span className="small">SBO</span>
-          <select value={selectedSbo} onChange={(event) => setSelectedSbo(event.target.value)} disabled={importing}>
-            {sboOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input type="checkbox" checked={sources.IVA} onChange={() => toggleSource('IVA')} disabled={importing} /> IVA
         </label>
-        <label style={{ display: 'grid', gap: 6 }}>
-          <span className="small">Modo</span>
-          <select value={mode} onChange={(event) => setMode(event.target.value)} disabled={importing}>
-            <option value="latest">latest</option>
-            <option value="backfill">backfill</option>
-          </select>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <input
+            type="checkbox"
+            checked={sources.EFECTIVO}
+            onChange={() => toggleSource('EFECTIVO')}
+            disabled={importing}
+          />{' '}
+          EFECTIVO
         </label>
       </div>
 
       <div>
-        <button type="button" onClick={onImportNow} disabled={importing}>
+        <button type="button" onClick={onImportNow} disabled={importing || !selectedProjectId}>
           {importing ? 'Importando...' : 'Importar latest ahora'}
         </button>
       </div>
@@ -768,23 +775,29 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
           <table>
             <thead>
               <tr>
-                <th>status</th>
-                <th>rowsTotal</th>
+                <th>Fuente</th>
+                <th>already_imported</th>
+                <th>importRunId</th>
+                <th>etag</th>
+                <th>lastModified</th>
+                <th>contentLength</th>
                 <th>rowsOk</th>
-                <th>imported</th>
-                <th>updated</th>
-                <th>unmatched</th>
+                <th>rowsError</th>
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td>{result?.status ?? ''}</td>
-                <td>{result?.rowsTotal ?? ''}</td>
-                <td>{result?.rowsOk ?? ''}</td>
-                <td>{result?.imported ?? ''}</td>
-                <td>{result?.updated ?? ''}</td>
-                <td>{result?.unmatched ?? ''}</td>
-              </tr>
+              {rows.map(([label, bucket]) => (
+                <tr key={label}>
+                  <td>{label}</td>
+                  <td>{String(bucket?.already_imported ?? '')}</td>
+                  <td>{bucket?.importRunId || ''}</td>
+                  <td>{bucket?.etag || ''}</td>
+                  <td>{bucket?.lastModified || ''}</td>
+                  <td>{bucket?.contentLength ?? ''}</td>
+                  <td>{bucket?.rowsOk ?? ''}</td>
+                  <td>{bucket?.rowsError ?? ''}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
