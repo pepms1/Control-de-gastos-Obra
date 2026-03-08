@@ -3551,6 +3551,20 @@ def get_or_create_project_id(project: str):
     project_name = (project or "").strip()
     if not project_name:
         raise HTTPException(status_code=400, detail="project is required")
+
+    project_slug = normalize_project_slug(project_name)
+    existing_project = db.projects.find_one(
+        {
+            "$or": [
+                {"slug": project_slug},
+                {"name": {"$regex": f"^{re.escape(project_name)}$", "$options": "i"}},
+            ]
+        },
+        {"_id": 1},
+    )
+    if existing_project and existing_project.get("_id"):
+        return str(existing_project["_id"])
+
     default_s3_prefix = {
         "CALDERON DE LA BARCA": "exports/calderon",
         "PENSYLVANIA": "exports/pensylvania",
@@ -3808,6 +3822,7 @@ def downloadFromS3(key: str) -> bytes:
 def build_s3_object_fingerprint(bucket: str, key: str) -> dict:
     region = (os.getenv("AWS_REGION") or "").strip()
     s3_client = boto3.client("s3", region_name=region or None)
+    logger.info("S3 head_object check bucket=%s key=%s", bucket, key)
     response = s3_client.head_object(Bucket=bucket, Key=key)
 
     etag = str(response.get("ETag") or "").strip().strip('"')
