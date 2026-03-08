@@ -144,6 +144,9 @@ async function backendReq(path, opts = {}) {
 export function normalizeTransaction(transaction) {
   if (!transaction || typeof transaction !== 'object') return transaction;
 
+  const source = String(transaction.source || '').trim().toLowerCase();
+  const isSapSbo = source === 'sap-sbo';
+
   const categoryHintName = transaction.categoryHintName
     || transaction.category_hint_name
     || transaction.CategoryHintName
@@ -161,6 +164,12 @@ export function normalizeTransaction(transaction) {
 
   return {
     ...transaction,
+    date: transaction.date || (isSapSbo ? transaction.fecha : transaction.date),
+    amount: Number.isFinite(Number(transaction.amount))
+      ? Number(transaction.amount)
+      : (isSapSbo ? Number(transaction.monto ?? 0) : transaction.amount),
+    supplierName: transaction.supplierName || (isSapSbo ? transaction.proveedor : transaction.supplierName),
+    description: transaction.description || (isSapSbo ? transaction.descripcion : transaction.description),
     categoryHintName,
     categoryHintCode,
     categoryManualName,
@@ -224,9 +233,12 @@ export const api = {
     const qs = new URLSearchParams(params).toString();
     return req(`/transactions${qs ? `?${qs}` : ''}`).then((response) => {
       if (!response || typeof response !== 'object') return response;
+      const items = Array.isArray(response.items)
+        ? response.items
+        : (Array.isArray(response.rows) ? response.rows : []);
       return {
         ...response,
-        items: Array.isArray(response.items) ? response.items.map(normalizeTransaction) : [],
+        items: items.map(normalizeTransaction),
       };
     });
   },

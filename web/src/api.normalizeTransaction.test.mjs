@@ -18,4 +18,19 @@ const withHintOnly = normalizeTransaction({
 
 assert.equal(withHintOnly.categoryEffectiveName, 'SAP Servicios');
 assert.equal(withHintOnly.categoryEffectiveCode, '5200');
+
+
+const sapSbo = normalizeTransaction({
+  source: 'sap-sbo',
+  fecha: '2026-01-10',
+  monto: 1250.5,
+  proveedor: 'Proveedor SBO',
+  descripcion: 'Pago aplicado',
+});
+
+assert.equal(sapSbo.date, '2026-01-10');
+assert.equal(sapSbo.amount, 1250.5);
+assert.equal(sapSbo.supplierName, 'Proveedor SBO');
+assert.equal(sapSbo.description, 'Pago aplicado');
+
 console.log('ok');
