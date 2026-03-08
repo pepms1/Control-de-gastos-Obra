@@ -512,6 +512,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
   const [result, setResult] = useState(null);
   const [sbo, setSbo] = useState('SBO_Rafael');
   const [mode, setMode] = useState('latest');
+  const [forceReimport, setForceReimport] = useState(false);
   const selectedProject =
     projects.find((project) => String(project?._id || '') === String(selectedProjectId || '')) || null;
   const destinationProjectName = selectedProject?.name || 'Sin proyecto seleccionado';
@@ -534,13 +535,13 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
     }
 
     const accepted = window.confirm(
-      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nSBO: ${sbo}.\nModo: ${mode}.\n\n¿Deseas continuar?`
+      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nSBO: ${sbo}.\nModo: ${mode}.\nForzar reimportación: ${forceReimport ? 'Sí' : 'No'}.\n\n¿Deseas continuar?`
     );
     if (!accepted) return;
 
     setImporting(true);
     try {
-      const response = await api.importSapMovementsBySbo({ sbo, mode });
+      const response = await api.importSapMovementsBySbo({ sbo, mode, force: forceReimport });
       setResult(response);
     } catch (e) {
       const errorStatus = e?.status ? `HTTP ${e.status}` : 'HTTP desconocido';
@@ -583,6 +584,15 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
             <option value="backfill">backfill</option>
           </select>
         </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 28 }}>
+          <input
+            type="checkbox"
+            checked={forceReimport}
+            onChange={(e) => setForceReimport(e.target.checked)}
+            disabled={importing}
+          />
+          <span>Forzar reimportación</span>
+        </label>
       </div>
 
       <div>
@@ -604,6 +614,11 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
           <div className="small">unmatched: {withFallback(result?.unmatched, '0')}</div>
           <div className="small">importRunId: {withFallback(result?.importRunId)}</div>
           <div className="small">already_imported: {withFallback(result?.already_imported)}</div>
+          {result?.already_imported === true && (
+            <div className="small" style={{ marginTop: 8 }}>
+              Este archivo ya había sido importado. importRunId: {withFallback(result?.importRunId)}
+            </div>
+          )}
         </div>
       )}
     </div>

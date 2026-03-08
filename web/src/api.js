@@ -349,8 +349,9 @@ export const api = {
       body: JSON.stringify({ projectId, sources }),
     }),
 
-  importSapMovementsBySbo: ({ sbo, mode }) => {
-    const qs = new URLSearchParams({ sbo, mode }).toString();
+  importSapMovementsBySbo: ({ sbo, mode, force = false }) => {
+    const qs = new URLSearchParams({ sbo, mode });
+    if (force) qs.set('force', '1');
     return backendReq(`/api/cron/import/sap-movements-by-sbo?${qs}`, {
       method: 'POST',
     }).then((response) => {
