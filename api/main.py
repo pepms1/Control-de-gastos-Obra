@@ -2621,7 +2621,22 @@ def build_transactions_query(
 ):
     q = {}
     if type_value:
-        q["type"] = type_value
+        normalized_type = str(type_value).strip().upper()
+        if normalized_type == "EXPENSE":
+            type_filter = {
+                "$or": [
+                    {"type": "EXPENSE"},
+                    {
+                        "$and": [
+                            {"source": "sap-sbo"},
+                            {"$or": [{"type": {"$exists": False}}, {"type": None}, {"type": ""}]},
+                        ]
+                    },
+                ]
+            }
+            q.update(type_filter)
+        else:
+            q["type"] = normalized_type
     if category_id:
         if category_id == "__UNCATEGORIZED__":
             q["$or"] = [
@@ -2729,7 +2744,23 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
         {"$match": aggregate_match},
         {
             "$project": {
-                "type": 1,
+                "typeNormalized": {
+                    "$cond": [
+                        {
+                            "$and": [
+                                {"$eq": ["$source", "sap-sbo"]},
+                                {
+                                    "$or": [
+                                        {"$eq": ["$type", None]},
+                                        {"$eq": ["$type", ""]},
+                                    ]
+                                },
+                            ]
+                        },
+                        "EXPENSE",
+                        "$type",
+                    ]
+                },
                 "amount": {"$ifNull": ["$amount", 0]},
                 "montoIva": {
                     "$let": {
@@ -2826,16 +2857,16 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
             "$group": {
                 "_id": None,
                 "expensesGross": {
-                    "$sum": {"$cond": [{"$eq": ["$type", "EXPENSE"]}, "$amount", 0]}
+                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "EXPENSE"]}, "$amount", 0]}
                 },
                 "expensesTax": {
-                    "$sum": {"$cond": [{"$eq": ["$type", "EXPENSE"]}, "$montoIva", 0]}
+                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "EXPENSE"]}, "$montoIva", 0]}
                 },
                 "expensesWithoutTax": {
-                    "$sum": {"$cond": [{"$eq": ["$type", "EXPENSE"]}, "$montoSinIva", 0]}
+                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "EXPENSE"]}, "$montoSinIva", 0]}
                 },
                 "incomeGross": {
-                    "$sum": {"$cond": [{"$eq": ["$type", "INCOME"]}, "$amount", 0]}
+                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "INCOME"]}, "$amount", 0]}
                 },
             }
         },
@@ -4024,6 +4055,7 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
                 "sourceSbo": source_sbo,
                 "date": movement_date or invoice_date,
                 "amount": float(amount_applied),
+                "type": "EXPENSE",
                 "description": str(row.get("payment_comments") or "").strip() or str(row.get("invoice_comments") or "").strip(),
                 "supplierName": str(row.get("business_partner") or "").strip() or str(row.get("card_code") or "").strip(),
                 "dedupeKey": dedupe_key,

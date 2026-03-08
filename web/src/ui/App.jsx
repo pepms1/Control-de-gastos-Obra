@@ -1629,8 +1629,10 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       const bCreatedAt = b.created_at || '';
       if (aCreatedAt !== bCreatedAt) return bCreatedAt.localeCompare(aCreatedAt);
 
-      if (a.date === b.date) return 0;
-      return b.date.localeCompare(a.date);
+      const aDate = String(a.date || '');
+      const bDate = String(b.date || '');
+      if (aDate === bDate) return 0;
+      return bDate.localeCompare(aDate);
     }
 
     if (sortBy === 'supplier_asc') {
@@ -1639,12 +1641,14 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       if (aSupplier !== bSupplier) return aSupplier.localeCompare(bSupplier, 'es');
     }
 
-    if (a.date === b.date) {
+    const aDate = String(a.date || '');
+    const bDate = String(b.date || '');
+    if (aDate === bDate) {
       const aCreatedAt = a.created_at || '';
       const bCreatedAt = b.created_at || '';
       return bCreatedAt.localeCompare(aCreatedAt);
     }
-    return b.date.localeCompare(a.date);
+    return bDate.localeCompare(aDate);
   });
 
   async function saveEdit() {
