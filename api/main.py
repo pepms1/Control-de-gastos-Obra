@@ -4011,6 +4011,8 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
     rows_updated = 0
     rows_unmatched = 0
     errors_sample = []
+    vendor_upserts: list[UpdateOne] = []
+    vendor_upsert_keys: set[str] = set()
 
     normalized_projects = resolve_projects_by_sap_names()
     decoded = file_bytes.decode("utf-8-sig")
@@ -4089,6 +4091,47 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
                 "updated_at": now,
             }
 
+            supplier_name = str(tx_doc.get("supplierName") or "").strip()
+            sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+            card_code = str(sap_doc.get("cardCode") or "").strip()
+            if project_id and (card_code or supplier_name):
+                vendor_key = card_code or supplier_name.lower()
+                upsert_key = f"{project_id}|{vendor_key}"
+                if upsert_key not in vendor_upsert_keys:
+                    vendor_upsert_keys.add(upsert_key)
+                    vendor_filter = {
+                        "source": "sap-sbo",
+                        "projectId": project_id,
+                        "supplierCardCode": card_code,
+                    } if card_code else {
+                        "source": "sap-sbo",
+                        "projectId": project_id,
+                        "name": supplier_name,
+                    }
+                    set_payload = {
+                        "source": "sap-sbo",
+                        "projectId": project_id,
+                        "active": True,
+                        "name": supplier_name or str(sap_doc.get("businessPartner") or "").strip() or card_code,
+                    }
+                    if card_code:
+                        set_payload["supplierCardCode"] = card_code
+                        set_payload["externalIds.sapCardCode"] = card_code
+                    vendor_upserts.append(
+                        UpdateOne(
+                            vendor_filter,
+                            {
+                                "$set": set_payload,
+                                "$setOnInsert": {
+                                    "categoryId": None,
+                                    "category_ids": [],
+                                    "created_at": now,
+                                },
+                            },
+                            upsert=True,
+                        )
+                    )
+
             update_doc = {"$set": tx_doc, "$setOnInsert": {"created_at": now}}
             update_result = db.transactions.update_one({"dedupeKey": dedupe_key}, update_doc, upsert=True)
             if update_result.upserted_id:
@@ -4100,6 +4143,9 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
             rows_error += 1
             if len(errors_sample) < 50:
                 errors_sample.append({"row": idx, "error": str(exc)})
+
+    if vendor_upserts:
+        db.vendors.bulk_write(vendor_upserts, ordered=False)
 
     finished_at = datetime.now(timezone.utc).isoformat()
     status = "ok" if rows_error == 0 else "ok_with_errors"
@@ -6009,7 +6055,62 @@ def list_vendors(
         q["$or"] = [{"source": {"$exists": False}}, {"source": "manual"}, {"source": "sap"}]
     else:
         q["$or"] = [{"source": {"$exists": False}}, {"source": "manual"}]
-    return [serialize(v) for v in db.vendors.find(q).sort("name", 1)]
+
+    vendors = [serialize(v) for v in db.vendors.find(q).sort("name", 1)]
+    if not include_sap or category_id:
+        return vendors
+
+    seen_keys = set()
+    for vendor in vendors:
+        source = str(vendor.get("source") or "").strip().lower()
+        card_code = str(vendor.get("supplierCardCode") or vendor.get("cardCode") or "").strip().upper()
+        name = str(vendor.get("name") or "").strip().lower()
+        if card_code:
+            seen_keys.add(f"card:{card_code}")
+        if name:
+            seen_keys.add(f"name:{name}")
+        if source == "sap-sbo":
+            project_key = str(vendor.get("projectId") or "").strip()
+            if card_code:
+                seen_keys.add(f"sap-sbo:{project_key}:card:{card_code}")
+            elif name:
+                seen_keys.add(f"sap-sbo:{project_key}:name:{name}")
+
+    projection = {"supplierName": 1, "sap.cardCode": 1, "sap.businessPartner": 1, "projectId": 1}
+    tx_query = {"projectId": active_project_id, "source": "sap-sbo"}
+    for tx in db.transactions.find(tx_query, projection):
+        project_id = str(tx.get("projectId") or "").strip()
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        card_code = str(sap_doc.get("cardCode") or "").strip()
+        supplier_name = str(tx.get("supplierName") or "").strip() or str(sap_doc.get("businessPartner") or "").strip()
+        if not supplier_name and not card_code:
+            continue
+
+        stable_key = card_code or supplier_name.lower()
+        seen_key = f"sap-sbo:{project_id}:{stable_key}"
+        if seen_key in seen_keys:
+            continue
+
+        vendors.append(
+            {
+                "id": f"sap-sbo:{project_id}:{stable_key}",
+                "projectId": project_id,
+                "name": supplier_name or card_code,
+                "cardCode": card_code or None,
+                "supplierCardCode": card_code or None,
+                "source": "sap-sbo",
+                "active": True,
+                "category_ids": [],
+            }
+        )
+        seen_keys.add(seen_key)
+        if card_code:
+            seen_keys.add(f"card:{card_code.upper()}")
+        if supplier_name:
+            seen_keys.add(f"name:{supplier_name.lower()}")
+
+    vendors.sort(key=lambda v: normalize_category_name(str(v.get("name") or "")))
+    return vendors
 
 
 @app.post("/vendors")
