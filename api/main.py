@@ -2697,6 +2697,15 @@ def build_transactions_query(
                 if vendor_project_id:
                     sap_query["projectId"] = vendor_project_id
                 supplier_filter.append({"$and": [sap_query, {"$or": sap_conditions}]})
+        else:
+            escaped_supplier = re.escape(supplier_id)
+            supplier_filter.extend(
+                [
+                    {"sap.cardCode": {"$regex": f"^{escaped_supplier}$", "$options": "i"}},
+                    {"supplierName": {"$regex": f"^{escaped_supplier}$", "$options": "i"}},
+                    {"sap.businessPartner": {"$regex": f"^{escaped_supplier}$", "$options": "i"}},
+                ]
+            )
 
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": supplier_filter}]
@@ -5609,10 +5618,14 @@ def summary_expenses_by_supplier(
         db.transactions.find(
             movements_query,
             {
+                "_id": 1,
+                "source": 1,
                 "supplierId": 1,
                 "supplier_id": 1,
                 "vendor_id": 1,
                 "supplierName": 1,
+                "sap.cardCode": 1,
+                "sap.businessPartner": 1,
                 "proveedorNombre": 1,
                 "beneficiario": 1,
                 "proveedor.name": 1,
@@ -5624,28 +5637,49 @@ def summary_expenses_by_supplier(
 
     supplier_totals = {}
     for tx in movements:
+        source = str(tx.get("source") or "").strip().lower()
         supplier_id = tx.get("supplierId") or tx.get("supplier_id")
         vendor_id = tx.get("vendor_id")
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        sap_card_code = str(sap_doc.get("cardCode") or "").strip()
+        sap_business_partner = str(sap_doc.get("businessPartner") or "").strip()
         supplier_name = (
             tx.get("supplierName")
+            or sap_business_partner
             or tx.get("proveedorNombre")
             or tx.get("beneficiario")
             or (tx.get("proveedor") or {}).get("name")
             or ""
         )
-        provider_key = str(supplier_id or vendor_id or "")
+        if source == "sap-sbo":
+            provider_key = str(
+                sap_card_code
+                or supplier_name
+                or sap_business_partner
+                or supplier_id
+                or vendor_id
+                or f"tx:{str(tx.get('_id') or '')}"
+            ).strip()
+        else:
+            provider_key = str(supplier_id or vendor_id or "").strip()
         bucket = supplier_totals.setdefault(
             provider_key,
             {
                 "supplierId": supplier_id,
                 "vendorId": vendor_id,
                 "supplierName": supplier_name,
+                "sapCardCode": sap_card_code,
+                "sapBusinessPartner": sap_business_partner,
                 "totalAmount": 0.0,
                 "count": 0,
             },
         )
         if not bucket.get("supplierName") and supplier_name:
             bucket["supplierName"] = supplier_name
+        if not bucket.get("sapBusinessPartner") and sap_business_partner:
+            bucket["sapBusinessPartner"] = sap_business_partner
+        if not bucket.get("sapCardCode") and sap_card_code:
+            bucket["sapCardCode"] = sap_card_code
         amount_value = float(tx.get("amount") or 0)
         bucket["totalAmount"] += amount_value if include_iva else compute_monto_sin_iva(tx)
         bucket["count"] += 1
@@ -5656,6 +5690,8 @@ def summary_expenses_by_supplier(
             "supplierId": values.get("supplierId"),
             "vendorId": values.get("vendorId"),
             "supplierName": values.get("supplierName") or "",
+            "sapCardCode": values.get("sapCardCode") or "",
+            "sapBusinessPartner": values.get("sapBusinessPartner") or "",
             "totalAmount": round(values["totalAmount"], 2),
             "count": values["count"],
         }
@@ -5686,6 +5722,8 @@ def summary_expenses_by_supplier(
             "supplierName": supplier_names.get(row.get("supplierId"))
             or vendor_names.get(row.get("vendorId"))
             or row.get("supplierName")
+            or row.get("sapBusinessPartner")
+            or row.get("sapCardCode")
             or "(Sin proveedor)",
             "totalAmount": round(float(row.get("totalAmount") or 0), 2),
             "count": int(row.get("count") or 0),
