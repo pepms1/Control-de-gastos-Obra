@@ -133,6 +133,40 @@ async function backendReq(path, opts = {}) {
   return request(BACKEND_URL, path, opts);
 }
 
+function normalizeSapMovementsBySboResponse(payload) {
+  const candidates = [
+    payload,
+    payload?.data,
+    payload?.result,
+    payload?.data?.result,
+    payload?.result?.data,
+  ].filter(Boolean);
+
+  const normalized = candidates.find(
+    (item) => item && typeof item === 'object' && (
+      'status' in item
+      || 'rowsTotal' in item
+      || 'rowsOk' in item
+      || 'imported' in item
+      || 'updated' in item
+      || 'unmatched' in item
+      || 'importRunId' in item
+      || 'already_imported' in item
+    )
+  ) || payload;
+
+  return {
+    status: normalized?.status ?? null,
+    rowsTotal: normalized?.rowsTotal ?? null,
+    rowsOk: normalized?.rowsOk ?? null,
+    imported: normalized?.imported ?? null,
+    updated: normalized?.updated ?? null,
+    unmatched: normalized?.unmatched ?? null,
+    importRunId: normalized?.importRunId ?? null,
+    already_imported: normalized?.already_imported ?? null,
+  };
+}
+
 /**
  * @typedef {Object} TransactionDTO
  * @property {string=} category_hint_code
@@ -319,6 +353,9 @@ export const api = {
     const qs = new URLSearchParams({ sbo, mode }).toString();
     return backendReq(`/api/cron/import/sap-movements-by-sbo?${qs}`, {
       method: 'POST',
+    }).then((response) => {
+      console.log('[SAP SBO import] response:', response);
+      return normalizeSapMovementsBySboResponse(response);
     });
   },
 

@@ -543,10 +543,16 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
       const response = await api.importSapMovementsBySbo({ sbo, mode });
       setResult(response);
     } catch (e) {
-      setError(e.message || 'No se pudo ejecutar el import SAP latest.');
+      const errorStatus = e?.status ? `HTTP ${e.status}` : 'HTTP desconocido';
+      const errorBody = e?.body ? JSON.stringify(e.body) : (e?.message || 'Sin body');
+      setError(`No se pudo ejecutar el import SAP latest. ${errorStatus}. Body: ${errorBody}`);
     } finally {
       setImporting(false);
     }
+  }
+
+  function withFallback(value, fallback = 'N/A') {
+    return value === null || value === undefined || value === '' ? fallback : String(value);
   }
 
   return (
@@ -590,12 +596,14 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
       {result && (
         <div className="card" style={{ margin: 0 }}>
           <h4 style={{ margin: 0, marginBottom: 8 }}>Resultado</h4>
-          <div className="small">status: {result?.status ?? ''}</div>
-          <div className="small">rowsTotal: {result?.rowsTotal ?? ''}</div>
-          <div className="small">rowsOk: {result?.rowsOk ?? ''}</div>
-          <div className="small">imported: {result?.imported ?? ''}</div>
-          <div className="small">updated: {result?.updated ?? ''}</div>
-          <div className="small">unmatched: {result?.unmatched ?? ''}</div>
+          <div className="small">status: {withFallback(result?.status)}</div>
+          <div className="small">rowsTotal: {withFallback(result?.rowsTotal, '0')}</div>
+          <div className="small">rowsOk: {withFallback(result?.rowsOk, '0')}</div>
+          <div className="small">imported: {withFallback(result?.imported, '0')}</div>
+          <div className="small">updated: {withFallback(result?.updated, '0')}</div>
+          <div className="small">unmatched: {withFallback(result?.unmatched, '0')}</div>
+          <div className="small">importRunId: {withFallback(result?.importRunId)}</div>
+          <div className="small">already_imported: {withFallback(result?.already_imported)}</div>
         </div>
       )}
     </div>
