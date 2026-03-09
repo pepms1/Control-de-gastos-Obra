@@ -2595,6 +2595,14 @@ def compute_monto_sin_iva(tx: dict):
 def resolve_transaction_tax_components(tx: dict) -> tuple[float | None, float | None, float | None]:
     tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else {}
     sap = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+    source = str(tx.get("source") or "").strip().lower()
+
+    # SBO: por seguridad no exponemos desglose fiscal hasta que el export
+    # garantice misma moneda/escala para amount vs invoiceSubtotal/IVA/Total.
+    # Si en el futuro existe una señal explícita, permitirlo con este flag.
+    sbo_tax_breakdown_compatible = bool(sap.get("taxBreakdownSameCurrency"))
+    if source == "sap-sbo" and not sbo_tax_breakdown_compatible:
+        return None, None, None
 
     subtotal = parse_optional_decimal(tax.get("subtotal"))
     iva = parse_optional_decimal(tax.get("iva"))
@@ -2877,6 +2885,8 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                 "montoIva": {
                     "$let": {
                         "vars": {
+                            "isSapSbo": {"$eq": ["$source", "sap-sbo"]},
+                            "sboTaxBreakdownSameCurrency": {"$ifNull": ["$sap.taxBreakdownSameCurrency", False]},
                             "iva": {
                                 "$convert": {
                                     "input": {"$ifNull": ["$tax.iva", {"$ifNull": ["$iva", {"$ifNull": ["$montoIva", "$sap.invoiceIva"]}]}]},
@@ -2897,7 +2907,19 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                         },
                         "in": {
                             "$cond": [
-                                {"$or": [{"$eq": ["$$iva", None]}, {"$eq": ["$$totalFactura", None]}, {"$eq": ["$$totalFactura", 0]}]},
+                                {
+                                    "$or": [
+                                        {
+                                            "$and": [
+                                                "$$isSapSbo",
+                                                {"$ne": ["$$sboTaxBreakdownSameCurrency", True]},
+                                            ]
+                                        },
+                                        {"$eq": ["$$iva", None]},
+                                        {"$eq": ["$$totalFactura", None]},
+                                        {"$eq": ["$$totalFactura", 0]},
+                                    ]
+                                },
                                 0,
                                 {
                                     "$round": [
@@ -2918,6 +2940,8 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                 "montoSinIva": {
                     "$let": {
                         "vars": {
+                            "isSapSbo": {"$eq": ["$source", "sap-sbo"]},
+                            "sboTaxBreakdownSameCurrency": {"$ifNull": ["$sap.taxBreakdownSameCurrency", False]},
                             "subtotal": {
                                 "$convert": {
                                     "input": {"$ifNull": ["$tax.subtotal", {"$ifNull": ["$subtotal", {"$ifNull": ["$montoSinIva", "$sap.invoiceSubtotal"]}]}]},
@@ -2938,7 +2962,19 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                         },
                         "in": {
                             "$cond": [
-                                {"$or": [{"$eq": ["$$subtotal", None]}, {"$eq": ["$$totalFactura", None]}, {"$eq": ["$$totalFactura", 0]}]},
+                                {
+                                    "$or": [
+                                        {
+                                            "$and": [
+                                                "$$isSapSbo",
+                                                {"$ne": ["$$sboTaxBreakdownSameCurrency", True]},
+                                            ]
+                                        },
+                                        {"$eq": ["$$subtotal", None]},
+                                        {"$eq": ["$$totalFactura", None]},
+                                        {"$eq": ["$$totalFactura", 0]},
+                                    ]
+                                },
                                 {
                                     "$round": [
                                         {
