@@ -100,6 +100,10 @@ function isMongoObjectId(value) {
   return /^[a-fA-F0-9]{24}$/.test(String(value || '').trim());
 }
 
+function getProjectDisplayName(project) {
+  return project?.displayName || project?.name || 'Sin nombre';
+}
+
 /* ================= NAV ================= */
 function Nav({
   tab,
@@ -150,7 +154,7 @@ function Nav({
           {!projects.length && <option value="">Sin proyectos</option>}
           {projects.map((project) => (
             <option key={project._id} value={project._id}>
-              {project.name}
+              {getProjectDisplayName(project)}
             </option>
           ))}
         </select>
@@ -515,7 +519,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
   const [forceReimport, setForceReimport] = useState(false);
   const selectedProject =
     projects.find((project) => String(project?._id || '') === String(selectedProjectId || '')) || null;
-  const destinationProjectName = selectedProject?.name || 'Sin proyecto seleccionado';
+  const destinationProjectName = selectedProject ? getProjectDisplayName(selectedProject) : 'Sin proyecto seleccionado';
   const sboOptions = [
     'SBO_Rafael',
     'SBO_GMDI',
@@ -2092,7 +2096,10 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
   const selectedProjectName = useMemo(
-    () => projects.find((project) => String(project?._id || '') === String(selectedProjectId || ''))?.name || 'SIN PROYECTO',
+    () => {
+      const project = projects.find((item) => String(item?._id || '') === String(selectedProjectId || ''));
+      return project ? getProjectDisplayName(project) : 'SIN PROYECTO';
+    },
     [projects, selectedProjectId],
   );
   const reportTitle = `${selectedProjectName} - REPORTE DE EGRESOS`;

@@ -3401,14 +3401,22 @@ def list_supplier_categories(_: dict = Depends(require_authenticated)):
 
 @app.get("/api/projects")
 def list_projects(_: dict = Depends(require_authenticated)):
-    rows = db.projects.find({}, {"name": 1, "slug": 1}).sort("name", 1)
-    return [{"_id": str(row["_id"]), "name": row.get("name"), "slug": row.get("slug")} for row in rows]
+    rows = db.projects.find({}, {"name": 1, "displayName": 1, "slug": 1}).sort("name", 1)
+    return [
+        {
+            "_id": str(row["_id"]),
+            "name": row.get("name"),
+            "displayName": row.get("displayName"),
+            "slug": row.get("slug"),
+        }
+        for row in rows
+    ]
 
 
 @app.post("/api/admin/projects", status_code=201)
 def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
-    name = (payload.get("name") or "").strip()
-    if not name:
+    display_name = (payload.get("name") or "").strip()
+    if not display_name:
         raise HTTPException(status_code=400, detail="name is required")
 
     slug = normalize_project_slug(payload.get("slug"))
@@ -3417,14 +3425,26 @@ def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
     if db.projects.find_one({"slug": slug}, {"_id": 1}):
         raise HTTPException(status_code=409, detail="Project slug already exists")
 
-    if db.projects.find_one({"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"_id": 1}):
+    if db.projects.find_one(
+        {
+            "$or": [
+                {"name": {"$regex": f"^{re.escape(display_name)}$", "$options": "i"}},
+                {"displayName": {"$regex": f"^{re.escape(display_name)}$", "$options": "i"}},
+            ]
+        },
+        {"_id": 1},
+    ):
         raise HTTPException(status_code=409, detail="Project name already exists")
 
     now_iso = datetime.now(timezone.utc).isoformat()
     doc = {
-        "name": name,
+        "name": slug,
+        "displayName": display_name,
         "slug": slug,
-        "sap": {"s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix}},
+        "sap": {
+            "projectNames": [display_name],
+            "s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix},
+        },
         "created_at": now_iso,
         "updated_at": now_iso,
     }
@@ -3437,9 +3457,13 @@ def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
     return {
         "ok": True,
         "projectId": str(project_id),
-        "name": name,
+        "name": slug,
+        "displayName": display_name,
         "slug": slug,
-        "sap": {"s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix}},
+        "sap": {
+            "projectNames": [display_name],
+            "s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix},
+        },
     }
 
 
