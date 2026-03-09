@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File, Query, Request as FastAPIRequest, Security, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pymongo import MongoClient, UpdateOne
+from pymongo import MongoClient, UpdateOne, ReturnDocument
 from pymongo.errors import BulkWriteError, OperationFailure, DuplicateKeyError
 from bson import ObjectId
 from datetime import date, datetime, timedelta, timezone
@@ -3496,6 +3496,63 @@ def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
         "displayName": display_name,
         "slug": slug,
         "sap": sap_payload,
+    }
+
+
+@app.get("/api/admin/projects")
+def list_projects_admin(_: dict = Depends(require_admin)):
+    projection = {
+        "name": 1,
+        "displayName": 1,
+        "slug": 1,
+        "visibleInFrontend": 1,
+        "sap.sourceSbo": 1,
+        "sap.rawProjectName": 1,
+        "sap.projectNames": 1,
+    }
+    rows = db.projects.find({}, projection).sort("name", 1)
+    response: list[dict] = []
+    for row in rows:
+        sap = row.get("sap") if isinstance(row.get("sap"), dict) else {}
+        response.append(
+            {
+                "_id": str(row["_id"]),
+                "name": row.get("name"),
+                "displayName": row.get("displayName"),
+                "slug": row.get("slug"),
+                "visibleInFrontend": row.get("visibleInFrontend") is not False,
+                "sap": {
+                    "sourceSbo": sap.get("sourceSbo"),
+                    "rawProjectName": sap.get("rawProjectName"),
+                    "projectNames": sap.get("projectNames") if isinstance(sap.get("projectNames"), list) else [],
+                },
+            }
+        )
+    return response
+
+
+@app.patch("/api/admin/projects/{project_id}/visibility")
+def update_project_visibility_admin(project_id: str, payload: dict, _: dict = Depends(require_admin)):
+    if "visibleInFrontend" not in payload or not isinstance(payload.get("visibleInFrontend"), bool):
+        raise HTTPException(status_code=400, detail="visibleInFrontend must be a boolean")
+
+    updated = db.projects.find_one_and_update(
+        {"_id": oid(project_id)},
+        {
+            "$set": {
+                "visibleInFrontend": payload.get("visibleInFrontend"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return {
+        "ok": True,
+        "_id": str(updated.get("_id")),
+        "visibleInFrontend": updated.get("visibleInFrontend") is not False,
     }
 
 
