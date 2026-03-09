@@ -104,39 +104,37 @@ function getProjectDisplayName(project) {
   return project?.displayName || project?.name || 'Sin nombre';
 }
 
-function getTransactionTaxBreakdown(transaction) {
+function isSboFlowTransaction(transaction) {
   const source = String(transaction?.source || '').trim().toLowerCase();
-  const allowSapSboBreakdown = transaction?.sap?.taxBreakdownSameCurrency === true;
-  if (source === 'sap-sbo' && !allowSapSboBreakdown) {
-    return {
-      subtotal: null,
-      iva: null,
-      totalFactura: null,
-    };
-  }
+  const sourceDb = String(transaction?.sourceDb || '').trim().toUpperCase();
+  const sourceSbo = String(transaction?.sourceSbo || transaction?.sap?.sourceSbo || '').trim();
+  return source === 'sap-sbo' || sourceDb.startsWith('SBO_') || sourceSbo !== '';
+}
 
-  const subtotal = Number(
-    transaction?.subtotal
-    ?? transaction?.montoSinIva
-    ?? transaction?.tax?.subtotal
-    ?? transaction?.sap?.invoiceSubtotal,
-  );
-  const iva = Number(
-    transaction?.iva
-    ?? transaction?.montoIva
-    ?? transaction?.tax?.iva
-    ?? transaction?.sap?.invoiceIva,
-  );
-  const totalFactura = Number(
-    transaction?.totalFactura
-    ?? transaction?.tax?.totalFactura
-    ?? transaction?.sap?.invoiceTotal,
-  );
+function getTransactionTaxBreakdown(transaction) {
+  const pickNumber = (...values) => {
+    for (const value of values) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
+
+  const isSboFlow = isSboFlowTransaction(transaction);
+  const subtotal = isSboFlow
+    ? pickNumber(transaction?.subtotal, transaction?.montoSinIva, transaction?.tax?.subtotal, transaction?.sap?.invoiceSubtotal)
+    : pickNumber(transaction?.subtotal, transaction?.montoSinIva, transaction?.tax?.subtotal);
+  const iva = isSboFlow
+    ? pickNumber(transaction?.iva, transaction?.montoIva, transaction?.tax?.iva, transaction?.sap?.invoiceIva)
+    : pickNumber(transaction?.iva, transaction?.montoIva, transaction?.tax?.iva);
+  const totalFactura = isSboFlow
+    ? pickNumber(transaction?.totalFactura, transaction?.tax?.totalFactura, transaction?.sap?.invoiceTotal)
+    : pickNumber(transaction?.totalFactura, transaction?.tax?.totalFactura);
 
   return {
-    subtotal: Number.isFinite(subtotal) ? subtotal : null,
-    iva: Number.isFinite(iva) ? iva : null,
-    totalFactura: Number.isFinite(totalFactura) ? totalFactura : null,
+    subtotal,
+    iva,
+    totalFactura,
   };
 }
 
@@ -1800,15 +1798,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   });
 
   const isUncategorizedFilter = categoryFilter === UNCATEGORIZED_FILTER;
-  const isSapSboFlowTransaction = (transaction) => {
-    const source = String(transaction?.source || '').trim().toLowerCase();
-    const sourceDb = String(transaction?.sourceDb || '').trim().toUpperCase();
-    const sourceSbo = String(transaction?.sourceSbo || '').trim();
-    return source === 'sap'
-      || source === 'sap-sbo'
-      || sourceDb.startsWith('SBO_')
-      || sourceSbo !== '';
-  };
   const isSapIvaTransaction = (transaction) =>
     transaction?.source === 'sap' && String(transaction?.sourceDb || '').trim().toUpperCase() === 'IVA';
 
@@ -2223,7 +2212,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <tr key={getTransactionStableKey(r)}>
                   <td>{r.date}</td>
                   <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
-                  <td>{isSapSboFlowTransaction(r) ? <span className="badge">SAP</span> : ''}</td>
+                  <td>{isSboFlowTransaction(r) ? <span className="badge">SAP</span> : ''}</td>
                   <td>{r.sourceDb ? <span className="badge">{String(r.sourceDb).toUpperCase()}</span> : 'LEGACY/UNKNOWN'}</td>
                   <td>{r.description || r.concept || ''}</td>
                   <td>

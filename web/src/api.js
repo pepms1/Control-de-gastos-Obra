@@ -179,7 +179,18 @@ export function normalizeTransaction(transaction) {
   if (!transaction || typeof transaction !== 'object') return transaction;
 
   const source = String(transaction.source || '').trim().toLowerCase();
+  const sourceDb = String(transaction.sourceDb || '').trim().toUpperCase();
+  const sourceSbo = String(transaction.sourceSbo || transaction?.sap?.sourceSbo || '').trim();
   const isSapSbo = source === 'sap-sbo';
+  const isSboFlow = isSapSbo || sourceDb.startsWith('SBO_') || sourceSbo !== '';
+
+  const pickNumber = (...values) => {
+    for (const value of values) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
 
   const categoryHintName = transaction.categoryHintName
     || transaction.category_hint_name
@@ -196,12 +207,35 @@ export function normalizeTransaction(transaction) {
   const categoryEffectiveName = transaction.categoryEffectiveName || categoryManualName || categoryHintName || '';
   const categoryEffectiveCode = transaction.categoryEffectiveCode || categoryManualCode || categoryHintCode || '';
 
+  const normalizedAmount = isSboFlow
+    ? pickNumber(transaction.amount, transaction.monto)
+    : (Number.isFinite(Number(transaction.amount)) ? Number(transaction.amount) : transaction.amount);
+  const normalizedSubtotal = isSboFlow
+    ? pickNumber(transaction.subtotal, transaction.montoSinIva, transaction?.tax?.subtotal, transaction?.sap?.invoiceSubtotal)
+    : pickNumber(transaction.subtotal, transaction.montoSinIva, transaction?.tax?.subtotal);
+  const normalizedIva = isSboFlow
+    ? pickNumber(transaction.iva, transaction.montoIva, transaction?.tax?.iva, transaction?.sap?.invoiceIva)
+    : pickNumber(transaction.iva, transaction.montoIva, transaction?.tax?.iva);
+  const normalizedTotalFactura = isSboFlow
+    ? pickNumber(transaction.totalFactura, transaction?.tax?.totalFactura, transaction?.sap?.invoiceTotal)
+    : pickNumber(transaction.totalFactura, transaction?.tax?.totalFactura);
+
   return {
     ...transaction,
     date: transaction.date || (isSapSbo ? transaction.fecha : transaction.date),
-    amount: Number.isFinite(Number(transaction.amount))
-      ? Number(transaction.amount)
-      : (isSapSbo ? Number(transaction.monto ?? 0) : transaction.amount),
+    sourceSbo: transaction.sourceSbo || transaction?.sap?.sourceSbo || '',
+    amount: normalizedAmount,
+    subtotal: normalizedSubtotal ?? transaction.subtotal,
+    montoSinIva: normalizedSubtotal ?? transaction.montoSinIva,
+    iva: normalizedIva ?? transaction.iva,
+    montoIva: normalizedIva ?? transaction.montoIva,
+    totalFactura: normalizedTotalFactura ?? transaction.totalFactura,
+    tax: {
+      ...(transaction.tax && typeof transaction.tax === 'object' ? transaction.tax : {}),
+      subtotal: normalizedSubtotal ?? transaction?.tax?.subtotal ?? null,
+      iva: normalizedIva ?? transaction?.tax?.iva ?? null,
+      totalFactura: normalizedTotalFactura ?? transaction?.tax?.totalFactura ?? null,
+    },
     supplierName: transaction.supplierName || (isSapSbo ? transaction.proveedor : transaction.supplierName),
     description: transaction.description || (isSapSbo ? transaction.descripcion : transaction.description),
     categoryHintName,
