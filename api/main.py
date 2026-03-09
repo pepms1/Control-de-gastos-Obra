@@ -4090,8 +4090,19 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
         rows_total += 1
         try:
             raw_project_name = str(row.get("raw_project_name") or "").strip()
+            raw_project_code = str(row.get("raw_project_code") or "").strip()
             normalized_project_name = normalize_project_name_for_matching(raw_project_name)
             project_id = normalized_projects.get(normalized_project_name)
+            category_hint_code = normalize_non_empty_string(
+                row.get("CategoryHintCode")
+                or row.get("category_hint_code")
+                or row.get("categoryHintCode")
+            )
+            category_hint_name = normalize_non_empty_string(
+                row.get("CategoryHintName")
+                or row.get("category_hint_name")
+                or row.get("categoryHintName")
+            )
 
             if not project_id:
                 rows_unmatched += 1
@@ -4131,6 +4142,8 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
                 "description": str(row.get("payment_comments") or "").strip() or str(row.get("invoice_comments") or "").strip(),
                 "supplierName": str(row.get("business_partner") or "").strip() or str(row.get("card_code") or "").strip(),
                 "dedupeKey": dedupe_key,
+                "categoryHintCode": category_hint_code,
+                "categoryHintName": category_hint_name,
                 "sap": {
                     "movementType": str(row.get("movement_type") or "").strip(),
                     "sourceType": str(row.get("source_type") or "").strip(),
@@ -4150,6 +4163,9 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
                     "invoiceCurrency": str(row.get("invoice_currency") or "").strip(),
                     "cardCode": str(row.get("card_code") or "").strip(),
                     "businessPartner": str(row.get("business_partner") or "").strip(),
+                    "categoryHintCode": category_hint_code,
+                    "categoryHintName": category_hint_name,
+                    "rawProjectCode": raw_project_code,
                     "rawProjectName": raw_project_name,
                     "normalizedProjectName": normalized_project_name,
                     "sourceDb": source_db,
