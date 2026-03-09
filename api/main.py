@@ -3401,7 +3401,10 @@ def list_supplier_categories(_: dict = Depends(require_authenticated)):
 
 @app.get("/api/projects")
 def list_projects(_: dict = Depends(require_authenticated)):
-    rows = db.projects.find({}, {"name": 1, "displayName": 1, "slug": 1}).sort("name", 1)
+    rows = db.projects.find(
+        {"visibleInFrontend": {"$ne": False}},
+        {"name": 1, "displayName": 1, "slug": 1},
+    ).sort("name", 1)
     return [
         {
             "_id": str(row["_id"]),
@@ -3484,6 +3487,101 @@ def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
         "displayName": display_name,
         "slug": slug,
         "sap": sap_payload,
+    }
+
+
+@app.post("/api/admin/projects/create-from-unmatched")
+def create_projects_from_unmatched(_: dict = Depends(require_admin)):
+    created_projects: list[dict] = []
+    skipped_projects: list[dict] = []
+
+    projection = {"rawProjectName": 1, "sourceSbo": 1}
+    for row in db.unmatched_projects.find({}, projection):
+        raw_project_name = str(row.get("rawProjectName") or "").strip()
+        source_sbo = str(row.get("sourceSbo") or "").strip()
+
+        if not raw_project_name:
+            skipped_projects.append(
+                {
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "missing rawProjectName",
+                }
+            )
+            continue
+
+        slug = normalize_project_slug(raw_project_name)
+
+        existing_by_sap = db.projects.find_one({"sap.projectNames": raw_project_name}, {"_id": 1})
+        if existing_by_sap:
+            skipped_projects.append(
+                {
+                    "displayName": raw_project_name,
+                    "slug": slug,
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "existing sap.projectNames match",
+                }
+            )
+            continue
+
+        existing_by_slug = db.projects.find_one({"slug": slug}, {"_id": 1})
+        if existing_by_slug:
+            skipped_projects.append(
+                {
+                    "displayName": raw_project_name,
+                    "slug": slug,
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "existing slug match",
+                }
+            )
+            continue
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        doc = {
+            "name": slug,
+            "displayName": raw_project_name,
+            "slug": slug,
+            "sap": {
+                "projectNames": [raw_project_name],
+                "sourceSbo": source_sbo,
+                "rawProjectName": raw_project_name,
+            },
+            "visibleInFrontend": False,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+
+        try:
+            db.projects.insert_one(doc)
+        except DuplicateKeyError:
+            skipped_projects.append(
+                {
+                    "displayName": raw_project_name,
+                    "slug": slug,
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "duplicate key during insert",
+                }
+            )
+            continue
+
+        created_projects.append(
+            {
+                "displayName": raw_project_name,
+                "slug": slug,
+                "rawProjectName": raw_project_name,
+                "sourceSbo": source_sbo,
+            }
+        )
+
+    return {
+        "ok": True,
+        "createdCount": len(created_projects),
+        "skippedExistingCount": len(skipped_projects),
+        "createdProjects": created_projects,
+        "skippedProjects": skipped_projects,
     }
 
 
