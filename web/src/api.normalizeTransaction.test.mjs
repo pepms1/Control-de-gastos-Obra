@@ -69,4 +69,31 @@ assert.equal(sboWithSapFallbacks.tax.subtotal, 100);
 assert.equal(sboWithSapFallbacks.tax.iva, 16);
 assert.equal(sboWithSapFallbacks.tax.totalFactura, 116);
 
+const sboNullAndEmptyMustFallbackToSap = normalizeTransaction({
+  sourceDb: 'SBO_BANK',
+  subtotal: null,
+  montoSinIva: '',
+  iva: null,
+  montoIva: '   ',
+  totalFactura: '',
+  tax: {
+    subtotal: null,
+    iva: '',
+    totalFactura: ' ',
+  },
+  sap: {
+    sourceSbo: 'OBRA_B',
+    invoiceSubtotal: 1551.72,
+    invoiceIva: 248.28,
+    invoiceTotal: 1800,
+  },
+});
+
+assert.equal(sboNullAndEmptyMustFallbackToSap.subtotal, 1551.72);
+assert.equal(sboNullAndEmptyMustFallbackToSap.iva, 248.28);
+assert.equal(sboNullAndEmptyMustFallbackToSap.totalFactura, 1800);
+assert.equal(sboNullAndEmptyMustFallbackToSap.tax.subtotal, 1551.72);
+assert.equal(sboNullAndEmptyMustFallbackToSap.tax.iva, 248.28);
+assert.equal(sboNullAndEmptyMustFallbackToSap.tax.totalFactura, 1800);
+
 console.log('ok');
