@@ -105,6 +105,16 @@ function getProjectDisplayName(project) {
 }
 
 function getTransactionTaxBreakdown(transaction) {
+  const source = String(transaction?.source || '').trim().toLowerCase();
+  const allowSapSboBreakdown = transaction?.sap?.taxBreakdownSameCurrency === true;
+  if (source === 'sap-sbo' && !allowSapSboBreakdown) {
+    return {
+      subtotal: null,
+      iva: null,
+      totalFactura: null,
+    };
+  }
+
   const subtotal = Number(
     transaction?.subtotal
     ?? transaction?.montoSinIva
