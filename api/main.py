@@ -2653,6 +2653,9 @@ def build_transactions_query(
                 {"categoryEffectiveName": category_id},
                 {"categoryManualCode": category_id},
                 {"categoryHintCode": category_id},
+                {"categoryHintName": category_id},
+                {"category_id": category_id},
+                {"categoryId": category_id},
             ]
     if vendor_id:
         q["vendor_id"] = vendor_id
@@ -2757,6 +2760,8 @@ def build_transactions_query(
             {"proveedorNombre": {"$regex": escaped_search, "$options": "i"}},
             {"beneficiario": {"$regex": escaped_search, "$options": "i"}},
             {"proveedor.name": {"$regex": escaped_search, "$options": "i"}},
+            {"categoryHintName": {"$regex": escaped_search, "$options": "i"}},
+            {"categoryHintCode": {"$regex": escaped_search, "$options": "i"}},
         ]
 
         normalized_search = normalize_category_name(cleaned_search)
@@ -6796,16 +6801,54 @@ def spend_by_category(
         if date_to:
             match["date"]["$lte"] = date_to
 
-    transactions = list(db.transactions.find(match, {"category_id": 1, "amount": 1, "tax": 1}))
+    transactions = list(
+        db.transactions.find(
+            match,
+            {
+                "category_id": 1,
+                "categoryId": 1,
+                "categoryManualCode": 1,
+                "categoryManualName": 1,
+                "categoryHintCode": 1,
+                "categoryHintName": 1,
+                "categoryEffectiveCode": 1,
+                "categoryEffectiveName": 1,
+                "amount": 1,
+                "tax": 1,
+            },
+        )
+    )
 
     totals_by_category = {}
     for tx in transactions:
-        category_id = tx.get("category_id")
+        category_manual_code = normalize_non_empty_string(tx.get("categoryManualCode"))
+        category_manual_name = normalize_non_empty_string(tx.get("categoryManualName"))
+        category_hint_code = normalize_non_empty_string(tx.get("categoryHintCode"))
+        category_hint_name = normalize_non_empty_string(tx.get("categoryHintName"))
+        effective = build_effective_category_fields(
+            category_manual_code,
+            category_manual_name,
+            category_hint_code,
+            category_hint_name,
+        )
+        category_effective_code = normalize_non_empty_string(tx.get("categoryEffectiveCode")) or effective.get("categoryEffectiveCode")
+        category_effective_name = normalize_non_empty_string(tx.get("categoryEffectiveName")) or effective.get("categoryEffectiveName")
+        legacy_category_id = normalize_non_empty_string(tx.get("category_id") or tx.get("categoryId"))
+        category_key = category_effective_code or category_effective_name or legacy_category_id
+
         amount_value = float(tx.get("amount") or 0)
         movement_amount = amount_value if include_iva else compute_monto_sin_iva(tx)
-        totals_by_category[category_id] = round(totals_by_category.get(category_id, 0.0) + movement_amount, 2)
+        if category_key not in totals_by_category:
+            totals_by_category[category_key] = {"amount": 0.0, "display_name": category_effective_name}
 
-    rows = [{"_id": category_id, "amount": amount} for category_id, amount in totals_by_category.items()]
+        totals_by_category[category_key]["amount"] = round(totals_by_category[category_key]["amount"] + movement_amount, 2)
+        if not totals_by_category[category_key].get("display_name") and category_effective_name:
+            totals_by_category[category_key]["display_name"] = category_effective_name
+
+    rows = [
+        {"_id": category_id, "amount": values.get("amount", 0.0), "display_name": values.get("display_name")}
+        for category_id, values in totals_by_category.items()
+    ]
     rows.sort(key=lambda row: row["amount"], reverse=True)
     total = round(sum(float(r["amount"]) for r in rows), 2) if rows else 0.0
 
@@ -6848,7 +6891,7 @@ def spend_by_category(
         out.append(
             {
                 "category_id": cid,
-                "category_name": cats.get(cid, "(Sin categoría)"),
+                "category_name": r.get("display_name") or cats.get(cid, "(Sin categoría)"),
                 "amount": round(amt, 2),
                 "percent": round((amt / total * 100.0), 2) if total > 0 else 0.0,
             }
