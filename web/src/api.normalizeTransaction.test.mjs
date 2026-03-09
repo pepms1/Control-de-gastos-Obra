@@ -33,4 +33,40 @@ assert.equal(sapSbo.amount, 1250.5);
 assert.equal(sapSbo.supplierName, 'Proveedor SBO');
 assert.equal(sapSbo.description, 'Pago aplicado');
 
+
+const sboWithInvoiceFields = normalizeTransaction({
+  source: 'sap-sbo',
+  amount: 1800,
+  subtotal: 1551.72,
+  iva: 248.28,
+  totalFactura: 1800,
+});
+
+assert.equal(sboWithInvoiceFields.amount, 1800);
+assert.equal(sboWithInvoiceFields.subtotal, 1551.72);
+assert.equal(sboWithInvoiceFields.montoSinIva, 1551.72);
+assert.equal(sboWithInvoiceFields.iva, 248.28);
+assert.equal(sboWithInvoiceFields.montoIva, 248.28);
+assert.equal(sboWithInvoiceFields.totalFactura, 1800);
+assert.equal(sboWithInvoiceFields.tax.subtotal, 1551.72);
+assert.equal(sboWithInvoiceFields.tax.iva, 248.28);
+assert.equal(sboWithInvoiceFields.tax.totalFactura, 1800);
+
+const sboWithSapFallbacks = normalizeTransaction({
+  sourceDb: 'SBO_BANK',
+  sap: {
+    sourceSbo: 'OBRA_A',
+    invoiceSubtotal: 100,
+    invoiceIva: 16,
+    invoiceTotal: 116,
+  },
+});
+
+assert.equal(sboWithSapFallbacks.subtotal, 100);
+assert.equal(sboWithSapFallbacks.iva, 16);
+assert.equal(sboWithSapFallbacks.totalFactura, 116);
+assert.equal(sboWithSapFallbacks.tax.subtotal, 100);
+assert.equal(sboWithSapFallbacks.tax.iva, 16);
+assert.equal(sboWithSapFallbacks.tax.totalFactura, 116);
+
 console.log('ok');
