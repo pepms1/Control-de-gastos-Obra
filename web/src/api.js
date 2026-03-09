@@ -84,7 +84,7 @@ async function request(baseUrl, path, opts = {}) {
     selectedProjectId
       && !cleanPathname.startsWith('/auth/')
       && cleanPathname !== '/api/projects'
-      && cleanPathname !== '/api/admin/projects'
+      && !cleanPathname.startsWith('/api/admin/projects')
       && cleanPathname !== '/auth'
   );
   const isFormData = opts.body instanceof FormData;
@@ -416,6 +416,14 @@ export const api = {
   createProjectsFromUnmatchedAdmin: () =>
     backendReq('/api/admin/projects/create-from-unmatched', {
       method: 'POST',
+    }),
+
+  adminProjects: () => backendReq('/api/admin/projects'),
+
+  updateAdminProjectVisibility: (projectId, visibleInFrontend) =>
+    backendReq(`/api/admin/projects/${projectId}/visibility`, {
+      method: 'PATCH',
+      body: JSON.stringify({ visibleInFrontend: Boolean(visibleInFrontend) }),
     }),
 
   createS3PrefixAdmin: ({ slug }) =>

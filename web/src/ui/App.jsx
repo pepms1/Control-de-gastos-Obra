@@ -475,6 +475,15 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
             Proyectos unmatched
           </button>
         )}
+        {isAdmin && (
+          <button
+            type="button"
+            className={section === 'projects-visibility' ? '' : 'secondary'}
+            onClick={() => setSection('projects-visibility')}
+          >
+            Visibilidad de proyectos
+          </button>
+        )}
         <button
           type="button"
           className={section === 'raw-data' ? '' : 'secondary'}
@@ -515,8 +524,140 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
 
       {section === 'projects-unmatched' && isAdmin && <AdminProjectsFromUnmatchedSection onProjectCreated={onProjectCreated} />}
 
+      {section === 'projects-visibility' && isAdmin && <AdminProjectVisibilitySection onProjectUpdated={onProjectCreated} />}
+
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
+    </div>
+  );
+}
+
+function AdminProjectVisibilitySection({ onProjectUpdated }) {
+  const [projects, setProjects] = useState([]);
+  const [query, setQuery] = useState('');
+  const [visibilityFilter, setVisibilityFilter] = useState('all');
+  const [loading, setLoading] = useState(false);
+  const [savingId, setSavingId] = useState('');
+  const [error, setError] = useState('');
+
+  async function loadProjects() {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.adminProjects();
+      setProjects(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setError(e.message || 'No se pudieron cargar los proyectos');
+      setProjects([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadProjects();
+  }, []);
+
+  async function onToggleVisibility(projectId, nextVisible) {
+    setSavingId(projectId);
+    setError('');
+    const previous = projects;
+    setProjects((prev) => prev.map((row) => (row._id === projectId ? { ...row, visibleInFrontend: nextVisible } : row)));
+    try {
+      await api.updateAdminProjectVisibility(projectId, nextVisible);
+      await onProjectUpdated?.();
+    } catch (e) {
+      setProjects(previous);
+      setError(e.message || 'No se pudo actualizar la visibilidad');
+    } finally {
+      setSavingId('');
+    }
+  }
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = projects.filter((row) => {
+    const isVisible = row?.visibleInFrontend !== false;
+    if (visibilityFilter === 'visible' && !isVisible) return false;
+    if (visibilityFilter === 'hidden' && isVisible) return false;
+
+    if (!normalizedQuery) return true;
+    const sourceSbo = row?.sap?.sourceSbo || '';
+    const rawProjectName = row?.sap?.rawProjectName || '';
+    const haystack = `${row?.displayName || ''} ${row?.slug || ''} ${rawProjectName} ${sourceSbo}`.toLowerCase();
+    return haystack.includes(normalizedQuery);
+  });
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Visibilidad de proyectos</h3>
+      <div className="grid" style={{ gap: 10, marginBottom: 10 }}>
+        <div>
+          <label>Buscar</label>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="displayName, slug o rawProjectName"
+          />
+        </div>
+        <div>
+          <label>Filtro</label>
+          <select value={visibilityFilter} onChange={(e) => setVisibilityFilter(e.target.value)}>
+            <option value="all">Todos</option>
+            <option value="visible">Visibles</option>
+            <option value="hidden">Ocultos</option>
+          </select>
+        </div>
+      </div>
+
+      {error && <div style={{ marginBottom: 10 }}>{error}</div>}
+
+      <table>
+        <thead>
+          <tr>
+            <th>displayName</th>
+            <th>slug</th>
+            <th>sourceSbo</th>
+            <th>rawProjectName</th>
+            <th>visibleInFrontend</th>
+          </tr>
+        </thead>
+        <tbody>
+          {filtered.map((row) => {
+            const isVisible = row?.visibleInFrontend !== false;
+            const rowId = String(row?._id || '');
+            return (
+              <tr key={rowId}>
+                <td>{row?.displayName || row?.name || ''}</td>
+                <td>{row?.slug || ''}</td>
+                <td>{row?.sap?.sourceSbo || ''}</td>
+                <td>{row?.sap?.rawProjectName || ''}</td>
+                <td>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={isVisible}
+                      disabled={savingId === rowId}
+                      onChange={(e) => onToggleVisibility(rowId, e.target.checked)}
+                    />
+                    {isVisible ? 'Visible' : 'Oculto'}
+                  </label>
+                </td>
+              </tr>
+            );
+          })}
+
+          {!loading && filtered.length === 0 && (
+            <tr>
+              <td colSpan={5} className="small">Sin proyectos para mostrar.</td>
+            </tr>
+          )}
+          {loading && (
+            <tr>
+              <td colSpan={5} className="small">Cargando proyectos...</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }
