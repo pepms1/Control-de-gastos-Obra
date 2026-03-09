@@ -139,8 +139,8 @@ function Nav({
       <div className="nav-header">
         <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="nav-logo" />
         <div className="nav-title-wrap">
-          <div className="nav-title">Grupo MDI</div>
-          <div className="nav-subtitle">Control de Gastos de Obra</div>
+          <div className="nav-title">CONTROL DE GASTOS V2 BETA</div>
+          <div className="nav-subtitle">Grupo MDI</div>
         </div>
       </div>
 
