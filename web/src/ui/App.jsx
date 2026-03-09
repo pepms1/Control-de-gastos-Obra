@@ -104,6 +104,32 @@ function getProjectDisplayName(project) {
   return project?.displayName || project?.name || 'Sin nombre';
 }
 
+function getTransactionTaxBreakdown(transaction) {
+  const subtotal = Number(
+    transaction?.subtotal
+    ?? transaction?.montoSinIva
+    ?? transaction?.tax?.subtotal
+    ?? transaction?.sap?.invoiceSubtotal,
+  );
+  const iva = Number(
+    transaction?.iva
+    ?? transaction?.montoIva
+    ?? transaction?.tax?.iva
+    ?? transaction?.sap?.invoiceIva,
+  );
+  const totalFactura = Number(
+    transaction?.totalFactura
+    ?? transaction?.tax?.totalFactura
+    ?? transaction?.sap?.invoiceTotal,
+  );
+
+  return {
+    subtotal: Number.isFinite(subtotal) ? subtotal : null,
+    iva: Number.isFinite(iva) ? iva : null,
+    totalFactura: Number.isFinite(totalFactura) ? totalFactura : null,
+  };
+}
+
 /* ================= NAV ================= */
 function Nav({
   tab,
@@ -2182,6 +2208,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
               )}
               {shown.map((r) => {
                 const isSapIva = isSapIvaTransaction(r);
+                const taxBreakdown = getTransactionTaxBreakdown(r);
                 return (
                 <tr key={getTransactionStableKey(r)}>
                   <td>{r.date}</td>
@@ -2195,9 +2222,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                   </td>
                   <td>{getSapCategoryLabel(r) || '—'}</td>
                   <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
-                  <td style={{ fontWeight: 800 }}>${formatMoney(r.subtotal ?? r.amount)}</td>
-                  <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
-                  <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.totalFactura ?? 0)}</td>
+                  <td style={{ fontWeight: 800 }}>${formatMoney(taxBreakdown.subtotal ?? r.amount)}</td>
+                  <td style={{ fontWeight: 700 }}>${formatMoney(taxBreakdown.iva ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>${formatMoney(taxBreakdown.totalFactura ?? 0)}</td>
                   {isAdmin && (
                     <td>
                       {(r.source !== 'sap' || isSapIva) && (
@@ -2356,9 +2383,10 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   }, [page, query, selectedProjectId]);
 
   const getAmountWithoutIva = (row) => {
+    const taxBreakdown = getTransactionTaxBreakdown(row);
     const totalAmount = Number(row.amount) || 0;
-    const ivaAmount = Number(row.tax?.iva ?? row.iva);
-    const subtotalAmount = Number(row.tax?.subtotal);
+    const ivaAmount = Number(taxBreakdown.iva);
+    const subtotalAmount = Number(taxBreakdown.subtotal);
 
     if (Number.isFinite(subtotalAmount)) return subtotalAmount;
     if (Number.isFinite(ivaAmount)) return totalAmount - ivaAmount;
@@ -2384,7 +2412,8 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
           const provider = r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—';
           const concept = r.description || r.concept || '—';
           const category = getTransactionCategoryLabel(r, catMap) || '—';
-          const ivaAmount = Number(r.tax?.iva ?? r.iva);
+          const taxBreakdown = getTransactionTaxBreakdown(r);
+          const ivaAmount = Number(taxBreakdown.iva);
           const hasIva = Number.isFinite(ivaAmount) && Math.abs(ivaAmount) > 0;
           const totalAmount = Number(r.amount) || 0;
           const safeSubtotal = getAmountWithoutIva(r);

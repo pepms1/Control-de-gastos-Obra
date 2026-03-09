@@ -2592,6 +2592,36 @@ def compute_monto_sin_iva(tx: dict):
     return round(sign * proporcional, 2)
 
 
+def resolve_transaction_tax_components(tx: dict) -> tuple[float | None, float | None, float | None]:
+    tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else {}
+    sap = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+
+    subtotal = parse_optional_decimal(tax.get("subtotal"))
+    iva = parse_optional_decimal(tax.get("iva"))
+    total_factura = parse_optional_decimal(tax.get("totalFactura"))
+
+    if subtotal is None:
+        subtotal = parse_optional_decimal(tx.get("subtotal"))
+    if subtotal is None:
+        subtotal = parse_optional_decimal(tx.get("montoSinIva"))
+    if subtotal is None:
+        subtotal = parse_optional_decimal(sap.get("invoiceSubtotal"))
+
+    if iva is None:
+        iva = parse_optional_decimal(tx.get("iva"))
+    if iva is None:
+        iva = parse_optional_decimal(tx.get("montoIva"))
+    if iva is None:
+        iva = parse_optional_decimal(sap.get("invoiceIva"))
+
+    if total_factura is None:
+        total_factura = parse_optional_decimal(tx.get("totalFactura"))
+    if total_factura is None:
+        total_factura = parse_optional_decimal(sap.get("invoiceTotal"))
+
+    return subtotal, iva, total_factura
+
+
 def compute_monto_iva(tx: dict):
     amount = round(float(tx.get("amount") or 0), 2)
     tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else None
@@ -2847,8 +2877,22 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                 "montoIva": {
                     "$let": {
                         "vars": {
-                            "iva": {"$convert": {"input": "$tax.iva", "to": "double", "onError": None, "onNull": None}},
-                            "totalFactura": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": None, "onNull": None}},
+                            "iva": {
+                                "$convert": {
+                                    "input": {"$ifNull": ["$tax.iva", {"$ifNull": ["$iva", {"$ifNull": ["$montoIva", "$sap.invoiceIva"]}]}]},
+                                    "to": "double",
+                                    "onError": None,
+                                    "onNull": None,
+                                }
+                            },
+                            "totalFactura": {
+                                "$convert": {
+                                    "input": {"$ifNull": ["$tax.totalFactura", {"$ifNull": ["$totalFactura", "$sap.invoiceTotal"]}]},
+                                    "to": "double",
+                                    "onError": None,
+                                    "onNull": None,
+                                }
+                            },
                             "amountValue": {"$ifNull": ["$amount", 0]},
                         },
                         "in": {
@@ -2874,8 +2918,22 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                 "montoSinIva": {
                     "$let": {
                         "vars": {
-                            "subtotal": {"$convert": {"input": "$tax.subtotal", "to": "double", "onError": None, "onNull": None}},
-                            "totalFactura": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": None, "onNull": None}},
+                            "subtotal": {
+                                "$convert": {
+                                    "input": {"$ifNull": ["$tax.subtotal", {"$ifNull": ["$subtotal", {"$ifNull": ["$montoSinIva", "$sap.invoiceSubtotal"]}]}]},
+                                    "to": "double",
+                                    "onError": None,
+                                    "onNull": None,
+                                }
+                            },
+                            "totalFactura": {
+                                "$convert": {
+                                    "input": {"$ifNull": ["$tax.totalFactura", {"$ifNull": ["$totalFactura", "$sap.invoiceTotal"]}]},
+                                    "to": "double",
+                                    "onError": None,
+                                    "onNull": None,
+                                }
+                            },
                             "amountValue": {"$ifNull": ["$amount", 0]},
                         },
                         "in": {
@@ -2889,8 +2947,22 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                                                 {
                                                     "$let": {
                                                         "vars": {
-                                                            "iva": {"$convert": {"input": "$tax.iva", "to": "double", "onError": None, "onNull": None}},
-                                                            "totalFacturaIva": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": None, "onNull": None}},
+                                                            "iva": {
+                                                                "$convert": {
+                                                                    "input": {"$ifNull": ["$tax.iva", {"$ifNull": ["$iva", {"$ifNull": ["$montoIva", "$sap.invoiceIva"]}]}]},
+                                                                    "to": "double",
+                                                                    "onError": None,
+                                                                    "onNull": None,
+                                                                }
+                                                            },
+                                                            "totalFacturaIva": {
+                                                                "$convert": {
+                                                                    "input": {"$ifNull": ["$tax.totalFactura", {"$ifNull": ["$totalFactura", "$sap.invoiceTotal"]}]},
+                                                                    "to": "double",
+                                                                    "onError": None,
+                                                                    "onNull": None,
+                                                                }
+                                                            },
                                                         },
                                                         "in": {
                                                             "$cond": [
@@ -4350,6 +4422,9 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
             movement_date = parse_excel_date(row.get("movement_date"))
             invoice_date = parse_excel_date(row.get("invoice_date"))
             amount_applied = parse_optional_decimal(row.get("amount_applied")) or 0.0
+            invoice_subtotal = parse_optional_decimal(row.get("invoice_subtotal"))
+            invoice_iva = parse_optional_decimal(row.get("invoice_iva"))
+            invoice_total = parse_optional_decimal(row.get("invoice_total"))
             movement_type = str(row.get("movement_type") or row.get("movementType") or "").strip().lower()
             tx_type = "INCOME" if movement_type == "ingreso" else "EXPENSE" if movement_type == "egreso" else "EXPENSE"
 
@@ -4360,6 +4435,16 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
                 "sourceSbo": source_sbo,
                 "date": movement_date or invoice_date,
                 "amount": float(amount_applied),
+                "subtotal": invoice_subtotal,
+                "montoSinIva": invoice_subtotal,
+                "iva": invoice_iva,
+                "montoIva": invoice_iva,
+                "totalFactura": invoice_total,
+                "tax": {
+                    "subtotal": invoice_subtotal,
+                    "iva": invoice_iva,
+                    "totalFactura": invoice_total,
+                },
                 "type": tx_type,
                 "description": str(row.get("payment_comments") or "").strip() or str(row.get("invoice_comments") or "").strip(),
                 "supplierName": str(row.get("business_partner") or "").strip() or str(row.get("card_code") or "").strip(),
@@ -4378,9 +4463,9 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
                     "invoiceDate": invoice_date,
                     "montoAplicado": float(amount_applied),
                     "montoAplicadoCents": to_monto_aplicado_cents(amount_applied),
-                    "invoiceSubtotal": parse_optional_decimal(row.get("invoice_subtotal")),
-                    "invoiceIva": parse_optional_decimal(row.get("invoice_iva")),
-                    "invoiceTotal": parse_optional_decimal(row.get("invoice_total")),
+                    "invoiceSubtotal": invoice_subtotal,
+                    "invoiceIva": invoice_iva,
+                    "invoiceTotal": invoice_total,
                     "paymentCurrency": str(row.get("payment_currency") or "").strip(),
                     "invoiceCurrency": str(row.get("invoice_currency") or "").strip(),
                     "cardCode": str(row.get("card_code") or "").strip(),
@@ -6972,20 +7057,20 @@ def list_transactions(
     for tx in txs:
         tx_doc = serialize_transaction_with_supplier(tx, suppliers_by_id)
 
-        tax_doc = tx_doc.get("tax") if isinstance(tx_doc.get("tax"), dict) else {}
-        subtotal = parse_optional_decimal(tax_doc.get("subtotal"))
-        iva = parse_optional_decimal(tax_doc.get("iva"))
-        total_factura = parse_optional_decimal(tax_doc.get("totalFactura"))
-
-        tx_doc["subtotal"] = subtotal if subtotal is not None else None
-        tx_doc["iva"] = iva if iva is not None else None
-        tx_doc["totalFactura"] = total_factura if total_factura is not None else None
+        subtotal, iva, total_factura = resolve_transaction_tax_components(tx_doc)
         amount = parse_optional_decimal(tx_doc.get("amount")) or 0
         sign = -1 if amount < 0 else 1
 
         tx_doc["subtotal"] = sign * subtotal if subtotal is not None else None
+        tx_doc["montoSinIva"] = tx_doc["subtotal"]
         tx_doc["iva"] = sign * iva if iva is not None else None
+        tx_doc["montoIva"] = tx_doc["iva"]
         tx_doc["totalFactura"] = sign * total_factura if total_factura is not None else None
+        tx_doc["tax"] = {
+            "subtotal": tx_doc["subtotal"],
+            "iva": tx_doc["iva"],
+            "totalFactura": tx_doc["totalFactura"],
+        }
         items.append(tx_doc)
 
     return {
