@@ -186,8 +186,14 @@ export function normalizeTransaction(transaction) {
 
   const pickNumber = (...values) => {
     for (const value of values) {
-      const parsed = Number(value);
-      if (Number.isFinite(parsed)) return parsed;
+      if (value === null || value === undefined) continue;
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) continue;
+        const parsed = Number(trimmed);
+        if (Number.isFinite(parsed)) return parsed;
+      }
     }
     return null;
   };
