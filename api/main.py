@@ -187,6 +187,15 @@ def normalize_project_slug(raw_slug: str | None) -> str:
     return slug
 
 
+def normalize_slug_from_raw_project_name(raw_project_name: str | None) -> str:
+    value = (raw_project_name or "").strip().lower()
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = re.sub(r"-+", "-", value)
+    return value.strip("-")
+
+
 def normalize_project_prefix(raw_prefix: str | None, slug: str) -> str:
     prefix = (raw_prefix or "").strip()
     if not prefix:
@@ -3510,7 +3519,16 @@ def create_projects_from_unmatched(_: dict = Depends(require_admin)):
             )
             continue
 
-        slug = normalize_project_slug(raw_project_name)
+        slug = normalize_slug_from_raw_project_name(raw_project_name)
+        if not slug or not re.fullmatch(r"[a-z0-9-]+", slug):
+            skipped_projects.append(
+                {
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "invalid_slug",
+                }
+            )
+            continue
 
         existing_by_sap = db.projects.find_one({"sap.projectNames": raw_project_name}, {"_id": 1})
         if existing_by_sap:
