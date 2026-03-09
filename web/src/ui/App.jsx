@@ -466,6 +466,15 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
             Crear carpeta S3
           </button>
         )}
+        {isAdmin && (
+          <button
+            type="button"
+            className={section === 'projects-unmatched' ? '' : 'secondary'}
+            onClick={() => setSection('projects-unmatched')}
+          >
+            Proyectos unmatched
+          </button>
+        )}
         <button
           type="button"
           className={section === 'raw-data' ? '' : 'secondary'}
@@ -504,8 +513,50 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
 
       {section === 's3-prefix' && isAdmin && <AdminS3PrefixCreateSection />}
 
+      {section === 'projects-unmatched' && isAdmin && <AdminProjectsFromUnmatchedSection onProjectCreated={onProjectCreated} />}
+
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
+    </div>
+  );
+}
+
+function AdminProjectsFromUnmatchedSection({ onProjectCreated }) {
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  async function onCreateFromUnmatched() {
+    setRunning(true);
+    setError('');
+    setResult(null);
+    try {
+      const response = await api.createProjectsFromUnmatchedAdmin();
+      setResult(response);
+      await onProjectCreated?.();
+    } catch (e) {
+      setError(e.message || 'No se pudieron crear proyectos desde unmatched');
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Proyectos desde unmatched</h3>
+      <div className="small" style={{ marginBottom: 10 }}>
+        Crea proyectos automáticamente desde <code>unmatched_projects</code>. Los nuevos quedan ocultos del frontend.
+      </div>
+      <button type="button" onClick={onCreateFromUnmatched} disabled={running}>
+        {running ? 'Creando...' : 'Crear proyectos desde unmatched'}
+      </button>
+      {error && <div style={{ marginTop: 10 }}>{error}</div>}
+      {result && (
+        <div style={{ marginTop: 10 }}>
+          <div>createdCount: <strong>{result?.createdCount ?? 0}</strong></div>
+          <div>skippedExistingCount: <strong>{result?.skippedExistingCount ?? 0}</strong></div>
+        </div>
+      )}
     </div>
   );
 }

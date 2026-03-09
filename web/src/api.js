@@ -413,6 +413,11 @@ export const api = {
       });
     })(),
 
+  createProjectsFromUnmatchedAdmin: () =>
+    backendReq('/api/admin/projects/create-from-unmatched', {
+      method: 'POST',
+    }),
+
   createS3PrefixAdmin: ({ slug }) =>
     backendReq('/api/admin/s3/create-prefix', {
       method: 'POST',
