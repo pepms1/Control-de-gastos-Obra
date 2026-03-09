@@ -396,11 +396,22 @@ export const api = {
       body: JSON.stringify({ changes }),
     }),
 
-  createProjectAdmin: ({ name, slug, s3Prefix }) =>
-    backendReq('/api/admin/projects', {
-      method: 'POST',
-      body: JSON.stringify({ name, slug, s3Prefix }),
-    }),
+  createProjectAdmin: ({ name, displayName, slug, s3Prefix, sapProjectNames, sourceSbo, rawProjectName }) =>
+    (() => {
+      const payload = {
+        name,
+        displayName,
+        slug,
+        sapProjectNames,
+        sourceSbo,
+        rawProjectName,
+      };
+      if (s3Prefix) payload.s3Prefix = s3Prefix;
+      return backendReq('/api/admin/projects', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    })(),
 
   createS3PrefixAdmin: ({ slug }) =>
     backendReq('/api/admin/s3/create-prefix', {

@@ -3415,12 +3415,28 @@ def list_projects(_: dict = Depends(require_authenticated)):
 
 @app.post("/api/admin/projects", status_code=201)
 def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
-    display_name = (payload.get("name") or "").strip()
+    display_name = (payload.get("displayName") or payload.get("name") or "").strip()
     if not display_name:
-        raise HTTPException(status_code=400, detail="name is required")
+        raise HTTPException(status_code=400, detail="displayName is required")
 
     slug = normalize_project_slug(payload.get("slug"))
-    s3_prefix = normalize_project_prefix(payload.get("s3Prefix"), slug)
+
+    raw_project_names = payload.get("sapProjectNames")
+    if not isinstance(raw_project_names, list):
+        raw_project_names = []
+    sap_project_names = [str(item).strip() for item in raw_project_names if str(item).strip()]
+
+    raw_project_name = (payload.get("rawProjectName") or "").strip()
+    if raw_project_name and raw_project_name not in sap_project_names:
+        sap_project_names.insert(0, raw_project_name)
+    if not sap_project_names:
+        sap_project_names = [display_name]
+
+    source_sbo = (payload.get("sourceSbo") or "").strip()
+
+    s3_prefix = None
+    if payload.get("s3Prefix"):
+        s3_prefix = normalize_project_prefix(payload.get("s3Prefix"), slug)
 
     if db.projects.find_one({"slug": slug}, {"_id": 1}):
         raise HTTPException(status_code=409, detail="Project slug already exists")
@@ -3437,14 +3453,21 @@ def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
         raise HTTPException(status_code=409, detail="Project name already exists")
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    sap_payload = {
+        "projectNames": sap_project_names,
+    }
+    if source_sbo:
+        sap_payload["sourceSbo"] = source_sbo
+    if raw_project_name:
+        sap_payload["rawProjectName"] = raw_project_name
+    if s3_prefix:
+        sap_payload["s3"] = {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix}
+
     doc = {
         "name": slug,
         "displayName": display_name,
         "slug": slug,
-        "sap": {
-            "projectNames": [display_name],
-            "s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix},
-        },
+        "sap": sap_payload,
         "created_at": now_iso,
         "updated_at": now_iso,
     }
@@ -3460,10 +3483,7 @@ def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
         "name": slug,
         "displayName": display_name,
         "slug": slug,
-        "sap": {
-            "projectNames": [display_name],
-            "s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix},
-        },
+        "sap": sap_payload,
     }
 
 
