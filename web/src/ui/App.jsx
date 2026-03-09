@@ -781,31 +781,34 @@ function AdminS3PrefixCreateSection() {
 }
 
 function AdminProjectCreateSection({ onProjectCreated }) {
-  const [name, setName] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [slug, setSlug] = useState('');
-  const [s3Prefix, setS3Prefix] = useState('');
+  const [sapProjectNames, setSapProjectNames] = useState('');
+  const [sourceSbo, setSourceSbo] = useState('');
+  const [rawProjectName, setRawProjectName] = useState('');
+  const [isUnmatchedFlow, setIsUnmatchedFlow] = useState(false);
   const [slugTouched, setSlugTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [created, setCreated] = useState(null);
 
-  function onNameChange(nextName) {
-    setName(nextName);
+  function onDisplayNameChange(nextName) {
+    setDisplayName(nextName);
     if (!slugTouched) {
-      const generatedSlug = normalizeSlug(nextName);
-      setSlug(generatedSlug);
-      if (!s3Prefix.trim()) setS3Prefix(generatedSlug ? `exports/${generatedSlug}` : '');
+      setSlug(normalizeSlug(nextName));
     }
   }
 
   function onSlugChange(nextSlug) {
-    const cleanSlug = normalizeSlug(nextSlug);
     setSlugTouched(true);
-    setSlug(cleanSlug);
+    setSlug(normalizeSlug(nextSlug));
   }
 
-  function onS3PrefixBlur() {
-    setS3Prefix((current) => normalizeS3Prefix(current, slug));
+  function onRawProjectNameChange(nextRawName) {
+    setRawProjectName(nextRawName);
+    if (!sapProjectNames.trim()) {
+      setSapProjectNames(nextRawName);
+    }
   }
 
   async function onSubmit(event) {
@@ -814,18 +817,27 @@ function AdminProjectCreateSection({ onProjectCreated }) {
     setError('');
     setCreated(null);
 
+    const normalizedSlug = normalizeSlug(slug || displayName);
+    const projectNames = String(sapProjectNames || '').split(',').map((item) => item.trim()).filter(Boolean);
+
     const payload = {
-      name: name.trim(),
-      slug: normalizeSlug(slug),
-      s3Prefix: normalizeS3Prefix(s3Prefix, slug),
+      displayName: displayName.trim(),
+      name: displayName.trim(),
+      slug: normalizedSlug,
+      sapProjectNames: projectNames.length ? projectNames : [displayName.trim()],
+      sourceSbo: isUnmatchedFlow ? sourceSbo.trim() : '',
+      rawProjectName: isUnmatchedFlow ? rawProjectName.trim() : '',
     };
 
     try {
       const response = await api.createProjectAdmin(payload);
       setCreated(response);
-      setName('');
+      setDisplayName('');
       setSlug('');
-      setS3Prefix('');
+      setSapProjectNames('');
+      setSourceSbo('');
+      setRawProjectName('');
+      setIsUnmatchedFlow(false);
       setSlugTouched(false);
       await onProjectCreated?.();
     } catch (e) {
@@ -844,23 +856,45 @@ function AdminProjectCreateSection({ onProjectCreated }) {
       <h3 style={{ marginTop: 0 }}>Agregar proyecto</h3>
       <form className="grid" onSubmit={onSubmit}>
         <div>
-          <label>Nombre</label>
-          <input value={name} onChange={(e) => onNameChange(e.target.value)} required />
+          <label>Display name</label>
+          <input value={displayName} onChange={(e) => onDisplayNameChange(e.target.value)} required />
         </div>
         <div>
           <label>Slug</label>
           <input value={slug} onChange={(e) => onSlugChange(e.target.value)} required />
         </div>
         <div>
-          <label>S3 Prefix</label>
+          <label>sap.projectNames (separados por coma)</label>
           <input
-            placeholder="exports/&lt;slug&gt;"
-            value={s3Prefix}
-            onChange={(e) => setS3Prefix(e.target.value)}
-            onBlur={onS3PrefixBlur}
-            required
+            value={sapProjectNames}
+            onChange={(e) => setSapProjectNames(e.target.value)}
+            placeholder="Nombre detectado en SAP"
           />
         </div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            type="checkbox"
+            checked={isUnmatchedFlow}
+            onChange={(e) => setIsUnmatchedFlow(e.target.checked)}
+          />
+          Proviene de unmatched_projects
+        </label>
+        {isUnmatchedFlow && (
+          <>
+            <div>
+              <label>sourceSbo</label>
+              <input value={sourceSbo} onChange={(e) => setSourceSbo(e.target.value)} />
+            </div>
+            <div>
+              <label>rawProjectName</label>
+              <input
+                value={rawProjectName}
+                onChange={(e) => onRawProjectNameChange(e.target.value)}
+                placeholder="Nombre crudo detectado"
+              />
+            </div>
+          </>
+        )}
         {error && <div>{error}</div>}
         {created?.projectId && (
           <div>
