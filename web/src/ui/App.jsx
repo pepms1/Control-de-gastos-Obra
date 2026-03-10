@@ -3298,7 +3298,16 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
     return Array.from(source).sort((a, b) => a.localeCompare(b, 'es'));
   }, [rows]);
 
-  const filteredTotal = useMemo(
+  const filteredTotalWithoutTax = useMemo(
+    () => shown.reduce((acc, row) => {
+      if (Number.isFinite(row?.subtotal)) return acc + row.subtotal;
+      const totalValue = getTransactionTotalValue(row);
+      const ivaValue = Number.isFinite(row?.iva) ? row.iva : 0;
+      return acc + (totalValue - ivaValue);
+    }, 0),
+    [shown],
+  );
+  const filteredTotalWithTax = useMemo(
     () => shown.reduce((acc, row) => acc + getTransactionTotalValue(row), 0),
     [shown],
   );
@@ -3364,7 +3373,8 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
               <div class="summary">
                 <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${shown.length}</div></div>
                 <div class="summary-card"><div class="label">Resultados totales</div><div class="value">${totalCount}</div></div>
-                <div class="summary-card"><div class="label">TOTAL VISIBLE</div><div class="value">$${formatMoney(filteredTotal)}</div></div>
+                <div class="summary-card"><div class="label">TOTAL VISIBLE SIN IVA</div><div class="value">$${formatMoney(filteredTotalWithoutTax)}</div></div>
+                <div class="summary-card"><div class="label">TOTAL VISIBLE CON IVA</div><div class="value">$${formatMoney(filteredTotalWithTax)}</div></div>
               </div>
               <div class="table-wrap">
                 <table>
@@ -3374,7 +3384,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
                   <tbody>${printableRows}</tbody>
                 </table>
               </div>
-              <div class="footer-total">Total visible: $${formatMoney(filteredTotal)}</div>
+              <div class="footer-total">Total visible sin IVA: $${formatMoney(filteredTotalWithoutTax)} · Total visible con IVA: $${formatMoney(filteredTotalWithTax)}</div>
             </section>
           </body>
         </html>
