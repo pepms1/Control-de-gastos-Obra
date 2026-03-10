@@ -6680,9 +6680,6 @@ def summary_expenses_by_supplier(
         )
     )
 
-    def normalize_provider_token(raw_value: str | None) -> str:
-        return re.sub(r"\s+", " ", str(raw_value or "").strip()).lower()
-
     supplier_totals = {}
     for tx in movements:
         source = str(tx.get("source") or "").strip().lower()
@@ -6699,17 +6696,22 @@ def summary_expenses_by_supplier(
             or (tx.get("proveedor") or {}).get("name")
             or ""
         )
-        if source == "sap-sbo":
-            normalized_name = normalize_provider_token(supplier_name or sap_business_partner)
-            provider_key = str(
-                sap_card_code
-                or normalized_name
-                or f"tx:{str(tx.get('_id') or '')}"
-            ).strip()
-            display_name = supplier_name or sap_business_partner or sap_card_code
+        provider_key = ""
+        if supplier_id:
+            provider_key = f"supplier:{str(supplier_id).strip()}"
+        elif vendor_id:
+            provider_key = f"vendor:{str(vendor_id).strip()}"
         else:
-            provider_key = str(supplier_id or vendor_id or "").strip()
-            display_name = supplier_name
+            # Fallback canónico cuando la transacción no trae IDs; evita agrupar
+            # todos los egresos sin proveedor en un único bucket vacío.
+            supplier_identity_key = build_supplier_key(
+                supplier_card_code=sap_card_code,
+                business_partner=sap_business_partner,
+                supplier_name=supplier_name,
+            )
+            provider_key = supplier_identity_key or f"tx:{str(tx.get('_id') or '').strip()}"
+
+        display_name = supplier_name or sap_business_partner or sap_card_code
         bucket = supplier_totals.setdefault(
             provider_key,
             {
