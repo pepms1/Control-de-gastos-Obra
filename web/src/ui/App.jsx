@@ -522,14 +522,32 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
   return (
     <div className="grid" style={{ gap: 14 }}>
       <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <button type="button" className={section === 'catalog' ? '' : 'secondary'} onClick={() => setSection('catalog')}>
-          Catálogo
-        </button>
         {canUseAdminPreferences && (
           <button type="button" className={section === 'my-project-visibility' ? '' : 'secondary'} onClick={() => setSection('my-project-visibility')}>
             Mi visualización de proyectos
           </button>
         )}
+        {isSuperAdmin && (
+          <button
+            type="button"
+            className={section === 'users-access' ? '' : 'secondary'}
+            onClick={() => setSection('users-access')}
+          >
+            Usuarios y accesos
+          </button>
+        )}
+        {isSuperAdmin && (
+          <button
+            type="button"
+            className={section === 'projects-visibility' ? '' : 'secondary'}
+            onClick={() => setSection('projects-visibility')}
+          >
+            Visibilidad de proyectos
+          </button>
+        )}
+        <button type="button" className={section === 'catalog' ? '' : 'secondary'} onClick={() => setSection('catalog')}>
+          Catálogo
+        </button>
         <button
           type="button"
           className={section === 'import-sap' ? '' : 'secondary'}
@@ -564,24 +582,6 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
             onClick={() => setSection('projects-unmatched')}
           >
             Proyectos unmatched
-          </button>
-        )}
-        {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'projects-visibility' ? '' : 'secondary'}
-            onClick={() => setSection('projects-visibility')}
-          >
-            Visibilidad de proyectos
-          </button>
-        )}
-        {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'users-access' ? '' : 'secondary'}
-            onClick={() => setSection('users-access')}
-          >
-            Usuarios y accesos
           </button>
         )}
         <button
