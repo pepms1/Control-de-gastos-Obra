@@ -62,25 +62,6 @@ function matchesDateRange(value, from, to) {
   return true;
 }
 
-function normalizeSlug(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9-]/g, '');
-}
-
-function normalizeS3Prefix(value, slug = '') {
-  let normalized = String(value || '').trim();
-  const cleanSlug = normalizeSlug(slug);
-  if (!normalized) return normalized;
-  if (cleanSlug && (normalized === cleanSlug || normalized === `${cleanSlug}/`)) {
-    normalized = `exports/${cleanSlug}`;
-  }
-  normalized = normalized.replace(/\/+$/, '');
-  return normalized;
-}
-
 function isMongoObjectId(value) {
   return /^[a-fA-F0-9]{24}$/.test(String(value || '').trim());
 }
@@ -460,24 +441,6 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
         {isAdmin && (
           <button
             type="button"
-            className={section === 'projects' ? '' : 'secondary'}
-            onClick={() => setSection('projects')}
-          >
-            Agregar proyecto
-          </button>
-        )}
-        {isAdmin && (
-          <button
-            type="button"
-            className={section === 's3-prefix' ? '' : 'secondary'}
-            onClick={() => setSection('s3-prefix')}
-          >
-            Crear carpeta S3
-          </button>
-        )}
-        {isAdmin && (
-          <button
-            type="button"
             className={section === 'projects-unmatched' ? '' : 'secondary'}
             onClick={() => setSection('projects-unmatched')}
           >
@@ -526,10 +489,6 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
         ) : (
           <div className="card">Solo los administradores pueden asignar categoría por proveedor.</div>
         ))}
-
-      {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
-
-      {section === 's3-prefix' && isAdmin && <AdminS3PrefixCreateSection />}
 
       {section === 'projects-unmatched' && isAdmin && <AdminProjectsFromUnmatchedSection onProjectCreated={onProjectCreated} />}
 
@@ -930,179 +889,6 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
         <button type="submit" disabled={saving || loading || !suppliers.length || !cats.length}>
           {saving ? 'Guardando...' : 'Guardar regla de categoría 2'}
         </button>
-      </form>
-    </div>
-  );
-}
-
-function AdminS3PrefixCreateSection() {
-  const [slug, setSlug] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [createdPath, setCreatedPath] = useState('');
-
-  async function onSubmit(event) {
-    event.preventDefault();
-    setSaving(true);
-    setError('');
-    setCreatedPath('');
-
-    try {
-      const response = await api.createS3PrefixAdmin({ slug });
-      const bucket = response?.bucket || 'calderon-sap-exports';
-      const prefix = response?.prefix || '';
-      setCreatedPath(`s3://${bucket}/${prefix}`);
-      setSlug('');
-    } catch (e) {
-      setError(e.message || 'No se pudo crear la carpeta en S3');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="card">
-      <h3 style={{ marginTop: 0 }}>Crear carpeta S3</h3>
-      <form className="grid" onSubmit={onSubmit}>
-        <div>
-          <label>Slug</label>
-          <input
-            value={slug}
-            onChange={(e) => setSlug(e.target.value)}
-            placeholder="ej. colima"
-            required
-          />
-        </div>
-        {error && <div>{error}</div>}
-        {createdPath && <div>Creado: <code>{createdPath}</code></div>}
-        <button type="submit" disabled={saving}>{saving ? 'Creando...' : 'Crear carpeta en S3'}</button>
-      </form>
-    </div>
-  );
-}
-
-function AdminProjectCreateSection({ onProjectCreated }) {
-  const [displayName, setDisplayName] = useState('');
-  const [slug, setSlug] = useState('');
-  const [sapProjectNames, setSapProjectNames] = useState('');
-  const [sourceSbo, setSourceSbo] = useState('');
-  const [rawProjectName, setRawProjectName] = useState('');
-  const [isUnmatchedFlow, setIsUnmatchedFlow] = useState(false);
-  const [slugTouched, setSlugTouched] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [created, setCreated] = useState(null);
-
-  function onDisplayNameChange(nextName) {
-    setDisplayName(nextName);
-    if (!slugTouched) {
-      setSlug(normalizeSlug(nextName));
-    }
-  }
-
-  function onSlugChange(nextSlug) {
-    setSlugTouched(true);
-    setSlug(normalizeSlug(nextSlug));
-  }
-
-  function onRawProjectNameChange(nextRawName) {
-    setRawProjectName(nextRawName);
-    if (!sapProjectNames.trim()) {
-      setSapProjectNames(nextRawName);
-    }
-  }
-
-  async function onSubmit(event) {
-    event.preventDefault();
-    setSaving(true);
-    setError('');
-    setCreated(null);
-
-    const normalizedSlug = normalizeSlug(slug || displayName);
-    const projectNames = String(sapProjectNames || '').split(',').map((item) => item.trim()).filter(Boolean);
-
-    const payload = {
-      displayName: displayName.trim(),
-      name: displayName.trim(),
-      slug: normalizedSlug,
-      sapProjectNames: projectNames.length ? projectNames : [displayName.trim()],
-      sourceSbo: isUnmatchedFlow ? sourceSbo.trim() : '',
-      rawProjectName: isUnmatchedFlow ? rawProjectName.trim() : '',
-    };
-
-    try {
-      const response = await api.createProjectAdmin(payload);
-      setCreated(response);
-      setDisplayName('');
-      setSlug('');
-      setSapProjectNames('');
-      setSourceSbo('');
-      setRawProjectName('');
-      setIsUnmatchedFlow(false);
-      setSlugTouched(false);
-      await onProjectCreated?.();
-    } catch (e) {
-      if (e?.status === 409) {
-        setError('Ya existe un proyecto con ese nombre o slug');
-      } else {
-        setError(e.message || 'No se pudo crear el proyecto');
-      }
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="card">
-      <h3 style={{ marginTop: 0 }}>Agregar proyecto</h3>
-      <form className="grid" onSubmit={onSubmit}>
-        <div>
-          <label>Display name</label>
-          <input value={displayName} onChange={(e) => onDisplayNameChange(e.target.value)} required />
-        </div>
-        <div>
-          <label>Slug</label>
-          <input value={slug} onChange={(e) => onSlugChange(e.target.value)} required />
-        </div>
-        <div>
-          <label>sap.projectNames (separados por coma)</label>
-          <input
-            value={sapProjectNames}
-            onChange={(e) => setSapProjectNames(e.target.value)}
-            placeholder="Nombre detectado en SAP"
-          />
-        </div>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="checkbox"
-            checked={isUnmatchedFlow}
-            onChange={(e) => setIsUnmatchedFlow(e.target.checked)}
-          />
-          Proviene de unmatched_projects
-        </label>
-        {isUnmatchedFlow && (
-          <>
-            <div>
-              <label>sourceSbo</label>
-              <input value={sourceSbo} onChange={(e) => setSourceSbo(e.target.value)} />
-            </div>
-            <div>
-              <label>rawProjectName</label>
-              <input
-                value={rawProjectName}
-                onChange={(e) => onRawProjectNameChange(e.target.value)}
-                placeholder="Nombre crudo detectado"
-              />
-            </div>
-          </>
-        )}
-        {error && <div>{error}</div>}
-        {created?.projectId && (
-          <div>
-            Proyecto creado. ID: <code>{created.projectId}</code>
-          </div>
-        )}
-        <button type="submit" disabled={saving}>{saving ? 'Creando...' : 'Crear proyecto'}</button>
       </form>
     </div>
   );
