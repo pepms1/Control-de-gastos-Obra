@@ -72,8 +72,8 @@ function getTransactionCategoryLabel(transaction, catMap) {
 }
 
 function getTransactionTotalValue(transaction) {
-  if (Number.isFinite(transaction?.totalFactura)) return transaction.totalFactura;
   if (Number.isFinite(transaction?.amount)) return transaction.amount;
+  if (Number.isFinite(transaction?.totalFactura)) return transaction.totalFactura;
   if (Number.isFinite(transaction?.subtotal)) return transaction.subtotal;
   return 0;
 }
@@ -3480,6 +3480,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
 }
 
 function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
+  const getVendorIdentity = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
+  const getVendorSupplierId = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
@@ -3527,10 +3529,19 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   useEffect(() => {
     setLoading(true);
     setError('');
+    const selectedVendor = vendors.find((vendor) => {
+      const vendorId = getVendorIdentity(vendor);
+      return vendorId && vendorId === supplierFilter;
+    }) || null;
+    const supplierIdParam = supplierFilter === 'ALL' || String(supplierFilter || '').startsWith('name:')
+      ? ''
+      : String(getVendorSupplierId(selectedVendor) || supplierFilter || '').trim();
+
     api.transactions({
       type: typeFilter === 'ALL' ? '' : typeFilter,
       page: String(page),
       limit: String(limit),
+      supplierId: supplierIdParam,
       q: query.trim(),
       from: dateFrom,
       to: dateTo,
@@ -3546,7 +3557,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         setError(err?.message || 'No se pudo buscar movimientos');
       })
       .finally(() => setLoading(false));
-  }, [page, query, typeFilter, dateFrom, dateTo, selectedProjectId]);
+  }, [page, query, supplierFilter, typeFilter, dateFrom, dateTo, selectedProjectId, vendors]);
 
   useEffect(() => {
     let isMounted = true;
@@ -3569,6 +3580,9 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
     () => rows
       .filter((row) => {
         if (supplierFilter === 'ALL') return true;
+        if (String(supplierFilter).startsWith('name:')) {
+          return String(row?.supplierName || '').trim() === String(supplierFilter).slice(5);
+        }
         return String(row?.supplierName || '').trim() === supplierFilter;
       })
       .filter((row) => {
@@ -3590,16 +3604,20 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   );
 
   const supplierOptions = useMemo(() => {
-    const source = new Set();
+    const source = new Map();
     vendors.forEach((vendor) => {
+      const value = getVendorIdentity(vendor);
       const name = String(vendor?.name || '').trim();
-      if (name) source.add(name);
+      if (!value || !name || source.has(value)) return;
+      const cardCode = String(vendor?.supplierCardCode || vendor?.externalIds?.sapCardCode || '').trim();
+      source.set(value, `${name} (${cardCode || 'Sin CardCode'})`);
     });
     rows.forEach((row) => {
       const name = String(row?.supplierName || '').trim();
-      if (name) source.add(name);
+      const value = `name:${name}`;
+      if (name && !source.has(value)) source.set(value, `${name} (sin vínculo catálogo)`);
     });
-    return Array.from(source).sort((a, b) => a.localeCompare(b, 'es'));
+    return Array.from(source.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
   }, [vendors, rows]);
 
   const categoryOptions = useMemo(() => {
@@ -3768,8 +3786,8 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
           <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
             <option value="ALL">Todos los proveedores</option>
-            {supplierOptions.map((supplierName) => (
-              <option key={supplierName} value={supplierName}>{supplierName}</option>
+            {supplierOptions.map(([supplierValue, supplierLabel]) => (
+              <option key={supplierValue} value={supplierValue}>{supplierLabel}</option>
             ))}
           </select>
           <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
