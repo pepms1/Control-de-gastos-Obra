@@ -2823,6 +2823,20 @@ def clean_global_category_name(value: str | None) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
 
 
+GLOBAL_CATEGORIES_PROJECT_ID = "__global__"
+
+
+def build_global_category_code(value: str | None) -> str | None:
+    key = normalize_global_category_key(value)
+    if not key:
+        return None
+    token = re.sub(r"[^a-z0-9]+", "-", key).strip("-")
+    token = re.sub(r"-+", "-", token)
+    if not token:
+        token = sha256(key.encode("utf-8")).hexdigest()[:12]
+    return f"global:{token}"
+
+
 def iter_existing_global_category_names() -> list[str]:
     names: list[str] = []
 
@@ -2858,8 +2872,9 @@ def iter_existing_global_category_names() -> list[str]:
 
 
 def ensure_global_categories_catalog() -> dict:
-    existing_rows = list(db.categories.find({}, {"name": 1, "active": 1, "nameKey": 1, "normalizedName": 1}))
+    existing_rows = list(db.categories.find({}, {"name": 1, "active": 1, "nameKey": 1, "normalizedName": 1, "code": 1, "projectId": 1}))
     by_key: dict[str, dict] = {}
+    by_code: dict[str, dict] = {}
 
     for row in existing_rows:
         name = clean_global_category_name(row.get("name"))
@@ -2871,14 +2886,17 @@ def ensure_global_categories_catalog() -> dict:
         current = by_key.get(key)
         if current is None:
             by_key[key] = row
-            continue
+        else:
+            current_is_active = current.get("active") is not False
+            row_is_active = row.get("active") is not False
+            if row_is_active and not current_is_active:
+                by_key[key] = row
+            elif row_is_active == current_is_active and str(row_id) < str(current.get("_id")):
+                by_key[key] = row
 
-        current_is_active = current.get("active") is not False
-        row_is_active = row.get("active") is not False
-        if row_is_active and not current_is_active:
-            by_key[key] = row
-        elif row_is_active == current_is_active and str(row_id) < str(current.get("_id")):
-            by_key[key] = row
+        code = normalize_non_empty_string(row.get("code"))
+        if code and code not in by_code:
+            by_code[code] = row
 
     candidate_names = [
         *[clean_global_category_name(row.get("name")) for row in existing_rows],
@@ -2893,21 +2911,59 @@ def ensure_global_categories_catalog() -> dict:
     for raw_name in candidate_names:
         name = clean_global_category_name(raw_name)
         key = normalize_global_category_key(name)
-        if not name or not key:
+        code = build_global_category_code(name)
+        if not name or not key or not code:
             continue
 
         keeper = by_key.get(key)
         if keeper is None:
-            inserted_id = db.categories.insert_one(
-                {
+            keeper = by_code.get(code)
+            if keeper is not None:
+                by_key[key] = keeper
+
+        if keeper is None:
+            try:
+                inserted_id = db.categories.insert_one(
+                    {
+                        "name": name,
+                        "active": True,
+                        "nameKey": key,
+                        "normalizedName": key,
+                        "code": code,
+                        "projectId": GLOBAL_CATEGORIES_PROJECT_ID,
+                    }
+                ).inserted_id
+                keeper = {
+                    "_id": inserted_id,
                     "name": name,
                     "active": True,
                     "nameKey": key,
                     "normalizedName": key,
+                    "code": code,
+                    "projectId": GLOBAL_CATEGORIES_PROJECT_ID,
                 }
-            ).inserted_id
-            by_key[key] = {"_id": inserted_id, "name": name, "active": True, "nameKey": key, "normalizedName": key}
-            seeded += 1
+                by_key[key] = keeper
+                by_code[code] = keeper
+                seeded += 1
+            except DuplicateKeyError:
+                keeper = db.categories.find_one(
+                    {
+                        "$or": [
+                            {"nameKey": key},
+                            {"normalizedName": key},
+                            {"projectId": GLOBAL_CATEGORIES_PROJECT_ID, "code": code},
+                            {"code": code},
+                        ]
+                    },
+                    {"name": 1, "active": 1, "nameKey": 1, "normalizedName": 1, "code": 1, "projectId": 1},
+                )
+                if keeper is None:
+                    logger.warning("Global categories bootstrap skipped problematic category name=%s code=%s", name, code)
+                    continue
+                by_key[key] = keeper
+                existing_code = normalize_non_empty_string(keeper.get("code"))
+                if existing_code:
+                    by_code[existing_code] = keeper
             continue
 
         updates: dict = {}
@@ -2918,13 +2974,27 @@ def ensure_global_categories_catalog() -> dict:
             updates["nameKey"] = key
         if keeper.get("normalizedName") != key:
             updates["normalizedName"] = key
+        if normalize_non_empty_string(keeper.get("code")) != code:
+            updates["code"] = code
         if clean_global_category_name(keeper.get("name")) != name:
             updates["name"] = name
 
         if updates:
-            db.categories.update_one({"_id": keeper.get("_id")}, {"$set": updates})
-            keeper.update(updates)
-            normalized_updates += 1
+            try:
+                db.categories.update_one({"_id": keeper.get("_id")}, {"$set": updates})
+                keeper.update(updates)
+                normalized_updates += 1
+                updated_code = normalize_non_empty_string(keeper.get("code"))
+                if updated_code:
+                    by_code[updated_code] = keeper
+            except DuplicateKeyError:
+                logger.warning(
+                    "Global categories bootstrap skipped update due to duplicate key for category_id=%s name=%s code=%s",
+                    keeper.get("_id"),
+                    name,
+                    code,
+                )
+                continue
 
     return {
         "seeded": seeded,
