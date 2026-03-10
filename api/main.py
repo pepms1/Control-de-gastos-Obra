@@ -4014,8 +4014,13 @@ def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
 
 
 @app.get("/api/suppliers")
-def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, _: dict = Depends(require_authenticated)):
+def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, user: dict = Depends(require_authenticated)):
     active_project_id = get_active_project_id(request)
+    if not can_access_project(user, active_project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     query = {"$and": [{"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}]}
     if uncategorized == 1:
         query["$and"].append({"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]})
@@ -6605,8 +6610,13 @@ def seed(_: dict = Depends(require_admin)):
 # ---------- categories ----------
 @app.get("/api/categories")
 @app.get("/categories")
-def list_categories(active_only: bool = True, request: FastAPIRequest = None, _: dict = Depends(require_authenticated)):
+def list_categories(active_only: bool = True, request: FastAPIRequest = None, user: dict = Depends(require_authenticated)):
     active_project_id = get_active_project_id(request)
+    if not can_access_project(user, active_project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     q = {"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}
     if active_only:
         q["active"] = True
@@ -6743,9 +6753,14 @@ def list_vendors(
     category_id: str | None = None,
     include_sap: bool = True,
     request: FastAPIRequest = None,
-    _: dict = Depends(require_authenticated),
+    user: dict = Depends(require_authenticated),
 ):
     active_project_id = get_active_project_id(request)
+    if not can_access_project(user, active_project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     q = {"projectId": active_project_id, "active": True} if active_only else {"projectId": active_project_id}
     if category_id:
         q["category_ids"] = category_id
