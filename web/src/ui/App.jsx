@@ -31,9 +31,6 @@ function getTransactionCategoryLabel(transaction, catMap) {
   ).trim();
   if (normalizedCategory) return normalizedCategory;
 
-  const effectiveName = (transaction?.categoryEffectiveName || '').trim();
-  if (effectiveName) return effectiveName;
-
   const effectiveCode = (transaction?.categoryEffectiveCode || '').trim();
   if (effectiveCode) {
     const mappedCategory = (catMap[effectiveCode] || '').trim();
@@ -96,6 +93,10 @@ function formatCurrency(value) {
   return `$${formatMoney(value || 0)}`;
 }
 
+function getTransactionSourceLabel(transaction) {
+  return `${transaction?.sapBadgeLabel || transaction?.source || '—'} ${transaction?.sourceSbo || ''}`.trim();
+}
+
 function SourceBadges({ transaction }) {
   const sourceLabel = transaction?.sapBadgeLabel || 'SAP/SBO';
   const sourceSbo = String(transaction?.sourceSbo || '').trim();
@@ -151,7 +152,7 @@ function Nav({
       <div className="nav-header">
         <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="nav-logo" />
         <div className="nav-title-wrap">
-          <div className="nav-title">CONTROL DE GASTOS V2 BETA</div>
+          <div className="nav-title">CONTROL DE GASTOS V2</div>
           <div className="nav-subtitle">Grupo MDI</div>
         </div>
       </div>
@@ -1263,7 +1264,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
-  const [viewMode, setViewMode] = useState('experimental');
+  const [viewMode, setViewMode] = useState('summary');
   const [showCategoryIva, setShowCategoryIva] = useState(false);
   const [showSupplierIva, setShowSupplierIva] = useState(false);
   const [supplierSortMode, setSupplierSortMode] = useState('alpha');
@@ -1342,8 +1343,8 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
   const subtitle =
     viewMode === 'supplier'
       ? 'Resumen operativo de egresos SAP/SBO por proveedor.'
-      : viewMode === 'experimental'
-        ? 'KPIs y visuales rápidos de categorías para seguimiento diario.'
+      : viewMode === 'summary'
+        ? 'KPIs y visuales de categorías para seguimiento diario.'
         : 'Detalle por categoría con proporción sobre el total de egresos.';
 
   const dashboardTotals = [
@@ -1391,7 +1392,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       </div>
 
       <div className="dashboard-tabs row" style={{ gap: 8 }}>
-        <button className={viewMode === 'experimental' ? '' : 'secondary'} onClick={() => setViewMode('experimental')}>
+        <button className={viewMode === 'summary' ? '' : 'secondary'} onClick={() => setViewMode('summary')}>
           Resumen
         </button>
         <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
@@ -1477,9 +1478,9 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
             )
           ) : !categoryRows.length ? (
             <div className="dashboard-state">No hay egresos registrados para mostrar en categorías.</div>
-          ) : viewMode === 'experimental' ? (
-            <div className="dashboard-experimental">
-              <div className="dashboard-experimental-grid">
+          ) : viewMode === 'summary' ? (
+            <div className="dashboard-summary">
+              <div className="dashboard-summary-grid">
                 <section className="dashboard-panel">
                   <h3>Comportamiento por categoría</h3>
                   <svg
@@ -1747,7 +1748,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   const getVendorIdentity = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
   const getVendorSupplierId = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
   const getTransactionStableKey = (tx) =>
-    tx?._id ?? tx?.id ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sap?.pagoNum || ''}|${tx?.sap?.facturaNum || ''}|${tx?.sap?.montoAplicado || ''}`;
+    tx?._id
+    ?? tx?.id
+    ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sapMeta?.paymentNum || ''}|${tx?.sapMeta?.invoiceNum || ''}|${tx?.amount || ''}`;
   const dedupeTransactions = (items) => Array.from(new Map((Array.isArray(items) ? items : []).map((tx) => [getTransactionStableKey(tx), tx])).values());
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
 
@@ -1822,13 +1825,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
           : null,
         querystring,
       });
-
-      console.log('[Transactions] selected vendor:', {
-        supplierFilter,
-        selectedVendor,
-        supplierIdParam,
-      });
-      console.log('[Transactions] params sent to /transactions:', requestParams);
 
       const response = await api.transactions(requestParams);
 
@@ -2099,11 +2095,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
 
       {isAdmin && (
         <div className="small" style={{ marginTop: 8, padding: 8, border: '1px dashed #94a3b8', borderRadius: 8 }}>
-          <div><strong>Debug Movimientos (V2/admin)</strong></div>
+          <div><strong>Detalle de filtros (admin)</strong></div>
           <div>projectId: {debugInfo.projectId || '—'}</div>
           <div>supplierId: {debugInfo.supplierId || '—'}</div>
-          <div>vendor seleccionado: {debugInfo.selectedVendor?.name || '—'} ({debugInfo.selectedVendor?.id || '—'})</div>
-          <div style={{ wordBreak: 'break-all' }}>querystring /transactions: {debugInfo.querystring || '—'}</div>
+          <div>Proveedor seleccionado: {debugInfo.selectedVendor?.name || '—'} ({debugInfo.selectedVendor?.id || '—'})</div>
+          <div style={{ wordBreak: 'break-all' }}>Consulta /transactions: {debugInfo.querystring || '—'}</div>
         </div>
       )}
 
@@ -2264,7 +2260,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <label>Subtotal / IVA / Total</label>
             <input value={`${formatCurrency(editing.subtotal ?? 0)} / ${formatCurrency(editing.iva ?? 0)} / ${formatCurrency(getTransactionTotalValue(editing))}`} disabled />
             <label>Origen / SBO</label>
-            <input value={`${editing.sapBadgeLabel || editing.source || '—'} ${editing.sourceSbo || ''}`.trim()} disabled />
+            <input value={getTransactionSourceLabel(editing)} disabled />
             {!isSapIvaTransaction(editing) && (
               <>
                 <label>Fecha</label>
@@ -2463,7 +2459,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
               <td class="amount">$${formatMoney(row.iva ?? 0)}</td>
               <td class="amount">$${formatMoney(getTransactionTotalValue(row))}</td>
               <td>${row.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
-              <td>${row.sapBadgeLabel || row.source || '—'} ${row.sourceSbo || ''}</td>
+              <td>${getTransactionSourceLabel(row)}</td>
             </tr>`)
         .join('');
 
