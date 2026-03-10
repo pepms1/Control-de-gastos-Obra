@@ -42,7 +42,7 @@ a{color:inherit}
 .nav-header{display:flex; align-items:center; gap:12px; min-width:0;}
 .nav-logo{width:52px; height:52px; border-radius:10px; border:1px solid var(--gray-200); background:#fff; object-fit:contain; flex-shrink:0;}
 .nav-title-wrap{display:grid; gap:2px; min-width:0;}
-.nav-title{font-weight:800; min-width:0; color:var(--primary-dark); font-size:clamp(30px,4vw,44px); line-height:1.05; letter-spacing:.02em;}
+.nav-title{font-weight:500; min-width:0; color:var(--primary-dark); font-size:clamp(30px,4vw,44px); line-height:1.05; letter-spacing:.02em;}
 .nav-subtitle{font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--gray-500); font-weight:600;}
 .nav-items{display:flex; gap:12px; align-items:center; flex-wrap:wrap; grid-column:1 / -1; min-width:0;}
 .nav-user-actions{display:flex; align-items:center; gap:10px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end;}

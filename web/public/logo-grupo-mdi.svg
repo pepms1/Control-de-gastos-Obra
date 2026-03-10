@@ -1,8 +1,10 @@
-<svg width="520" height="430" viewBox="0 0 520 430" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="520" height="430" fill="#f3f4f6"/>
-  <path d="M20 130H258V348L20 275V130Z" fill="#022B75"/>
-  <path d="M260 20L500 95V275H260V20Z" fill="#9F9FA5"/>
-  <text x="24" y="106" font-family="Arial, Helvetica, sans-serif" font-size="58" letter-spacing="24" fill="#001A4D">GRUPO</text>
-  <text x="26" y="280" font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="190" font-weight="900" fill="white">md</text>
-  <text x="280" y="280" font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="190" font-weight="900" fill="#002E85">i</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 420" role="img" aria-label="Logo Grupo MDI">
+  <rect width="512" height="420" fill="#f3f3f6"/>
+  <polygon points="16,120 235,120 235,405 16,332" fill="#032f78"/>
+  <polygon points="235,16 496,96 496,305 235,305" fill="#a3a3a9"/>
+  <rect x="223" y="175" width="35" height="130" fill="#a3a3a9"/>
+  <rect x="258" y="175" width="52" height="130" fill="#032f78"/>
+  <circle cx="284" cy="142" r="14" fill="#032f78"/>
+  <text x="74" y="95" font-family="Arial, Helvetica, sans-serif" font-size="42" letter-spacing="12" fill="#032f78">GRUPO</text>
+  <text x="24" y="300" font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="220" fill="#ffffff">md</text>
 </svg>
