@@ -3260,7 +3260,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <th>Proyecto</th>
                 <th>Proveedor</th>
                 <th>Descripción</th>
-                <th>Categoría</th>
+                <th>Categoría (actual)</th>
+                <th>Categoría 2</th>
                 <th>Subtotal</th>
                 <th>IVA</th>
                 <th>Total</th>
@@ -3273,7 +3274,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <tbody>
               {isAdmin && (
                 <tr>
-                  <td colSpan={isAdmin ? 12 : 10} style={{ textAlign: 'right' }}>
+                  <td colSpan={isAdmin ? 13 : 11} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (página actual)
@@ -3284,6 +3285,12 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
               {shown.map((r) => {
                 const isSapIva = isSapIvaTransaction(r);
                 const totalValue = getTransactionTotalValue(r);
+                const resolvedCategory2Name = String(
+                  r.resolvedCategory2Name
+                  || cats.find((c) => String(c.code || c.id) === String(r.resolvedCategory2Id || ''))?.name
+                  || 'Trabajos Especiales sin clasificar',
+                ).trim();
+                const resolvedCategory2Source = String(r.resolvedCategory2Source || '').trim();
                 return (
                 <tr key={getTransactionStableKey(r)}>
                   <td>{r.date || '—'}</td>
@@ -3293,6 +3300,14 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                   <td>
                     {getTransactionCategoryLabel(r, catMap)}
                     {r.categoryManualName && <span className="badge badge-manual" style={{ marginLeft: 6 }}>Manual</span>}
+                  </td>
+                  <td>
+                    {resolvedCategory2Name}
+                    {resolvedCategory2Source && (
+                      <span className="badge" style={{ marginLeft: 6 }} title={`Origen Cat. 2: ${resolvedCategory2Source}`}>
+                        {resolvedCategory2Source}
+                      </span>
+                    )}
                   </td>
                   <td style={{ fontWeight: 800 }}>{formatCurrency(r.subtotal ?? 0)}</td>
                   <td style={{ fontWeight: 700 }}>{formatCurrency(r.iva ?? 0)}</td>
@@ -3339,7 +3354,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={7} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (dataset filtrado):</td>
+                <td colSpan={8} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (dataset filtrado):</td>
                 <td style={{ fontWeight: 800 }}>
                   {formatCurrency(backendTotals.incomeGross)} / {formatCurrency(backendTotals.expensesGross)}
                 </td>
