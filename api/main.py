@@ -198,6 +198,12 @@ def normalize_slug_from_raw_project_name(raw_project_name: str | None) -> str:
     return value.strip("-")
 
 
+def normalize_text_for_matching(value: str | None) -> str:
+    normalized = unicodedata.normalize("NFD", str(value or "").strip().lower())
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def normalize_project_prefix(raw_prefix: str | None, slug: str) -> str:
     prefix = (raw_prefix or "").strip()
     if not prefix:
@@ -6456,6 +6462,129 @@ def summary_expenses_by_supplier(
 
     output.sort(key=lambda item: (item["supplierName"] or "").lower())
     return output
+
+
+@app.get("/api/admin/trabajos-especiales/suppliers")
+def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
+    tx_query = {"description": {"$exists": True, "$nin": [None, ""]}}
+    projection = {
+        "description": 1,
+        "supplierId": 1,
+        "supplierName": 1,
+        "supplierCardCode": 1,
+        "sap.cardCode": 1,
+        "sap.businessPartner": 1,
+        "projectId": 1,
+        "project": 1,
+        "date": 1,
+    }
+
+    projects_by_id = {
+        str(project.get("_id")): project
+        for project in db.projects.find({}, {"name": 1, "displayName": 1, "sap.sourceSbo": 1})
+    }
+
+    grouped = {}
+    for tx in db.transactions.find(tx_query, projection):
+        description = str(tx.get("description") or "").strip()
+        if not description:
+            continue
+
+        normalized_description = normalize_text_for_matching(description)
+        if not normalized_description.startswith("trabajos especiales"):
+            continue
+
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        supplier_card_code = str(tx.get("supplierCardCode") or sap_doc.get("cardCode") or "").strip()
+        business_partner = str(sap_doc.get("businessPartner") or "").strip()
+        supplier_name = str(tx.get("supplierName") or business_partner or supplier_card_code or "").strip() or "(Sin proveedor)"
+
+        supplier_id = str(tx.get("supplierId") or "").strip()
+        stable_name_key = normalize_text_for_matching(supplier_name)
+        supplier_key = supplier_id or supplier_card_code.lower() or stable_name_key or f"tx:{str(tx.get('_id') or '')}"
+
+        project_id = str(tx.get("projectId") or "").strip()
+        project_doc = projects_by_id.get(project_id) if project_id else None
+        project_name = (
+            str((project_doc or {}).get("displayName") or (project_doc or {}).get("name") or tx.get("project") or project_id or "")
+            .strip()
+        )
+        source_sbo = str(((project_doc or {}).get("sap") or {}).get("sourceSbo") or "").strip()
+
+        bucket = grouped.setdefault(
+            supplier_key,
+            {
+                "supplierKey": supplier_key,
+                "supplierId": supplier_id,
+                "supplierName": supplier_name,
+                "supplierCardCode": supplier_card_code,
+                "businessPartner": business_partner,
+                "transactionCount": 0,
+                "_projectKeys": set(),
+                "projects": [],
+                "sampleDescriptions": [],
+                "_sampleSeen": set(),
+                "_lastSeenDate": None,
+            },
+        )
+
+        if supplier_name and (not bucket.get("supplierName") or bucket.get("supplierName") == "(Sin proveedor)"):
+            bucket["supplierName"] = supplier_name
+        if supplier_card_code and not bucket.get("supplierCardCode"):
+            bucket["supplierCardCode"] = supplier_card_code
+        if business_partner and not bucket.get("businessPartner"):
+            bucket["businessPartner"] = business_partner
+        if supplier_id and not bucket.get("supplierId"):
+            bucket["supplierId"] = supplier_id
+
+        bucket["transactionCount"] += 1
+
+        project_key = project_id or project_name
+        if project_key and project_key not in bucket["_projectKeys"]:
+            bucket["_projectKeys"].add(project_key)
+            bucket["projects"].append(
+                {
+                    "projectId": project_id,
+                    "projectName": project_name,
+                    "sourceSbo": source_sbo,
+                }
+            )
+
+        normalized_sample = normalize_text_for_matching(description)
+        if normalized_sample and normalized_sample not in bucket["_sampleSeen"] and len(bucket["sampleDescriptions"]) < 5:
+            bucket["_sampleSeen"].add(normalized_sample)
+            bucket["sampleDescriptions"].append(description)
+
+        tx_date = normalizeDate(tx.get("date"))
+        if tx_date and (bucket["_lastSeenDate"] is None or tx_date > bucket["_lastSeenDate"]):
+            bucket["_lastSeenDate"] = tx_date
+
+    suppliers = []
+    for values in grouped.values():
+        suppliers.append(
+            {
+                "supplierKey": values.get("supplierKey") or "",
+                "supplierId": values.get("supplierId") or "",
+                "supplierName": values.get("supplierName") or "(Sin proveedor)",
+                "supplierCardCode": values.get("supplierCardCode") or "",
+                "businessPartner": values.get("businessPartner") or "",
+                "transactionCount": int(values.get("transactionCount") or 0),
+                "projectCount": len(values.get("_projectKeys") or set()),
+                "projects": sorted(
+                    values.get("projects") or [],
+                    key=lambda item: (str(item.get("projectName") or "").lower(), str(item.get("projectId") or "")),
+                ),
+                "sampleDescriptions": values.get("sampleDescriptions") or [],
+                "lastSeenAt": values.get("_lastSeenDate").isoformat() if values.get("_lastSeenDate") else None,
+            }
+        )
+
+    suppliers.sort(key=lambda item: ((item.get("supplierName") or "").lower(), item.get("supplierCardCode") or "", item.get("supplierKey") or ""))
+    return {
+        "items": suppliers,
+        "totalSuppliers": len(suppliers),
+        "matchingPrefix": "trabajos especiales",
+    }
 
 
 @app.post("/api/admin/migrate/projectId")
