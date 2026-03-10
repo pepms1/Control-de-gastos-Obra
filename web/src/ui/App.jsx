@@ -624,11 +624,16 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
 
 
 function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) {
-  const [hiddenProjectIds, setHiddenProjectIds] = useState(() => (
-    Array.isArray(session?.uiPrefs?.hiddenProjectIds)
+  const initialHiddenProjectIds = useMemo(
+    () => (Array.isArray(session?.uiPrefs?.hiddenProjectIds)
       ? session.uiPrefs.hiddenProjectIds.map(String)
-      : []
+      : []),
+    [session?.uiPrefs?.hiddenProjectIds],
+  );
+  const [hiddenProjectIds, setHiddenProjectIds] = useState(() => (
+    initialHiddenProjectIds
   ));
+  const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -638,12 +643,37 @@ function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) 
   );
 
   useEffect(() => {
-    setHiddenProjectIds(
-      Array.isArray(session?.uiPrefs?.hiddenProjectIds)
-        ? session.uiPrefs.hiddenProjectIds.map(String)
-        : [],
-    );
-  }, [session?.uiPrefs]);
+    setHiddenProjectIds(initialHiddenProjectIds);
+  }, [initialHiddenProjectIds]);
+
+  const visibleProjectIds = useMemo(
+    () => visibleProjects.map((project) => String(project?._id || '')).filter(Boolean),
+    [visibleProjects],
+  );
+
+  const visibleProjectIdSet = useMemo(() => new Set(visibleProjectIds), [visibleProjectIds]);
+
+  const projectCounts = useMemo(() => {
+    const hiddenInVisibleCount = visibleProjectIds.filter((projectId) => hiddenProjectIds.includes(projectId)).length;
+    return {
+      visible: visibleProjectIds.length - hiddenInVisibleCount,
+      hidden: hiddenInVisibleCount,
+      total: visibleProjectIds.length,
+    };
+  }, [hiddenProjectIds, visibleProjectIds]);
+
+  const filteredVisibleProjects = useMemo(() => {
+    const normalizedQuery = normalizeSearchText(search);
+    if (!normalizedQuery) return visibleProjects;
+    return visibleProjects.filter((project) => {
+      const haystack = normalizeSearchText([
+        project?.displayName,
+        project?.slug,
+        project?.sap?.sourceSbo,
+      ].join(' '));
+      return haystack.includes(normalizedQuery);
+    });
+  }, [search, visibleProjects]);
 
   function isVisibleForMe(projectId) {
     return !hiddenProjectIds.includes(String(projectId || ''));
@@ -654,6 +684,26 @@ function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) 
     setHiddenProjectIds((prev) => (
       prev.includes(key) ? prev.filter((id) => id !== key) : [...prev, key]
     ));
+    setMessage('');
+  }
+
+  function showAllProjects() {
+    setHiddenProjectIds((prev) => prev.filter((id) => !visibleProjectIdSet.has(id)));
+    setMessage('');
+  }
+
+  function hideAllProjects() {
+    setHiddenProjectIds((prev) => {
+      const next = new Set(prev);
+      visibleProjectIds.forEach((projectId) => next.add(projectId));
+      return Array.from(next);
+    });
+    setMessage('');
+  }
+
+  function resetMyView() {
+    setHiddenProjectIds(initialHiddenProjectIds);
+    setMessage('Preferencias restablecidas sin guardar.');
   }
 
   async function savePreferences() {
@@ -677,23 +727,51 @@ function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) 
     <div className="card grid" style={{ gap: 12 }}>
       <div>
         <h3 style={{ margin: 0 }}>Mi visualización de proyectos</h3>
-        <div className="small">Esto solo afecta tu vista personal. No cambia la publicación global ni el acceso de otros usuarios.</div>
+        <div className="small">El estado es personal: visible para mí u oculto para mí. No cambia la publicación global ni el acceso de otros usuarios.</div>
       </div>
 
       {!visibleProjects.length && <div className="small">No hay proyectos publicados para configurar.</div>}
 
       {!!visibleProjects.length && (
         <div className="grid" style={{ gap: 8 }}>
-          {visibleProjects.map((project) => {
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <span className="small">
+              {projectCounts.visible} visibles · {projectCounts.hidden} ocultos
+            </span>
+            <button type="button" className="secondary" onClick={showAllProjects}>Mostrar todos</button>
+            <button type="button" className="secondary" onClick={hideAllProjects}>Ocultar todos</button>
+            <button type="button" className="secondary" onClick={resetMyView}>Restablecer mi vista</button>
+          </div>
+
+          <input
+            type="search"
+            placeholder="Buscar por displayName, slug o sourceSbo"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+
+          {!filteredVisibleProjects.length && (
+            <div className="small">No hay coincidencias para “{search.trim()}”.</div>
+          )}
+
+          {filteredVisibleProjects.map((project) => {
             const projectId = String(project?._id || '');
+            const visibleForMe = isVisibleForMe(projectId);
+            const sourceSbo = String(project?.sap?.sourceSbo || '').trim();
             return (
               <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input
                   type="checkbox"
-                  checked={isVisibleForMe(projectId)}
+                  checked={visibleForMe}
                   onChange={() => toggleProject(projectId)}
                 />
-                <span>{getProjectDisplayName(project)}</span>
+                <span>
+                  {getProjectDisplayName(project)}
+                  <span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `· ${sourceSbo}` : ''}</span>
+                  <span className="small" style={{ marginLeft: 6 }}>
+                    {visibleForMe ? '· Visible para mí' : '· Oculto para mí'}
+                  </span>
+                </span>
               </label>
             );
           })}
