@@ -3449,6 +3449,27 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
     () => shown.reduce((acc, row) => acc + getTransactionTotalValue(row), 0),
     [shown],
   );
+  const pdfFilteredTotalWithoutTax = useMemo(
+    () => shown.reduce((acc, row) => {
+      const toPdfNumber = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'string') {
+          const normalized = value.replace(/\s+/g, '').replace(',', '.');
+          const parsed = Number(normalized);
+          return Number.isFinite(parsed) ? parsed : 0;
+        }
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+
+      const subtotalRaw = row?.subtotal;
+      const hasSubtotal = subtotalRaw !== null && subtotalRaw !== undefined && String(subtotalRaw).trim() !== '';
+      if (hasSubtotal) return acc + toPdfNumber(subtotalRaw);
+      return acc + (toPdfNumber(row?.total) - toPdfNumber(row?.iva));
+    }, 0),
+    [shown],
+  );
+  const pdfFilteredTotalWithTax = filteredTotal;
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * limit + 1;
   const rangeEnd = Math.min(page * limit, totalCount);
 
@@ -3511,7 +3532,8 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
               <div class="summary">
                 <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${shown.length}</div></div>
                 <div class="summary-card"><div class="label">Resultados totales</div><div class="value">${totalCount}</div></div>
-                <div class="summary-card"><div class="label">TOTAL VISIBLE</div><div class="value">$${formatMoney(filteredTotal)}</div></div>
+                <div class="summary-card"><div class="label">TOTAL VISIBLE SIN IVA</div><div class="value">$${formatMoney(pdfFilteredTotalWithoutTax)}</div></div>
+                <div class="summary-card"><div class="label">TOTAL VISIBLE CON IVA</div><div class="value">$${formatMoney(pdfFilteredTotalWithTax)}</div></div>
               </div>
               <div class="table-wrap">
                 <table>
@@ -3521,7 +3543,10 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
                   <tbody>${printableRows}</tbody>
                 </table>
               </div>
-              <div class="footer-total">Total visible: $${formatMoney(filteredTotal)}</div>
+              <div class="footer-total">
+                <div>Total visible sin IVA: $${formatMoney(pdfFilteredTotalWithoutTax)}</div>
+                <div>Total visible con IVA: $${formatMoney(pdfFilteredTotalWithTax)}</div>
+              </div>
             </section>
           </body>
         </html>
