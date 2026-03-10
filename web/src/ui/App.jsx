@@ -78,6 +78,45 @@ function getTransactionSourceLabel(transaction) {
   return `${transaction?.sapBadgeLabel || transaction?.source || '—'} ${transaction?.sourceSbo || ''}`.trim();
 }
 
+function normalizeSearchText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function tokenizeSearchQuery(query) {
+  return normalizeSearchText(query)
+    .split(' ')
+    .filter(Boolean);
+}
+
+function buildTransactionSearchHaystack(transaction, catMap) {
+  const sapMeta = transaction?.sapMeta || {};
+  const fields = [
+    transaction?.description,
+    transaction?.supplierName,
+    transaction?.categoryName,
+    getTransactionCategoryLabel(transaction, catMap),
+    transaction?.projectDisplayName,
+    transaction?.sourceSbo,
+    sapMeta?.businessPartner,
+    sapMeta?.invoiceNum,
+    sapMeta?.paymentNum,
+    sapMeta?.externalDocNum,
+  ];
+  return normalizeSearchText(fields.filter(Boolean).join(' '));
+}
+
+function matchesTransactionSearch(transaction, query, catMap) {
+  const tokens = tokenizeSearchQuery(query);
+  if (!tokens.length) return true;
+  const haystack = buildTransactionSearchHaystack(transaction, catMap);
+  return tokens.every((token) => haystack.includes(token));
+}
+
 function SourceBadges({ transaction }) {
   const sourceLabel = transaction?.sapBadgeLabel || 'SAP/SBO';
   const sourceSbo = String(transaction?.sourceSbo || '').trim();
@@ -2142,23 +2181,9 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         return matchesDateRange(row?.date, dateFrom, dateTo);
       })
       .filter((row) => {
-        const normalizedQuery = query.trim().toLowerCase();
-        if (!normalizedQuery) return true;
-        const sapMeta = row?.sapMeta || {};
-        const searchableFields = [
-          row?.description,
-          row?.supplierName,
-          row?.categoryName,
-          row?.projectDisplayName,
-          row?.sourceSbo,
-          sapMeta?.businessPartner,
-          sapMeta?.invoiceNum,
-          sapMeta?.paymentNum,
-          sapMeta?.externalDocNum,
-        ];
-        return searchableFields.some((field) => String(field || '').toLowerCase().includes(normalizedQuery));
+        return matchesTransactionSearch(row, query, catMap);
       }),
-    [rows, supplierFilter, categoryFilter, sourceSboFilter, dateFrom, dateTo, query],
+    [rows, supplierFilter, categoryFilter, sourceSboFilter, dateFrom, dateTo, query, catMap],
   );
 
   const supplierOptions = useMemo(() => {
