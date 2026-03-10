@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
-import { getSapCategoryLabel, getTransactionTaxBreakdown, isSapSboTransaction } from '../transactions/helpers.js';
+import { isSapSboTransaction } from '../transactions/helpers.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 
@@ -55,6 +55,14 @@ function getTransactionTotalValue(transaction) {
   if (Number.isFinite(transaction?.amount)) return transaction.amount;
   if (Number.isFinite(transaction?.subtotal)) return transaction.subtotal;
   return 0;
+}
+
+function matchesDateRange(value, from, to) {
+  const date = String(value || '').slice(0, 10);
+  if (!date) return false;
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
 }
 
 function normalizeSlug(value) {
@@ -2276,6 +2284,12 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
 function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
+  const [supplierFilter, setSupplierFilter] = useState('ALL');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [typeFilter, setTypeFilter] = useState('EXPENSE');
+  const [sourceSboFilter, setSourceSboFilter] = useState('ALL');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -2294,16 +2308,19 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
 
   useEffect(() => {
     setPage(1);
-  }, [query]);
+  }, [query, supplierFilter, categoryFilter, typeFilter, sourceSboFilter, dateFrom, dateTo, selectedProjectId]);
 
   useEffect(() => {
     setLoading(true);
     setError('');
     api.transactions({
-      type: 'EXPENSE',
+      type: typeFilter === 'ALL' ? '' : typeFilter,
       page: String(page),
       limit: String(limit),
       q: query.trim(),
+      from: dateFrom,
+      to: dateTo,
+      projectId: String(selectedProjectId || ''),
     })
       .then((data) => {
         setRows(Array.isArray(data?.items) ? data.items : []);
@@ -2315,70 +2332,112 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         setError(err?.message || 'No se pudo buscar movimientos');
       })
       .finally(() => setLoading(false));
-  }, [page, query, selectedProjectId]);
+  }, [page, query, typeFilter, dateFrom, dateTo, selectedProjectId]);
 
-  const getAmountWithoutIva = (row) => {
-    const taxBreakdown = getTransactionTaxBreakdown(row);
-    const totalAmount = Number(row.amount) || 0;
-    const ivaAmount = Number(taxBreakdown.iva);
-    const subtotalAmount = Number(taxBreakdown.subtotal);
+  const shown = useMemo(
+    () => rows
+      .filter((row) => {
+        if (supplierFilter === 'ALL') return true;
+        return String(row?.supplierName || '').trim() === supplierFilter;
+      })
+      .filter((row) => {
+        if (categoryFilter === 'ALL') return true;
+        return String(row?.categoryCode || row?.categoryEffectiveCode || '').trim() === categoryFilter;
+      })
+      .filter((row) => {
+        if (sourceSboFilter === 'ALL') return true;
+        return String(row?.sourceSbo || '').trim() === sourceSboFilter;
+      })
+      .filter((row) => {
+        if (!dateFrom && !dateTo) return true;
+        return matchesDateRange(row?.date, dateFrom, dateTo);
+      })
+      .filter((row) => {
+        const normalizedQuery = query.trim().toLowerCase();
+        if (!normalizedQuery) return true;
+        const sapMeta = row?.sapMeta || {};
+        const searchableFields = [
+          row?.description,
+          row?.supplierName,
+          row?.categoryName,
+          row?.projectDisplayName,
+          row?.sourceSbo,
+          sapMeta?.businessPartner,
+          sapMeta?.invoiceNum,
+          sapMeta?.paymentNum,
+          sapMeta?.externalDocNum,
+        ];
+        return searchableFields.some((field) => String(field || '').toLowerCase().includes(normalizedQuery));
+      }),
+    [rows, supplierFilter, categoryFilter, sourceSboFilter, dateFrom, dateTo, query],
+  );
 
-    if (Number.isFinite(subtotalAmount)) return subtotalAmount;
-    if (Number.isFinite(ivaAmount)) return totalAmount - ivaAmount;
-    return totalAmount;
-  };
+  const supplierOptions = useMemo(() => {
+    const source = new Set();
+    vendors.forEach((vendor) => {
+      const name = String(vendor?.name || '').trim();
+      if (name) source.add(name);
+    });
+    rows.forEach((row) => {
+      const name = String(row?.supplierName || '').trim();
+      if (name) source.add(name);
+    });
+    return Array.from(source).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [vendors, rows]);
+
+  const categoryOptions = useMemo(() => {
+    const source = new Map();
+    cats.forEach((category) => {
+      const key = String(category?.code || category?.id || '').trim();
+      if (!key) return;
+      source.set(key, category?.displayLabel || category?.name || key);
+    });
+    rows.forEach((row) => {
+      const key = String(row?.categoryCode || row?.categoryEffectiveCode || '').trim();
+      if (!key || source.has(key)) return;
+      source.set(key, row?.categoryName || row?.categoryEffectiveName || key);
+    });
+    return Array.from(source.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
+  }, [cats, rows]);
+
+  const sourceSboOptions = useMemo(() => {
+    const source = new Set();
+    rows.forEach((row) => {
+      const value = String(row?.sourceSbo || '').trim();
+      if (value) source.add(value);
+    });
+    return Array.from(source).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [rows]);
 
   const filteredTotal = useMemo(
-    () => rows.reduce((acc, r) => acc + getAmountWithoutIva(r), 0),
-    [rows],
+    () => shown.reduce((acc, row) => acc + getTransactionTotalValue(row), 0),
+    [shown],
   );
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * limit + 1;
   const rangeEnd = Math.min(page * limit, totalCount);
 
   function exportSearchResultsToPdf() {
-    if (!rows.length) return;
+    if (!shown.length) return;
     setExportingPdf(true);
 
     try {
-      let filteredTotalWithoutIva = 0;
-
-      const printableRows = rows
-        .map((r) => {
-          const provider = r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—';
-          const concept = r.description || r.concept || '—';
-          const category = getTransactionCategoryLabel(r, catMap) || '—';
-          const taxBreakdown = getTransactionTaxBreakdown(r);
-          const ivaAmount = Number(taxBreakdown.iva);
-          const hasIva = Number.isFinite(ivaAmount) && Math.abs(ivaAmount) > 0;
-          const totalAmount = Number(r.amount) || 0;
-          const safeSubtotal = getAmountWithoutIva(r);
-
-          filteredTotalWithoutIva += safeSubtotal;
-
-          const ivaBreakdown = hasIva
-            ? `Subtotal: $${formatMoney(safeSubtotal)} + IVA: $${formatMoney(ivaAmount)}`
-            : '—';
-
-          return `
+      const printableRows = shown
+        .map((row) => `
             <tr>
-              <td>${r.date || '—'}</td>
-              <td>${provider}</td>
-              <td>${concept}</td>
-              <td>${category}</td>
-              <td>${ivaBreakdown}</td>
-              <td class="amount">$${formatMoney(safeSubtotal)}</td>
-            </tr>`;
-        })
+              <td>${row.date || '—'}</td>
+              <td>${row.projectDisplayName || 'Sin proyecto'}</td>
+              <td>${row.supplierName || '—'}</td>
+              <td>${row.description || '—'}</td>
+              <td>${getTransactionCategoryLabel(row, catMap) || '—'}</td>
+              <td class="amount">$${formatMoney(row.subtotal ?? 0)}</td>
+              <td class="amount">$${formatMoney(row.iva ?? 0)}</td>
+              <td class="amount">$${formatMoney(getTransactionTotalValue(row))}</td>
+              <td>${row.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
+              <td>${row.sapBadgeLabel || row.source || '—'} ${row.sourceSbo || ''}</td>
+            </tr>`)
         .join('');
 
-      const amountSummaryCards = `
-                <div class="summary-card"><div class="label">MONTO SIN IVA</div><div class="value">$${formatMoney(filteredTotalWithoutIva)}</div></div>
-          `;
-
-      const footerTotalLabel = 'Total filtrado sin IVA';
-      const footerTotalAmount = filteredTotalWithoutIva;
-
-      const popup = window.open('', '_blank', 'width=1200,height=800');
+      const popup = window.open('', '_blank', 'width=1400,height=800');
       if (!popup) return;
 
       popup.document.write(`
@@ -2396,19 +2455,15 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
               .header h1 { margin: 0; font-size: 26px; letter-spacing: .02em; }
               .header p { margin: 8px 0 0; font-size: 13px; opacity: .95; }
               .summary { display: flex; gap: 12px; flex-wrap: wrap; padding: 16px 24px; background: var(--soft); border-bottom: 1px solid var(--line); }
-              .summary-card { background: #fff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 10px 14px; min-width: 200px; }
+              .summary-card { background: #fff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 10px 14px; min-width: 220px; }
               .summary-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; }
               .summary-card .value { margin-top: 4px; font-size: 18px; font-weight: 700; color: var(--primary-dark); }
               .table-wrap { padding: 14px 24px 24px; }
               table { width: 100%; border-collapse: collapse; }
-              th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; }
+              th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; font-size: 12px; }
               thead th { background: #f1f5f9; color: var(--primary-dark); font-weight: 700; }
               .amount { text-align: right; font-weight: 700; color: var(--primary-dark); }
               .footer-total { text-align: right; padding: 14px 24px 22px; font-size: 18px; font-weight: 800; color: var(--primary-dark); }
-              @media print {
-                body { background: #fff; }
-                .sheet { margin: 0; border: 0; border-radius: 0; }
-              }
             </style>
           </head>
           <body>
@@ -2418,19 +2473,19 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
                 <p>Generado: ${new Date().toLocaleString('es-MX')} · Consulta: ${query.trim() || 'Sin filtro de texto'}</p>
               </header>
               <div class="summary">
-                <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${rows.length}</div></div>
+                <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${shown.length}</div></div>
                 <div class="summary-card"><div class="label">Resultados totales</div><div class="value">${totalCount}</div></div>
-                ${amountSummaryCards}
+                <div class="summary-card"><div class="label">TOTAL VISIBLE</div><div class="value">$${formatMoney(filteredTotal)}</div></div>
               </div>
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Desglose IVA</th><th style="text-align:right">Monto</th></tr>
+                    <tr><th>Fecha</th><th>Proyecto</th><th>Proveedor</th><th>Descripción</th><th>Categoría</th><th style="text-align:right">Subtotal</th><th style="text-align:right">IVA</th><th style="text-align:right">Total</th><th>Tipo</th><th>Origen / SBO</th></tr>
                   </thead>
                   <tbody>${printableRows}</tbody>
                 </table>
               </div>
-              <div class="footer-total">${footerTotalLabel}: $${formatMoney(footerTotalAmount)}</div>
+              <div class="footer-total">Total visible: $${formatMoney(filteredTotal)}</div>
             </section>
           </body>
         </html>
@@ -2443,50 +2498,92 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
     }
   }
 
-
   return (
     <div className="card">
       <h2 style={{ marginTop: 0 }}>Buscar movimientos</h2>
-      <div className="search-toolbar">
+      <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
         <input
-          placeholder="Buscar por proveedor, concepto o categoría"
+          placeholder="Buscar por descripción, proveedor, categoría, proyecto o SBO"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          style={{ maxWidth: 420 }}
+          style={{ minWidth: 320 }}
         />
-        <button type="button" onClick={exportSearchResultsToPdf} disabled={loading || exportingPdf || !rows.length}>
+        <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+          <option value="ALL">Todos los proveedores</option>
+          {supplierOptions.map((supplierName) => (
+            <option key={supplierName} value={supplierName}>{supplierName}</option>
+          ))}
+        </select>
+        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+          <option value="ALL">Todas las categorías</option>
+          {categoryOptions.map(([categoryCode, categoryLabel]) => (
+            <option key={categoryCode} value={categoryCode}>{categoryLabel}</option>
+          ))}
+        </select>
+        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+          <option value="ALL">Todos los tipos</option>
+          <option value="EXPENSE">Egreso</option>
+          <option value="INCOME">Ingreso</option>
+        </select>
+        <select value={sourceSboFilter} onChange={(e) => setSourceSboFilter(e.target.value)}>
+          <option value="ALL">Todos los SBO</option>
+          {sourceSboOptions.map((sourceSbo) => (
+            <option key={sourceSbo} value={sourceSbo}>{sourceSbo}</option>
+          ))}
+        </select>
+        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="Fecha desde" />
+        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} aria-label="Fecha hasta" />
+        <button type="button" onClick={exportSearchResultsToPdf} disabled={loading || exportingPdf || !shown.length}>
           {exportingPdf ? 'Exportando...' : 'Exportar PDF'}
         </button>
       </div>
       <div className="small" style={{ marginTop: 8 }}>
-        {loading ? 'Buscando...' : `${totalCount} resultados en egresos${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''}`}
+        {loading ? 'Buscando...' : `${totalCount} resultados${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''} · ${shown.length} visibles tras filtros`}
       </div>
       {!!error && <div className="small" style={{ marginTop: 8, color: '#b91c1c' }}>{error}</div>}
       <div style={{ overflowX: 'auto', marginTop: 10 }}>
         <table>
           <thead>
             <tr>
-              <th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Monto sin IVA</th>
+              <th>Fecha</th>
+              <th>Proyecto</th>
+              <th>Proveedor</th>
+              <th>Descripción</th>
+              <th>Categoría</th>
+              <th>Subtotal</th>
+              <th>IVA</th>
+              <th>Total</th>
+              <th>Tipo</th>
+              <th>Origen / SBO</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td>{r.date}</td>
-                <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
-                <td>{r.description || r.concept || ''}</td>
-                <td>{getTransactionCategoryLabel(r, catMap)}</td>
-                <td>${formatMoney(getAmountWithoutIva(r))}</td>
+            {shown.map((row) => (
+              <tr key={row.id}>
+                <td>{row.date || '—'}</td>
+                <td>{row.projectDisplayName || 'Sin proyecto'}</td>
+                <td>{row.supplierName || '—'}</td>
+                <td>{row.description || '—'}</td>
+                <td>{getTransactionCategoryLabel(row, catMap)}</td>
+                <td>${formatMoney(row.subtotal ?? 0)}</td>
+                <td>${formatMoney(row.iva ?? 0)}</td>
+                <td>${formatMoney(getTransactionTotalValue(row))}</td>
+                <td>{row.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
+                <td>
+                  {isSapSboTransaction(row) ? <span className="badge">{row.sapBadgeLabel || 'SAP/SBO'}</span> : <span className="small">{row.source || '—'}</span>}
+                  {row.sourceSbo && <span className="badge" style={{ marginLeft: 6 }}>{row.sourceSbo}</span>}
+                </td>
               </tr>
             ))}
-            {!rows.length && !loading && (
-              <tr><td colSpan={5} className="small">Sin resultados</td></tr>
+            {!shown.length && !loading && (
+              <tr><td colSpan={10} className="small">Sin resultados</td></tr>
             )}
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} style={{ textAlign: 'right', fontWeight: 700 }}>Total filtrado sin IVA</td>
+              <td colSpan={7} style={{ textAlign: 'right', fontWeight: 700 }}>Total visible</td>
               <td style={{ fontWeight: 700 }}>${formatMoney(filteredTotal)}</td>
+              <td colSpan={2} />
             </tr>
           </tfoot>
         </table>
