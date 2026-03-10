@@ -6704,6 +6704,12 @@ def list_admin_trabajos_especiales_supplier_category2_rules(_: dict = Depends(re
     return {"items": [serialize_raw_doc(row) for row in rows]}
 
 
+@app.get("/api/admin/categories/global")
+def list_admin_global_categories(_: dict = Depends(require_admin)):
+    rows = db.categories.find({"active": {"$ne": False}}).sort("name", 1)
+    return [serialize(row) for row in rows]
+
+
 @app.put("/api/admin/trabajos-especiales/supplier-category2-rules")
 def upsert_admin_trabajos_especiales_supplier_category2_rule(payload: dict, user: dict = Depends(require_admin)):
     category2_id = normalize_non_empty_string(payload.get("category2Id"))
