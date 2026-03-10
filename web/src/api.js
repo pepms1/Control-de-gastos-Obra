@@ -363,6 +363,14 @@ export const api = {
 
   adminProjects: () => backendReq('/api/admin/projects'),
 
+  adminUsers: () => backendReq('/api/admin/users'),
+
+  updateAdminUser: (userId, payload) =>
+    backendReq(`/api/admin/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
   updateAdminProjectVisibility: (projectId, visibleInFrontend) =>
     backendReq(`/api/admin/projects/${projectId}/visibility`, {
       method: 'PATCH',

@@ -273,6 +273,14 @@ def serialize_user(user):
     return user_doc
 
 
+def serialize_admin_user(user):
+    user_doc = serialize_user(user)
+    user_doc["role"] = resolve_effective_user_role(user, fallback_role=user_doc.get("role"))
+    user_doc["allowedProjectIds"] = normalize_allowed_project_ids(user_doc.get("allowedProjectIds"))
+    user_doc["isActive"] = bool(user_doc.get("isActive", user_doc.get("active", True)))
+    return user_doc
+
+
 def normalize_allowed_project_ids(raw_ids) -> list[str]:
     if not isinstance(raw_ids, list):
         return []
@@ -3612,6 +3620,49 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
 def list_users(_: dict = Depends(require_admin)):
     users = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
     return [serialize(u) for u in users]
+
+
+@app.get("/api/admin/users")
+def list_admin_users(_: dict = Depends(require_admin)):
+    users = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
+    return [serialize_admin_user(u) for u in users]
+
+
+@app.patch("/api/admin/users/{user_id}")
+def update_admin_user(user_id: str, payload: dict, _: dict = Depends(require_admin)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    existing = db.users.find_one({"_id": oid(user_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_fields: dict = {}
+
+    if "allowedProjectIds" in payload:
+        update_fields["allowedProjectIds"] = normalize_allowed_project_ids(payload.get("allowedProjectIds"))
+
+    if "role" in payload:
+        next_role = normalize_user_role(payload.get("role"))
+        if next_role not in USER_ROLES:
+            raise HTTPException(status_code=400, detail="role must be SUPERADMIN, ADMIN or VIEWER")
+        update_fields["role"] = next_role
+        update_fields["roleVersion"] = ROLE_SCHEMA_VERSION
+
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No editable fields in payload")
+
+    update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    updated = db.users.find_one_and_update(
+        {"_id": oid(user_id)},
+        {"$set": update_fields},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return serialize_admin_user(updated)
 
 
 @app.get("/api/admin/raw-data/collections")
