@@ -462,7 +462,7 @@ def role_from_token(credentials: HTTPAuthorizationCredentials | None = Security(
 
 def require_admin(user=Depends(role_from_token)):
     if user["role"] != "SUPERADMIN":
-        raise HTTPException(status_code=403, detail="ADMIN role required")
+        raise HTTPException(status_code=403, detail="SUPERADMIN role required")
     return user
 
 
