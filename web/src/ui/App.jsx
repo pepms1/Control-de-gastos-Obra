@@ -3,6 +3,7 @@ import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from
 import { isSapSboTransaction } from '../transactions/helpers.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
+import { isSuperAdmin, isViewer, normalizeRole } from './roles.js';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
 
@@ -147,11 +148,13 @@ function Nav({
   selectedProjectId,
   onProjectChange,
 }) {
-  const canSeeSettings = role !== 'VIEWER';
+  const normalizedRole = normalizeRole(role);
+  const canSeeSettings = !isViewer(normalizedRole);
+  const canSeeTransactionsAdmin = isSuperAdmin(normalizedRole);
   const items = [
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar movimientos', true],
-    ['transactions', 'Movimientos (Admin)', role === 'ADMIN'],
+    ['transactions', 'Movimientos (Admin)', canSeeTransactionsAdmin],
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
@@ -284,7 +287,10 @@ export default function App() {
     if (storedPreference === 'dark') return 'dark';
     return 'light';
   });
-  const isAdmin = session.role === 'ADMIN';
+  const userRole = normalizeRole(session.role);
+  const isSuperAdminUser = isSuperAdmin(userRole);
+  const isViewerUser = isViewer(userRole);
+  const isAdmin = isSuperAdminUser;
   const isDarkMode = themePreference === 'dark';
 
   useEffect(() => {
@@ -334,12 +340,16 @@ export default function App() {
     if (!session.token) return;
 
     api.me()
-      .then((me) =>
-        setSession((prev) => ({
-          ...prev,
-          ...me, // conserva token
-        }))
-      )
+      .then((me) => {
+        const nextSession = {
+          ...getSession(),
+          ...me,
+          role: normalizeRole(me?.role || session.role),
+          displayName: me?.name || me?.displayName || session.displayName,
+        };
+        saveSession(nextSession);
+        setSession(nextSession);
+      })
       .catch(() => {
         clearSession();
         setSession(getSession());
@@ -379,10 +389,13 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!isAdmin && tab === 'transactions') {
+    if (!isSuperAdminUser && tab === 'transactions') {
       setTab('search');
     }
-  }, [isAdmin, tab]);
+    if (isViewerUser && tab === 'settings') {
+      setTab('dashboard');
+    }
+  }, [isSuperAdminUser, isViewerUser, tab]);
 
   if (!session.token) return <Login onLogin={setSession} />;
 
@@ -391,7 +404,7 @@ export default function App() {
       <Nav
         tab={tab}
         setTab={setTab}
-        role={session.role}
+        role={userRole}
         username={session.username}
         displayName={session.displayName}
         onLogout={logout}
@@ -415,7 +428,7 @@ export default function App() {
           />
         )}
 
-        {tab === 'transactions' && isAdmin && (
+        {tab === 'transactions' && isSuperAdminUser && (
           <Transactions
             isAdmin={isAdmin}
             cats={cats}
@@ -435,9 +448,10 @@ export default function App() {
           />
         )}
 
-        {tab === 'settings' && (
+        {tab === 'settings' && !isViewerUser && (
           <Settings
             isAdmin={isAdmin}
+            isSuperAdmin={isSuperAdminUser}
             cats={cats}
             vendors={vendors}
             projects={projects}
@@ -454,7 +468,7 @@ export default function App() {
   );
 }
 
-function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatalogChanged, onProjectCreated }) {
+function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, selectedProjectId, onCatalogChanged, onProjectCreated }) {
   const [section, setSection] = useState('catalog');
 
   return (
@@ -467,8 +481,8 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
           type="button"
           className={section === 'import-sap' ? '' : 'secondary'}
           onClick={() => setSection('import-sap')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+          disabled={!isSuperAdmin}
+          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
         >
           Subir CSV
         </button>
@@ -476,8 +490,8 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
           type="button"
           className={section === 'sap-latest' ? '' : 'secondary'}
           onClick={() => setSection('sap-latest')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+          disabled={!isSuperAdmin}
+          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
         >
           SAP Import
         </button>
@@ -485,12 +499,12 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
           type="button"
           className={section === 'supplier-category2' ? '' : 'secondary'}
           onClick={() => setSection('supplier-category2')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+          disabled={!isSuperAdmin}
+          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
         >
           Proveedor → Categoría 2
         </button>
-        {isAdmin && (
+        {isSuperAdmin && (
           <button
             type="button"
             className={section === 'projects-unmatched' ? '' : 'secondary'}
@@ -499,7 +513,7 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
             Proyectos unmatched
           </button>
         )}
-        {isAdmin && (
+        {isSuperAdmin && (
           <button
             type="button"
             className={section === 'projects-visibility' ? '' : 'secondary'}
@@ -512,8 +526,8 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
           type="button"
           className={section === 'raw-data' ? '' : 'secondary'}
           onClick={() => setSection('raw-data')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+          disabled={!isSuperAdmin}
+          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
         >
           Raw data
         </button>
@@ -522,32 +536,32 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
       {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
 
       {section === 'import-sap' &&
-        (isAdmin ? (
+        (isSuperAdmin ? (
           <ImportSapScreen />
         ) : (
-          <div className="card">Solo los administradores pueden importar pagos SAP.</div>
+          <div className="card">Solo los superadministradores pueden importar pagos SAP.</div>
         ))}
 
       {section === 'sap-latest' &&
-        (isAdmin ? (
+        (isSuperAdmin ? (
           <SapLatestImportSection projects={projects} selectedProjectId={selectedProjectId} />
         ) : (
-          <div className="card">Solo los administradores pueden ejecutar el import SAP latest.</div>
+          <div className="card">Solo los superadministradores pueden ejecutar el import SAP latest.</div>
         ))}
 
       {section === 'supplier-category2' &&
-        (isAdmin ? (
+        (isSuperAdmin ? (
           <SupplierCategory2Assignment cats={cats} selectedProjectId={selectedProjectId} />
         ) : (
-          <div className="card">Solo los administradores pueden asignar categoría por proveedor.</div>
+          <div className="card">Solo los superadministradores pueden asignar categoría por proveedor.</div>
         ))}
 
-      {section === 'projects-unmatched' && isAdmin && <AdminProjectsFromUnmatchedSection onProjectCreated={onProjectCreated} />}
+      {section === 'projects-unmatched' && isSuperAdmin && <AdminProjectsFromUnmatchedSection onProjectCreated={onProjectCreated} />}
 
-      {section === 'projects-visibility' && isAdmin && <AdminProjectVisibilitySection onProjectUpdated={onProjectCreated} />}
+      {section === 'projects-visibility' && isSuperAdmin && <AdminProjectVisibilitySection onProjectUpdated={onProjectCreated} />}
 
       {section === 'raw-data' &&
-        (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
+        (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los superadministradores pueden ver raw data.</div>)}
     </div>
   );
 }

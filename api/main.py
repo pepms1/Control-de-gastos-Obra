@@ -47,6 +47,7 @@ db = client[DB_NAME]
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
+USER_ROLES = ("SUPERADMIN", "ADMIN", "VIEWER")
 
 
 TELEGRAM_SETTINGS_KEY = "telegram_default_chat_id"
@@ -85,7 +86,7 @@ def get_env_auth_users():
     viewer_users_raw = env_get("VIEWER_USERS", "viewer_users", "") or ""
 
     auth_users = {
-        default_admin_user: {"password": default_admin_pass, "role": "ADMIN", "displayName": default_admin_name},
+        default_admin_user: {"password": default_admin_pass, "role": "SUPERADMIN", "displayName": default_admin_name},
     }
 
     for default_username, default_password, default_display_name in default_viewer_accounts():
@@ -271,6 +272,43 @@ def serialize_user(user):
     return user_doc
 
 
+def normalize_user_role(raw_role: str | None) -> str:
+    normalized = str(raw_role or "").strip().upper()
+    if normalized in USER_ROLES:
+        return normalized
+    return "SUPERADMIN"
+
+
+def is_user_active(user: dict | None) -> bool:
+    if not isinstance(user, dict):
+        return False
+    if "isActive" in user:
+        return bool(user.get("isActive"))
+    return bool(user.get("active", True))
+
+
+def build_current_user_payload(username: str, role: str, display_name: str, user_doc: dict | None = None) -> dict:
+    normalized_role = normalize_user_role(role)
+    is_active = is_user_active(user_doc) if user_doc is not None else True
+    resolved_email = ""
+    user_id = username
+
+    if user_doc:
+        user_id = str(user_doc.get("_id") or username)
+        resolved_email = str(user_doc.get("email") or "").strip()
+
+    return {
+        "id": user_id,
+        "username": username,
+        "name": (display_name or username),
+        "displayName": (display_name or username),
+        "email": resolved_email,
+        "role": normalized_role,
+        "isActive": is_active,
+        "active": is_active,
+    }
+
+
 def role_from_token(credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme)):
     if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="Missing Bearer token")
@@ -286,12 +324,10 @@ def role_from_token(credentials: HTTPAuthorizationCredentials | None = Security(
 
     user = db.users.find_one({"username": username})
     if user:
-        if not user.get("active", True):
+        if not is_user_active(user):
             raise HTTPException(status_code=401, detail="User inactive or not found")
 
-        role = user.get("role")
-        if role not in ("ADMIN", "VIEWER"):
-            raise HTTPException(status_code=401, detail="Invalid role")
+        role = normalize_user_role(user.get("role"))
 
         env_user = get_env_auth_users().get(username)
         display_name = (
@@ -301,27 +337,22 @@ def role_from_token(credentials: HTTPAuthorizationCredentials | None = Security(
             or payload.get("name")
             or user["username"]
         )
-        return {
-            "username": user["username"],
-            "role": role,
-            "displayName": display_name,
-            "active": user.get("active", True),
-        }
+        return build_current_user_payload(user["username"], role, display_name, user_doc=user)
 
-    token_role = payload.get("role")
+    token_role = normalize_user_role(payload.get("role"))
     env_user = get_env_auth_users().get(username)
     if not env_user:
         raise HTTPException(status_code=401, detail="User inactive or not found")
 
-    role = env_user.get("role")
-    if role not in ("ADMIN", "VIEWER") or token_role != role:
+    role = normalize_user_role(env_user.get("role"))
+    if role not in USER_ROLES or token_role != role:
         raise HTTPException(status_code=401, detail="Invalid role")
     display_name = payload.get("displayName") or payload.get("name") or env_user.get("displayName") or username
-    return {"username": username, "role": role, "displayName": display_name, "active": True}
+    return build_current_user_payload(username, role, display_name)
 
 
 def require_admin(user=Depends(role_from_token)):
-    if user["role"] != "ADMIN":
+    if user["role"] != "SUPERADMIN":
         raise HTTPException(status_code=403, detail="ADMIN role required")
     return user
 
@@ -408,7 +439,7 @@ def ensure_default_users():
     default_admin_user = env_get("DEFAULT_ADMIN_USERNAME", "default_admin_username", "admin")
     default_admin_pass = env_get("DEFAULT_ADMIN_PASSWORD", "default_admin_password", "admin123")
     default_admin_name = env_get("DEFAULT_ADMIN_NAME", "default_admin_name", default_admin_user)
-    defaults = [(default_admin_user, default_admin_pass, "ADMIN", default_admin_name)]
+    defaults = [(default_admin_user, default_admin_pass, "SUPERADMIN", default_admin_name)]
 
     for default_username, default_password, _ in default_viewer_accounts():
         viewer_username = env_get(
@@ -433,21 +464,29 @@ def ensure_default_users():
         if existing:
             users.update_one(
                 {"_id": existing["_id"]},
-                {"$set": {"displayName": existing.get("displayName") or display_name}},
+                {
+                    "$set": {
+                        "displayName": existing.get("displayName") or display_name,
+                        "role": normalize_user_role(existing.get("role") or role),
+                    }
+                },
             )
             continue
         users.insert_one(
             {
                 "username": username,
                 "password_hash": pwd_context.hash(plain_password),
-                "role": role,
+                "role": normalize_user_role(role),
                 "displayName": display_name,
                 "active": True,
+                "isActive": True,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
         )
 
     users.update_many({"active": {"$exists": False}}, {"$set": {"active": True}})
+    users.update_many({"isActive": {"$exists": False}}, [{"$set": {"isActive": {"$ifNull": ["$active", True]}}}])
+    users.update_many({"role": {"$exists": False}}, {"$set": {"role": "SUPERADMIN"}})
 
 
 def to_monto_aplicado_cents(value) -> int:
@@ -3398,15 +3437,15 @@ def login(payload: LoginRequest):
 
     env_user = get_env_auth_users().get(username)
     if env_user and password == env_user.get("password"):
-        role = env_user.get("role", "VIEWER")
+        role = normalize_user_role(env_user.get("role", "VIEWER"))
         display_name = env_user.get("displayName") or username
     else:
         user = db.users.find_one({"username": username})
         if not user or not pwd_context.verify(password, user.get("password_hash", "")):
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        if not user.get("active", True):
+        if not is_user_active(user):
             raise HTTPException(status_code=403, detail="User is inactive")
-        role = user.get("role", "VIEWER")
+        role = normalize_user_role(user.get("role", "SUPERADMIN"))
         env_display_name = (get_env_auth_users().get(username) or {}).get("displayName")
         display_name = user.get("displayName") or env_display_name or username
         display_name = user.get("displayName") or username
@@ -3423,23 +3462,32 @@ def login(payload: LoginRequest):
 
 
 @app.get("/auth/me")
+@app.get("/api/me")
 def me(user=Depends(require_authenticated)):
-    return user
+    return {
+        "id": user.get("id"),
+        "name": user.get("name") or user.get("displayName") or user.get("username"),
+        "email": user.get("email") or "",
+        "role": normalize_user_role(user.get("role")),
+        "isActive": bool(user.get("isActive", user.get("active", True))),
+        "username": user.get("username"),
+        "displayName": user.get("displayName") or user.get("name") or user.get("username"),
+    }
 
 
 @app.post("/users")
 def create_user(payload: dict, _: dict = Depends(require_admin)):
     username = (payload.get("username") or "").strip()
     password = payload.get("password") or ""
-    role = (payload.get("role") or "").strip().upper()
-    active = bool(payload.get("active", True))
+    role = normalize_user_role((payload.get("role") or "").strip().upper() or "VIEWER")
+    active = bool(payload.get("active", payload.get("isActive", True)))
 
     if len(username) < 3:
         raise HTTPException(status_code=400, detail="username must have at least 3 characters")
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="password must have at least 6 characters")
-    if role not in ("ADMIN", "VIEWER"):
-        raise HTTPException(status_code=400, detail="role must be ADMIN or VIEWER")
+    if role not in USER_ROLES:
+        raise HTTPException(status_code=400, detail="role must be SUPERADMIN, ADMIN or VIEWER")
     if db.users.find_one({"username": username}):
         raise HTTPException(status_code=409, detail="User already exists")
 
@@ -3448,6 +3496,7 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
         "password_hash": pwd_context.hash(password),
         "role": role,
         "active": active,
+        "isActive": active,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _id = db.users.insert_one(doc).inserted_id
@@ -5724,7 +5773,7 @@ async def import_sap_payments(
         source="sap-payments",
         mode=mode,
         confirm_rebuild=confirm_rebuild,
-        allow_rebuild=admin_user["role"] == "ADMIN",
+        allow_rebuild=admin_user["role"] == "SUPERADMIN",
     )
 
     import_run_id = str((summary or {}).get("importRunId") or "").strip()
