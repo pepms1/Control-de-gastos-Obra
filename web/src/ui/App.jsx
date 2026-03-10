@@ -637,7 +637,7 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
 
       {section === 'special-work-suppliers' &&
         (isSuperAdmin ? (
-          <SpecialWorkSuppliersReviewSection />
+          <SpecialWorkSuppliersReviewSection cats={cats} />
         ) : (
           <div className="card">Solo los superadministradores pueden revisar proveedores de trabajos especiales.</div>
         ))}
@@ -1597,35 +1597,45 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
   );
 }
 
-function SpecialWorkSuppliersReviewSection() {
+function SpecialWorkSuppliersReviewSection({ cats = [] }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [savingKey, setSavingKey] = useState('');
   const [error, setError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [saveSuccess, setSaveSuccess] = useState('');
   const [search, setSearch] = useState('');
   const [sboFilter, setSboFilter] = useState('all');
+  const [selectedCategoryBySupplier, setSelectedCategoryBySupplier] = useState({});
 
-  useEffect(() => {
-    let active = true;
+  function loadSuppliers() {
     setLoading(true);
     setError('');
-
-    api.adminTrabajosEspecialesSuppliers()
+    return api.adminTrabajosEspecialesSuppliers()
       .then((response) => {
-        if (!active) return;
-        setItems(Array.isArray(response?.items) ? response.items : []);
+        const nextItems = Array.isArray(response?.items) ? response.items : [];
+        setItems(nextItems);
+        setSelectedCategoryBySupplier((current) => {
+          const next = { ...current };
+          nextItems.forEach((item) => {
+            const key = String(item?.supplierKey || '');
+            if (!key) return;
+            if (!next[key]) {
+              next[key] = String(item?.category2Rule?.category2Id || '');
+            }
+          });
+          return next;
+        });
       })
       .catch((e) => {
-        if (!active) return;
         setItems([]);
         setError(e.message || 'No se pudieron cargar los proveedores de trabajos especiales.');
       })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+      .finally(() => setLoading(false));
+  }
 
-    return () => {
-      active = false;
-    };
+  useEffect(() => {
+    loadSuppliers().catch(() => undefined);
   }, []);
 
   const sboOptions = useMemo(() => {
@@ -1652,18 +1662,49 @@ function SpecialWorkSuppliersReviewSection() {
         item?.supplierName,
         item?.supplierCardCode,
         item?.businessPartner,
+        item?.category2Rule?.category2Name,
         projects.map((project) => project?.projectName).join(' '),
       ].join(' '));
       return haystack.includes(normalizedQuery);
     });
   }, [items, search, sboFilter]);
 
+  async function saveSupplierCategory2(item) {
+    const supplierKey = String(item?.supplierKey || '').trim();
+    if (!supplierKey) return;
+    const category2Id = String(selectedCategoryBySupplier[supplierKey] || '').trim();
+    if (!category2Id) {
+      setSaveError('Debes seleccionar una Categoría 2 antes de guardar.');
+      return;
+    }
+
+    setSavingKey(supplierKey);
+    setSaveError('');
+    setSaveSuccess('');
+
+    try {
+      await api.upsertAdminTrabajosEspecialesSupplierCategory2Rule({
+        supplierName: item?.supplierName,
+        supplierCardCode: item?.supplierCardCode,
+        businessPartner: item?.businessPartner,
+        category2Id,
+        isActive: true,
+      });
+      setSaveSuccess(`Categoría 2 guardada para ${item?.supplierName || supplierKey}.`);
+      await loadSuppliers();
+    } catch (e) {
+      setSaveError(e.message || 'No se pudo guardar la regla global de Categoría 2.');
+    } finally {
+      setSavingKey('');
+    }
+  }
+
   return (
     <div className="card" style={{ overflowX: 'auto' }}>
       <h3 style={{ marginTop: 0 }}>Proveedores de Trabajos Especiales</h3>
       <div className="small" style={{ marginBottom: 10 }}>
-        Vista de revisión/preparación: lista consolidada de proveedores detectados en movimientos cuya categoría efectiva actual guardada en DB empieza por “trabajos especiales”.
-        Esta pantalla todavía no asigna Categoría 2; se usará como base para facilitar esa asignación por proveedor en una fase futura.
+        Clasificación interna derivada: la Categoría 1 original del movimiento no se modifica.
+        Aquí asignas una regla global por proveedor para resolver Categoría 2 en lectura.
       </div>
 
       <div className="row" style={{ gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -1685,6 +1726,8 @@ function SpecialWorkSuppliersReviewSection() {
       </div>
 
       {error && <div className="small" style={{ color: '#b00020', marginBottom: 8 }}>{error}</div>}
+      {saveError && <div className="small" style={{ color: '#b00020', marginBottom: 8 }}>{saveError}</div>}
+      {saveSuccess && <div className="small" style={{ color: '#0a7a31', marginBottom: 8 }}>{saveSuccess}</div>}
 
       {loading ? (
         <div className="small">Cargando proveedores...</div>
@@ -1697,18 +1740,21 @@ function SpecialWorkSuppliersReviewSection() {
               <th>Proveedor</th>
               <th>CardCode</th>
               <th>Business Partner</th>
-              <th>Movimientos</th>
+              <th>Movimientos detectados</th>
               <th>Proyectos</th>
-              <th>Categorías encontradas</th>
-              <th>Ejemplos de descripción</th>
-              <th>Última fecha</th>
+              <th>Categoría 2 asignada</th>
+              <th>Estado</th>
+              <th>Acción</th>
             </tr>
           </thead>
           <tbody>
             {filteredItems.map((item) => {
               const projects = Array.isArray(item?.projects) ? item.projects : [];
+              const supplierKey = String(item?.supplierKey || '');
+              const currentCategory2Name = item?.category2Rule?.category2Name || 'Trabajos Especiales sin clasificar';
+              const status = item?.category2Rule?.status === 'assigned' ? 'Asignado' : 'Sin clasificar / sin asignar';
               return (
-                <tr key={item?.supplierKey || item?.supplierName}>
+                <tr key={supplierKey || item?.supplierName}>
                   <td>{item?.supplierName || 'Sin proveedor'}</td>
                   <td>{item?.supplierCardCode || '—'}</td>
                   <td>{item?.businessPartner || '—'}</td>
@@ -1717,9 +1763,38 @@ function SpecialWorkSuppliersReviewSection() {
                     <div className="small">{item?.projectCount || projects.length || 0} proyecto(s)</div>
                     <div className="small">{projects.map((project) => project?.projectName || project?.projectId).filter(Boolean).join(', ') || '—'}</div>
                   </td>
-                  <td className="small">{(item?.matchedCategories || []).join(' · ') || '—'}</td>
-                  <td className="small">{(item?.sampleDescriptions || []).join(' · ') || '—'}</td>
-                  <td>{item?.lastSeenAt || '—'}</td>
+                  <td>
+                    <div className="small" style={{ marginBottom: 6 }}>{currentCategory2Name}</div>
+                    <select
+                      value={selectedCategoryBySupplier[supplierKey] || ''}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setSelectedCategoryBySupplier((prev) => ({ ...prev, [supplierKey]: value }));
+                      }}
+                    >
+                      <option value="">Selecciona Categoría 2</option>
+                      {cats.map((category) => (
+                        <option key={category?.id || category?._id} value={category?.id || category?._id}>
+                          {category?.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>{status}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => saveSupplierCategory2(item)}
+                      disabled={!supplierKey || !selectedCategoryBySupplier[supplierKey] || savingKey === supplierKey}
+                    >
+                      {savingKey === supplierKey
+                        ? 'Guardando...'
+                        : item?.category2Rule?.status === 'assigned'
+                          ? 'Editar'
+                          : 'Asignar Categoría 2'}
+                    </button>
+                  </td>
                 </tr>
               );
             })}
@@ -1729,6 +1804,7 @@ function SpecialWorkSuppliersReviewSection() {
     </div>
   );
 }
+
 
 function RawDataAdmin() {
   const [collections, setCollections] = useState([]);

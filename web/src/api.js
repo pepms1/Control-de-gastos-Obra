@@ -356,6 +356,19 @@ export const api = {
 
   adminTrabajosEspecialesSuppliers: () => backendReq('/api/admin/trabajos-especiales/suppliers'),
 
+  adminTrabajosEspecialesSupplierCategory2Rules: () => backendReq('/api/admin/trabajos-especiales/supplier-category2-rules'),
+
+  upsertAdminTrabajosEspecialesSupplierCategory2Rule: (payload) =>
+    backendReq('/api/admin/trabajos-especiales/supplier-category2-rules', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  deactivateAdminTrabajosEspecialesSupplierCategory2Rule: (supplierKey) =>
+    backendReq(`/api/admin/trabajos-especiales/supplier-category2-rules/${encodeURIComponent(supplierKey)}`, {
+      method: 'DELETE',
+    }),
+
   updateSupplierCategory: (id, categoryId) =>
     backendReq(`/api/suppliers/${id}`, {
       method: 'PATCH',

@@ -204,6 +204,82 @@ def normalize_text_for_matching(value: str | None) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+TRABAJOS_ESPECIALES_PREFIX = "trabajos especiales"
+TRABAJOS_ESPECIALES_UNCLASSIFIED_ID = "trabajos_especiales_unclassified"
+TRABAJOS_ESPECIALES_UNCLASSIFIED_NAME = "Trabajos Especiales sin clasificar"
+
+
+def build_supplier_key(supplier_card_code: str | None = None, business_partner: str | None = None, supplier_name: str | None = None) -> str | None:
+    normalized_card_code = normalize_non_empty_string(supplier_card_code)
+    if normalized_card_code:
+        return f"cardcode:{normalize_text_for_matching(normalized_card_code)}"
+
+    normalized_business_partner = normalize_non_empty_string(business_partner)
+    if normalized_business_partner:
+        return f"bp:{normalize_text_for_matching(normalized_business_partner)}"
+
+    normalized_supplier_name = normalize_non_empty_string(supplier_name)
+    if normalized_supplier_name:
+        return f"name:{normalize_text_for_matching(normalized_supplier_name)}"
+
+    return None
+
+
+def build_supplier_identity_from_transaction(tx: dict) -> dict:
+    sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+    supplier_card_code = normalize_non_empty_string(tx.get("supplierCardCode") or sap_doc.get("cardCode"))
+    business_partner = normalize_non_empty_string(sap_doc.get("businessPartner") or tx.get("businessPartner"))
+    supplier_name = normalize_non_empty_string(
+        tx.get("supplierName")
+        or tx.get("proveedorNombre")
+        or tx.get("beneficiario")
+        or business_partner
+        or supplier_card_code
+    )
+    supplier_key = build_supplier_key(supplier_card_code, business_partner, supplier_name)
+
+    return {
+        "supplierKey": supplier_key,
+        "supplierName": supplier_name,
+        "supplierCardCode": supplier_card_code,
+        "businessPartner": business_partner,
+    }
+
+
+def resolve_transaction_category2(tx_doc: dict, supplier_rules_by_key: dict[str, dict] | None = None) -> dict:
+    category1_id = normalize_non_empty_string(tx_doc.get("categoryEffectiveCode"))
+    category1_name = normalize_non_empty_string(tx_doc.get("categoryEffectiveName"))
+    normalized_category1_name = normalize_text_for_matching(category1_name)
+
+    if not normalized_category1_name.startswith(TRABAJOS_ESPECIALES_PREFIX):
+        return {
+            "resolvedCategory2Id": category1_id,
+            "resolvedCategory2Name": category1_name,
+            "resolvedCategory2Source": "inherited",
+        }
+
+    identity = build_supplier_identity_from_transaction(tx_doc)
+    supplier_key = identity.get("supplierKey") or ""
+    rule = None
+    if supplier_key and isinstance(supplier_rules_by_key, dict):
+        rule = supplier_rules_by_key.get(supplier_key)
+    elif supplier_key:
+        rule = db.supplierCategory2Rules.find_one({"supplierKey": supplier_key, "isActive": {"$ne": False}})
+
+    if rule:
+        return {
+            "resolvedCategory2Id": normalize_non_empty_string(rule.get("category2Id")),
+            "resolvedCategory2Name": normalize_non_empty_string(rule.get("category2Name")),
+            "resolvedCategory2Source": "supplier_rule",
+        }
+
+    return {
+        "resolvedCategory2Id": TRABAJOS_ESPECIALES_UNCLASSIFIED_ID,
+        "resolvedCategory2Name": TRABAJOS_ESPECIALES_UNCLASSIFIED_NAME,
+        "resolvedCategory2Source": "trabajos_especiales_unclassified",
+    }
+
+
 def normalize_project_prefix(raw_prefix: str | None, slug: str) -> str:
     prefix = (raw_prefix or "").strip()
     if not prefix:
@@ -218,7 +294,11 @@ def normalize_project_prefix(raw_prefix: str | None, slug: str) -> str:
     return prefix
 
 
-def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dict] | None = None):
+def serialize_transaction_with_supplier(
+    tx: dict,
+    suppliers_by_id: dict[str, dict] | None = None,
+    supplier_rules_by_key: dict[str, dict] | None = None,
+):
     tx_doc = serialize(tx)
     supplier = None
     supplier_id = tx_doc.get("supplierId")
@@ -269,6 +349,7 @@ def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dic
     tx_doc["categoryEffectiveName"] = normalize_non_empty_string(
         tx_doc.get("categoryEffectiveName") or effective_fields.get("categoryEffectiveName")
     )
+    tx_doc.update(resolve_transaction_category2(tx_doc, supplier_rules_by_key=supplier_rules_by_key))
 
     return tx_doc
 
@@ -2184,6 +2265,13 @@ def ensure_indexes():
         unique=True,
         name="supplier_categories_project_supplier_unique",
     )
+    db.supplierCategory2Rules.create_index(
+        [("supplierKey", 1)],
+        unique=True,
+        name="supplier_category2_rules_supplier_key_unique",
+        partialFilterExpression={"supplierKey": {"$exists": True, "$type": "string", "$ne": ""}},
+    )
+    db.supplierCategory2Rules.create_index([("isActive", 1), ("updatedAt", -1)], name="supplier_category2_rules_active_updated_idx")
     db.projects.create_index("name", unique=True)
     db.projects.create_index("slug", unique=True)
     db.payments.create_index([("projectId", 1), ("sapPaymentNum", 1)], unique=True)
@@ -6492,6 +6580,8 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
         str(project.get("_id")): project
         for project in db.projects.find({}, {"name": 1, "displayName": 1, "sap.sourceSbo": 1})
     }
+    supplier_rules = list(db.supplierCategory2Rules.find({"isActive": {"$ne": False}}, {"supplierKey": 1, "category2Id": 1, "category2Name": 1}))
+    rules_by_key = {str(rule.get("supplierKey") or "").strip(): rule for rule in supplier_rules if str(rule.get("supplierKey") or "").strip()}
 
     grouped = {}
     for tx in db.transactions.find(tx_query, projection):
@@ -6507,19 +6597,12 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
             continue
 
         normalized_effective_category = normalize_text_for_matching(category_effective_name)
-        if not normalized_effective_category.startswith("trabajos especiales"):
+        if not normalized_effective_category.startswith(TRABAJOS_ESPECIALES_PREFIX):
             continue
 
         description = str(tx.get("description") or "").strip()
-
-        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
-        supplier_card_code = str(tx.get("supplierCardCode") or sap_doc.get("cardCode") or "").strip()
-        business_partner = str(sap_doc.get("businessPartner") or "").strip()
-        supplier_name = str(tx.get("supplierName") or business_partner or supplier_card_code or "").strip() or "(Sin proveedor)"
-
-        supplier_id = str(tx.get("supplierId") or "").strip()
-        stable_name_key = normalize_text_for_matching(supplier_name)
-        supplier_key = supplier_id or supplier_card_code.lower() or stable_name_key or f"tx:{str(tx.get('_id') or '')}"
+        identity = build_supplier_identity_from_transaction(tx)
+        supplier_key = identity.get("supplierKey") or f"tx:{str(tx.get('_id') or '')}"
 
         project_id = str(tx.get("projectId") or "").strip()
         project_doc = projects_by_id.get(project_id) if project_id else None
@@ -6533,10 +6616,10 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
             supplier_key,
             {
                 "supplierKey": supplier_key,
-                "supplierId": supplier_id,
-                "supplierName": supplier_name,
-                "supplierCardCode": supplier_card_code,
-                "businessPartner": business_partner,
+                "supplierId": str(tx.get("supplierId") or "").strip(),
+                "supplierName": identity.get("supplierName") or "(Sin proveedor)",
+                "supplierCardCode": identity.get("supplierCardCode") or "",
+                "businessPartner": identity.get("businessPartner") or "",
                 "transactionCount": 0,
                 "_projectKeys": set(),
                 "projects": [],
@@ -6547,15 +6630,6 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
                 "_lastSeenDate": None,
             },
         )
-
-        if supplier_name and (not bucket.get("supplierName") or bucket.get("supplierName") == "(Sin proveedor)"):
-            bucket["supplierName"] = supplier_name
-        if supplier_card_code and not bucket.get("supplierCardCode"):
-            bucket["supplierCardCode"] = supplier_card_code
-        if business_partner and not bucket.get("businessPartner"):
-            bucket["businessPartner"] = business_partner
-        if supplier_id and not bucket.get("supplierId"):
-            bucket["supplierId"] = supplier_id
 
         bucket["transactionCount"] += 1
 
@@ -6590,6 +6664,8 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
 
     suppliers = []
     for values in grouped.values():
+        matching_rule = rules_by_key.get(values.get("supplierKey") or "")
+        assigned_category2_name = normalize_non_empty_string((matching_rule or {}).get("category2Name"))
         suppliers.append(
             {
                 "supplierKey": values.get("supplierKey") or "",
@@ -6606,6 +6682,11 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
                 "matchedCategories": values.get("matchedCategories") or [],
                 "sampleDescriptions": values.get("sampleDescriptions") or [],
                 "lastSeenAt": values.get("_lastSeenDate").isoformat() if values.get("_lastSeenDate") else None,
+                "category2Rule": {
+                    "category2Id": normalize_non_empty_string((matching_rule or {}).get("category2Id")),
+                    "category2Name": assigned_category2_name,
+                    "status": "assigned" if assigned_category2_name else "unclassified",
+                },
             }
         )
 
@@ -6613,8 +6694,80 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
     return {
         "items": suppliers,
         "totalSuppliers": len(suppliers),
-        "matchingPrefix": "trabajos especiales",
+        "matchingPrefix": TRABAJOS_ESPECIALES_PREFIX,
     }
+
+
+@app.get("/api/admin/trabajos-especiales/supplier-category2-rules")
+def list_admin_trabajos_especiales_supplier_category2_rules(_: dict = Depends(require_admin)):
+    rows = list(db.supplierCategory2Rules.find({}).sort([("updatedAt", -1), ("supplierName", 1)]))
+    return {"items": [serialize_raw_doc(row) for row in rows]}
+
+
+@app.put("/api/admin/trabajos-especiales/supplier-category2-rules")
+def upsert_admin_trabajos_especiales_supplier_category2_rule(payload: dict, user: dict = Depends(require_admin)):
+    category2_id = normalize_non_empty_string(payload.get("category2Id"))
+    if not category2_id or not ObjectId.is_valid(category2_id):
+        raise HTTPException(status_code=400, detail="category2Id is required")
+
+    category = db.categories.find_one({"_id": ObjectId(category2_id), "active": {"$ne": False}}, {"name": 1})
+    if not category:
+        raise HTTPException(status_code=400, detail="Invalid category2Id")
+
+    supplier_key = build_supplier_key(
+        payload.get("supplierCardCode"),
+        payload.get("businessPartner"),
+        payload.get("supplierName"),
+    )
+    if not supplier_key:
+        raise HTTPException(status_code=400, detail="supplierKey could not be resolved from supplierCardCode/businessPartner/supplierName")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    actor = normalize_non_empty_string((user or {}).get("username")) or normalize_non_empty_string((user or {}).get("email")) or "system"
+    updates = {
+        "supplierKey": supplier_key,
+        "supplierName": normalize_non_empty_string(payload.get("supplierName")) or "(Sin proveedor)",
+        "supplierCardCode": normalize_non_empty_string(payload.get("supplierCardCode")),
+        "businessPartner": normalize_non_empty_string(payload.get("businessPartner")),
+        "category2Id": str(category.get("_id")),
+        "category2Name": normalize_non_empty_string(category.get("name")) or category2_id,
+        "updatedAt": now_iso,
+        "updatedBy": actor,
+        "isActive": bool(payload.get("isActive", True)),
+    }
+
+    db.supplierCategory2Rules.update_one(
+        {"supplierKey": supplier_key},
+        {
+            "$set": updates,
+            "$setOnInsert": {
+                "createdAt": now_iso,
+                "createdBy": actor,
+            },
+        },
+        upsert=True,
+    )
+
+    saved = db.supplierCategory2Rules.find_one({"supplierKey": supplier_key})
+    return serialize_raw_doc(saved) if saved else {"ok": True, "supplierKey": supplier_key}
+
+
+@app.delete("/api/admin/trabajos-especiales/supplier-category2-rules/{supplier_key}")
+def deactivate_admin_trabajos_especiales_supplier_category2_rule(supplier_key: str, user: dict = Depends(require_admin)):
+    normalized_key = str(supplier_key or "").strip()
+    if not normalized_key:
+        raise HTTPException(status_code=400, detail="supplier_key is required")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    actor = normalize_non_empty_string((user or {}).get("username")) or normalize_non_empty_string((user or {}).get("email")) or "system"
+
+    result = db.supplierCategory2Rules.update_one(
+        {"supplierKey": normalized_key},
+        {"$set": {"isActive": False, "updatedAt": now_iso, "updatedBy": actor}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return {"ok": True, "supplierKey": normalized_key}
 
 
 @app.post("/api/admin/migrate/projectId")
@@ -7598,9 +7751,18 @@ def list_transactions(
         for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1, "cardCode": 1}):
             suppliers_by_id[str(supplier["_id"])] = supplier
 
+    supplier_rules_by_key = {
+        str(rule.get("supplierKey") or "").strip(): rule
+        for rule in db.supplierCategory2Rules.find(
+            {"isActive": {"$ne": False}},
+            {"supplierKey": 1, "category2Id": 1, "category2Name": 1},
+        )
+        if str(rule.get("supplierKey") or "").strip()
+    }
+
     items = []
     for tx in txs:
-        tx_doc = serialize_transaction_with_supplier(tx, suppliers_by_id)
+        tx_doc = serialize_transaction_with_supplier(tx, suppliers_by_id, supplier_rules_by_key)
 
         subtotal, iva, total_factura = resolve_transaction_tax_components(tx_doc)
         amount = parse_optional_decimal(tx_doc.get("amount")) or 0
