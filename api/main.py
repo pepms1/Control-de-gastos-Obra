@@ -2265,11 +2265,15 @@ def ensure_indexes():
         unique=True,
         name="supplier_categories_project_supplier_unique",
     )
+    db.supplierCategory2Rules.update_many(
+        {"supplierKey": ""},
+        {"$unset": {"supplierKey": ""}},
+    )
     db.supplierCategory2Rules.create_index(
         [("supplierKey", 1)],
         unique=True,
         name="supplier_category2_rules_supplier_key_unique",
-        partialFilterExpression={"supplierKey": {"$exists": True, "$type": "string", "$ne": ""}},
+        partialFilterExpression={"supplierKey": {"$exists": True, "$type": "string", "$gt": ""}},
     )
     db.supplierCategory2Rules.create_index([("isActive", 1), ("updatedAt", -1)], name="supplier_category2_rules_active_updated_idx")
     db.projects.create_index("name", unique=True)
