@@ -6685,39 +6685,31 @@ def summary_expenses_by_supplier(
         source = str(tx.get("source") or "").strip().lower()
         supplier_id = tx.get("supplierId") or tx.get("supplier_id")
         vendor_id = tx.get("vendor_id")
-        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
-        sap_card_code = str(sap_doc.get("cardCode") or "").strip()
-        sap_business_partner = str(sap_doc.get("businessPartner") or "").strip()
-        supplier_name = (
-            tx.get("supplierName")
-            or sap_business_partner
-            or tx.get("proveedorNombre")
-            or tx.get("beneficiario")
-            or (tx.get("proveedor") or {}).get("name")
-            or ""
-        )
-        provider_key = ""
-        if supplier_id:
+        identity = build_supplier_identity_from_transaction(tx)
+        supplier_key = str(identity.get("supplierKey") or "").strip()
+        supplier_name = str(identity.get("supplierName") or "").strip()
+        sap_card_code = str(identity.get("supplierCardCode") or "").strip()
+        sap_business_partner = str(identity.get("businessPartner") or "").strip()
+
+        # Prefer canonical supplier identity (cardCode/businessPartner/name) to avoid
+        # legacy supplierId/vendor_id fallbacks contaminating current provider totals.
+        if supplier_key:
+            provider_key = supplier_key
+        elif supplier_id:
             provider_key = f"supplier:{str(supplier_id).strip()}"
         elif vendor_id:
             provider_key = f"vendor:{str(vendor_id).strip()}"
         else:
-            # Fallback canónico cuando la transacción no trae IDs; evita agrupar
-            # todos los egresos sin proveedor en un único bucket vacío.
-            supplier_identity_key = build_supplier_key(
-                supplier_card_code=sap_card_code,
-                business_partner=sap_business_partner,
-                supplier_name=supplier_name,
-            )
-            provider_key = supplier_identity_key or f"tx:{str(tx.get('_id') or '').strip()}"
+            provider_key = f"tx:{str(tx.get('_id') or '').strip()}"
 
         display_name = supplier_name or sap_business_partner or sap_card_code
         bucket = supplier_totals.setdefault(
             provider_key,
             {
-                "supplierId": supplier_id,
-                "vendorId": vendor_id,
+                "supplierId": str(supplier_id).strip() if supplier_id else None,
+                "vendorId": str(vendor_id).strip() if vendor_id else None,
                 "supplierName": display_name,
+                "supplierKey": supplier_key,
                 "sapCardCode": sap_card_code,
                 "sapBusinessPartner": sap_business_partner,
                 "source": source,
@@ -6725,16 +6717,21 @@ def summary_expenses_by_supplier(
                 "count": 0,
             },
         )
-        if source == "sap-sbo":
-            stable_name = supplier_name or sap_business_partner or sap_card_code
-            if stable_name and (not bucket.get("supplierName") or bucket.get("supplierName") == bucket.get("sapCardCode")):
-                bucket["supplierName"] = stable_name
-        elif not bucket.get("supplierName") and supplier_name:
-            bucket["supplierName"] = supplier_name
+
+        stable_name = supplier_name or sap_business_partner or sap_card_code
+        if stable_name and (not bucket.get("supplierName") or bucket.get("supplierName") == bucket.get("sapCardCode")):
+            bucket["supplierName"] = stable_name
         if not bucket.get("sapBusinessPartner") and sap_business_partner:
             bucket["sapBusinessPartner"] = sap_business_partner
         if not bucket.get("sapCardCode") and sap_card_code:
             bucket["sapCardCode"] = sap_card_code
+
+        # Keep original IDs only when missing; identity key is canonical for grouping.
+        if not bucket.get("supplierId") and supplier_id:
+            bucket["supplierId"] = str(supplier_id).strip()
+        if not bucket.get("vendorId") and vendor_id:
+            bucket["vendorId"] = str(vendor_id).strip()
+
         amount_value = float(tx.get("amount") or 0)
         bucket["totalAmount"] += amount_value if include_iva else compute_monto_sin_iva(tx)
         bucket["count"] += 1
@@ -6745,6 +6742,7 @@ def summary_expenses_by_supplier(
             "supplierId": values.get("supplierId"),
             "vendorId": values.get("vendorId"),
             "supplierName": values.get("supplierName") or "",
+            "supplierKey": values.get("supplierKey") or "",
             "sapCardCode": values.get("sapCardCode") or "",
             "sapBusinessPartner": values.get("sapBusinessPartner") or "",
             "source": values.get("source") or "",
@@ -6754,38 +6752,64 @@ def summary_expenses_by_supplier(
         for provider_id, values in supplier_totals.items()
     ]
 
-    for row in rows:
-        if row.get("supplierId"):
-            row["supplierId"] = str(row["supplierId"])
-        if row.get("vendorId"):
-            row["vendorId"] = str(row["vendorId"])
+    supplier_ids = [oid(row.get("supplierId")) for row in rows if row.get("supplierId") and ObjectId.is_valid(str(row.get("supplierId") or ""))]
+    vendor_ids = [oid(row.get("vendorId")) for row in rows if row.get("vendorId") and ObjectId.is_valid(str(row.get("vendorId") or ""))]
+    supplier_card_codes = [str(row.get("sapCardCode") or "").strip() for row in rows if str(row.get("sapCardCode") or "").strip()]
 
-    supplier_ids = [oid(row.get("supplierId")) for row in rows if row.get("supplierId")]
-    vendor_ids = [oid(row.get("vendorId")) for row in rows if row.get("vendorId")]
-    supplier_names = {}
+    supplier_names_by_id = {}
     if supplier_ids:
         for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1}):
-            supplier_names[str(supplier["_id"])] = supplier.get("name") or "(Sin proveedor)"
+            supplier_names_by_id[str(supplier["_id"])] = supplier.get("name") or "(Sin proveedor)"
+
+    supplier_names_by_card_code = {}
+    if supplier_card_codes:
+        for supplier in db.suppliers.find({"cardCode": {"$in": supplier_card_codes}}, {"name": 1, "cardCode": 1}):
+            card_code = str(supplier.get("cardCode") or "").strip()
+            if card_code and card_code not in supplier_names_by_card_code:
+                supplier_names_by_card_code[card_code] = supplier.get("name") or card_code
 
     vendor_names = {}
     if vendor_ids:
         for vendor in db.vendors.find({"_id": {"$in": vendor_ids}, "projectId": project_id}, {"name": 1}):
             vendor_names[str(vendor["_id"])] = vendor.get("name") or "(Sin proveedor)"
 
-    output = [
-        {
-            "supplierId": row.get("supplierId") or row.get("vendorId"),
-            "supplierName": supplier_names.get(row.get("supplierId"))
-            or vendor_names.get(row.get("vendorId"))
-            or row.get("supplierName")
-            or row.get("sapBusinessPartner")
-            or row.get("sapCardCode")
-            or "(Sin proveedor)",
-            "totalAmount": round(float(row.get("totalAmount") or 0), 2),
-            "count": int(row.get("count") or 0),
-        }
-        for row in rows
-    ]
+    output = []
+    for row in rows:
+        provider_key = str(row.get("_id") or "")
+        supplier_name = row.get("supplierName") or ""
+        card_code = str(row.get("sapCardCode") or "").strip()
+
+        # For canonical keys (cardcode/bp/name), prefer identity-based naming so
+        # legacy supplierId defaults do not relabel providers (e.g. default vendor debt).
+        if provider_key.startswith(("cardcode:", "bp:", "name:")):
+            resolved_name = (
+                supplier_names_by_card_code.get(card_code)
+                or supplier_name
+                or row.get("sapBusinessPartner")
+                or card_code
+                or "(Sin proveedor)"
+            )
+            resolved_supplier_id = row.get("supplierId")
+        else:
+            resolved_name = (
+                supplier_names_by_id.get(row.get("supplierId"))
+                or vendor_names.get(row.get("vendorId"))
+                or supplier_names_by_card_code.get(card_code)
+                or supplier_name
+                or row.get("sapBusinessPartner")
+                or card_code
+                or "(Sin proveedor)"
+            )
+            resolved_supplier_id = row.get("supplierId") or row.get("vendorId")
+
+        output.append(
+            {
+                "supplierId": resolved_supplier_id,
+                "supplierName": resolved_name,
+                "totalAmount": round(float(row.get("totalAmount") or 0), 2),
+                "count": int(row.get("count") or 0),
+            }
+        )
 
     for row, item in zip(rows, output):
         logger.info(
