@@ -48,6 +48,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
 USER_ROLES = ("SUPERADMIN", "ADMIN", "VIEWER")
+ROLE_SCHEMA_VERSION = 2
 
 
 TELEGRAM_SETTINGS_KEY = "telegram_default_chat_id"
@@ -279,6 +280,31 @@ def normalize_user_role(raw_role: str | None) -> str:
     return "SUPERADMIN"
 
 
+def resolve_effective_user_role(user_doc: dict | None, fallback_role: str | None = None) -> str:
+    """
+    Compatibilidad de transición de roles:
+    - ADMIN legacy (sin roleVersion >= 2) => SUPERADMIN
+    - VIEWER => VIEWER
+    - SUPERADMIN => SUPERADMIN
+    - ADMIN nuevo real (roleVersion >= 2) => ADMIN
+    """
+    source_role = (user_doc or {}).get("role") if isinstance(user_doc, dict) else fallback_role
+    normalized_role = normalize_user_role(source_role)
+
+    if normalized_role != "ADMIN":
+        return normalized_role
+
+    role_version_raw = (user_doc or {}).get("roleVersion") if isinstance(user_doc, dict) else None
+    try:
+        role_version = int(role_version_raw)
+    except (TypeError, ValueError):
+        role_version = 0
+
+    if role_version >= ROLE_SCHEMA_VERSION:
+        return "ADMIN"
+    return "SUPERADMIN"
+
+
 def is_user_active(user: dict | None) -> bool:
     if not isinstance(user, dict):
         return False
@@ -327,7 +353,7 @@ def role_from_token(credentials: HTTPAuthorizationCredentials | None = Security(
         if not is_user_active(user):
             raise HTTPException(status_code=401, detail="User inactive or not found")
 
-        role = normalize_user_role(user.get("role"))
+        role = resolve_effective_user_role(user)
 
         env_user = get_env_auth_users().get(username)
         display_name = (
@@ -462,12 +488,18 @@ def ensure_default_users():
     for username, plain_password, role, display_name in defaults:
         existing = users.find_one({"username": username})
         if existing:
+            target_role = normalize_user_role(existing.get("role") or role)
+            target_role_version = existing.get("roleVersion", ROLE_SCHEMA_VERSION)
+            if username == default_admin_user:
+                target_role = "SUPERADMIN"
+                target_role_version = ROLE_SCHEMA_VERSION
             users.update_one(
                 {"_id": existing["_id"]},
                 {
                     "$set": {
                         "displayName": existing.get("displayName") or display_name,
-                        "role": normalize_user_role(existing.get("role") or role),
+                        "role": target_role,
+                        "roleVersion": target_role_version,
                     }
                 },
             )
@@ -477,6 +509,7 @@ def ensure_default_users():
                 "username": username,
                 "password_hash": pwd_context.hash(plain_password),
                 "role": normalize_user_role(role),
+                "roleVersion": ROLE_SCHEMA_VERSION,
                 "displayName": display_name,
                 "active": True,
                 "isActive": True,
@@ -487,6 +520,16 @@ def ensure_default_users():
     users.update_many({"active": {"$exists": False}}, {"$set": {"active": True}})
     users.update_many({"isActive": {"$exists": False}}, [{"$set": {"isActive": {"$ifNull": ["$active", True]}}}])
     users.update_many({"role": {"$exists": False}}, {"$set": {"role": "SUPERADMIN"}})
+    users.update_many(
+        {"role": "ADMIN", "roleVersion": {"$exists": False}},
+        {
+            "$set": {
+                "legacyRole": "ADMIN",
+                "role": "SUPERADMIN",
+                "roleVersion": ROLE_SCHEMA_VERSION,
+            }
+        },
+    )
 
 
 def to_monto_aplicado_cents(value) -> int:
@@ -3445,7 +3488,7 @@ def login(payload: LoginRequest):
             raise HTTPException(status_code=401, detail="Invalid credentials")
         if not is_user_active(user):
             raise HTTPException(status_code=403, detail="User is inactive")
-        role = normalize_user_role(user.get("role", "SUPERADMIN"))
+        role = resolve_effective_user_role(user, fallback_role="SUPERADMIN")
         env_display_name = (get_env_auth_users().get(username) or {}).get("displayName")
         display_name = user.get("displayName") or env_display_name or username
         display_name = user.get("displayName") or username
@@ -3495,6 +3538,7 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
         "username": username,
         "password_hash": pwd_context.hash(password),
         "role": role,
+        "roleVersion": ROLE_SCHEMA_VERSION,
         "active": active,
         "isActive": active,
         "created_at": datetime.now(timezone.utc).isoformat(),

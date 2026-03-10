@@ -6,6 +6,7 @@ export const ROLES = {
 
 export function normalizeRole(role) {
   const value = String(role || '').trim().toUpperCase();
+  if (value === 'LEGACY_ADMIN') return ROLES.SUPERADMIN;
   if (value === ROLES.SUPERADMIN || value === ROLES.ADMIN || value === ROLES.VIEWER) return value;
   if (value === 'ADMINISTRADOR') return ROLES.SUPERADMIN;
   return ROLES.SUPERADMIN;
