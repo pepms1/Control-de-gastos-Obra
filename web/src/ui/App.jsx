@@ -791,6 +791,8 @@ function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) 
 function AdminUsersAccessSection() {
   const [users, setUsers] = useState([]);
   const [projects, setProjects] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [roleFilter, setRoleFilter] = useState('ALL');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [editingUserId, setEditingUserId] = useState('');
@@ -804,6 +806,46 @@ function AdminUsersAccessSection() {
     projects.forEach((project) => map.set(String(project?._id || ''), project));
     return map;
   }, [projects]);
+
+  const summary = useMemo(() => {
+    const counters = {
+      total: users.length,
+      active: 0,
+      inactive: 0,
+      SUPERADMIN: 0,
+      ADMIN: 0,
+      VIEWER: 0,
+    };
+
+    users.forEach((user) => {
+      const role = normalizeRole(user?.role);
+      counters[role] = (counters[role] || 0) + 1;
+      if (user?.isActive === false) counters.inactive += 1;
+      else counters.active += 1;
+    });
+
+    return counters;
+  }, [users]);
+
+  const filteredUsers = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    return users.filter((user) => {
+      const role = normalizeRole(user?.role);
+      if (roleFilter !== 'ALL' && role !== roleFilter) return false;
+      if (!query) return true;
+
+      const candidates = [
+        user?.displayName,
+        user?.name,
+        user?.username,
+        user?.email,
+      ]
+        .filter(Boolean)
+        .map((value) => String(value).toLowerCase());
+
+      return candidates.some((value) => value.includes(query));
+    });
+  }, [users, searchTerm, roleFilter]);
 
   async function loadData() {
     setLoading(true);
@@ -899,12 +941,52 @@ function AdminUsersAccessSection() {
       .join(', ');
   }
 
+  function getViewerProjectsLabel(user) {
+    const count = Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds.length : 0;
+    return `${count} ${count === 1 ? 'proyecto asignado' : 'proyectos asignados'}`;
+  }
+
+  function getRoleHelp(role) {
+    if (role === 'SUPERADMIN') return 'Acceso total';
+    if (role === 'ADMIN') return 'Operación general';
+    return 'Solo proyectos asignados';
+  }
+
   return (
     <div className="card grid" style={{ gap: 12 }}>
       <div>
         <h3 style={{ margin: 0 }}>Usuarios y accesos</h3>
         <div className="small">SUPERADMIN = acceso total · ADMIN = operación general · VIEWER = solo proyectos asignados.</div>
         <div className="small">Configura qué proyectos puede consultar cada usuario con rol VIEWER.</div>
+      </div>
+
+      <div style={{ display: 'grid', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <span className="badge">{summary.SUPERADMIN} superadmins</span>
+          <span className="badge">{summary.ADMIN} admins</span>
+          <span className="badge">{summary.VIEWER} viewers</span>
+          <span className="badge">{summary.active} activos</span>
+          <span className="badge">{summary.inactive} inactivos</span>
+        </div>
+        <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'minmax(220px,2fr) minmax(180px,1fr)', alignItems: 'end' }}>
+          <label style={{ display: 'grid', gap: 4 }}>
+            <span className="small">Buscar usuario</span>
+            <input
+              placeholder="Nombre, username o email"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </label>
+          <label style={{ display: 'grid', gap: 4 }}>
+            <span className="small">Filtrar por rol</span>
+            <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
+              <option value="ALL">Todos</option>
+              <option value="SUPERADMIN">SUPERADMIN</option>
+              <option value="ADMIN">ADMIN</option>
+              <option value="VIEWER">VIEWER</option>
+            </select>
+          </label>
+        </div>
       </div>
 
       {loading && <div className="small">Cargando usuarios...</div>}
@@ -915,7 +997,7 @@ function AdminUsersAccessSection() {
           <table>
             <thead>
               <tr>
-                <th>Usuario</th>
+                <th>Nombre y usuario</th>
                 <th>Email</th>
                 <th>Rol</th>
                 <th>Estado</th>
@@ -924,9 +1006,15 @@ function AdminUsersAccessSection() {
               </tr>
             </thead>
             <tbody>
-              {users.map((user) => {
+              {!filteredUsers.length && (
+                <tr>
+                  <td colSpan={6} className="small">No hay usuarios que coincidan con la búsqueda/filtro.</td>
+                </tr>
+              )}
+              {filteredUsers.map((user) => {
                 const userId = String(user?.id || user?._id || '');
-                const viewer = normalizeRole(user?.role) === 'VIEWER';
+                const role = normalizeRole(user?.role);
+                const viewer = role === 'VIEWER';
                 const isEditing = editingUserId === userId;
                 const draftRole = normalizeRole(draftRoleByUserId[userId] || user?.role);
                 const roleDirty = draftRole !== normalizeRole(user?.role);
@@ -934,7 +1022,10 @@ function AdminUsersAccessSection() {
                 return (
                   <React.Fragment key={userId || user?.username}>
                     <tr>
-                      <td>{user?.displayName || user?.name || user?.username || 'Sin nombre'}<div className="small">{user?.username || '—'}</div></td>
+                      <td>
+                        <div>{user?.displayName || user?.name || user?.username || 'Sin nombre'}</div>
+                        <div className="small">@{user?.username || '—'}</div>
+                      </td>
                       <td>{user?.email || '—'}</td>
                       <td>
                         <div style={{ display: 'grid', gap: 6 }}>
@@ -948,10 +1039,20 @@ function AdminUsersAccessSection() {
                               {savingRole ? 'Guardando rol...' : 'Guardar rol'}
                             </button>
                           </div>
+                          <div className="small">{getRoleHelp(role)}</div>
                         </div>
                       </td>
-                      <td>{user?.isActive === false ? 'Inactivo' : 'Activo'}</td>
-                      <td className="small">{viewer ? renderAllowedProjects(user) : 'No aplica (solo VIEWER)'}</td>
+                      <td>
+                        <span className="badge">{user?.isActive === false ? 'Inactivo' : 'Activo'}</span>
+                      </td>
+                      <td className="small">
+                        {viewer ? (
+                          <div style={{ display: 'grid', gap: 4 }}>
+                            <strong style={{ fontSize: 12 }}>{getViewerProjectsLabel(user)}</strong>
+                            <span>{renderAllowedProjects(user)}</span>
+                          </div>
+                        ) : 'No aplica'}
+                      </td>
                       <td>
                         {viewer ? (
                           <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>
