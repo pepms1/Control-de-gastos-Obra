@@ -6563,6 +6563,48 @@ def _sap_latest_result_summary(result: dict | None) -> dict:
     return {"already_imported": already_imported, "importRunIds": import_run_ids}
 
 
+def _build_supplier_summary_bucket_key(tx: dict, trusted_id_to_supplier_key: dict[str, str]) -> str:
+    supplier_id = normalize_non_empty_string(tx.get("supplierId") or tx.get("supplier_id"))
+    vendor_id = normalize_non_empty_string(tx.get("vendor_id"))
+    identity = build_supplier_identity_from_transaction(tx)
+    supplier_key = normalize_non_empty_string(identity.get("supplierKey"))
+
+    if supplier_key:
+        return supplier_key
+
+    for candidate_id in (supplier_id, vendor_id):
+        if candidate_id and trusted_id_to_supplier_key.get(candidate_id):
+            return str(trusted_id_to_supplier_key.get(candidate_id))
+
+    if supplier_id:
+        return f"supplier:{supplier_id}"
+    if vendor_id:
+        return f"vendor:{vendor_id}"
+    return f"tx:{str(tx.get('_id') or '').strip()}"
+
+
+def _build_trusted_id_supplier_key_map(movements: list[dict]) -> dict[str, str]:
+    trusted_id_candidates: dict[str, set[str]] = {}
+    for tx in movements:
+        identity = build_supplier_identity_from_transaction(tx)
+        supplier_key = normalize_non_empty_string(identity.get("supplierKey"))
+        if not supplier_key or supplier_key.startswith("name:"):
+            continue
+
+        supplier_id = normalize_non_empty_string(tx.get("supplierId") or tx.get("supplier_id"))
+        vendor_id = normalize_non_empty_string(tx.get("vendor_id"))
+        for candidate_id in (supplier_id, vendor_id):
+            if not candidate_id:
+                continue
+            trusted_id_candidates.setdefault(candidate_id, set()).add(supplier_key)
+
+    return {
+        supplier_id: next(iter(keys))
+        for supplier_id, keys in trusted_id_candidates.items()
+        if len(keys) == 1
+    }
+
+
 @app.post("/api/admin/import/sap-latest")
 def admin_import_sap_latest(payload: dict, user: dict = Depends(require_admin)):
     project_id = str((payload or {}).get("projectId") or "").strip()
@@ -6648,6 +6690,12 @@ def admin_import_sap_latest(payload: dict, user: dict = Depends(require_admin)):
 def summary_expenses_by_supplier(
     projectId: str | None = None,
     project: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    from_date: str | None = Query(default=None, alias="from"),
+    to_date: str | None = Query(default=None, alias="to"),
+    source: str | None = None,
+    sourceDb: str | None = None,
     include_iva: bool = False,
     user: dict = Depends(require_authenticated),
 ):
@@ -6657,7 +6705,17 @@ def summary_expenses_by_supplier(
             return []
         raise HTTPException(status_code=403, detail="Project access denied")
 
-    movements_query = build_transactions_query(type_value="EXPENSE")
+    normalized_from_date = from_date if isinstance(from_date, str) else None
+    normalized_to_date = to_date if isinstance(to_date, str) else None
+    effective_date_from = normalized_from_date or date_from
+    effective_date_to = normalized_to_date or date_to
+    movements_query = build_transactions_query(
+        type_value="EXPENSE",
+        date_from=effective_date_from,
+        date_to=effective_date_to,
+        source=source,
+        source_db=sourceDb,
+    )
     movements_query = with_legacy_project_filter(movements_query, project_id)
     movements = list(
         db.transactions.find(
@@ -6680,6 +6738,7 @@ def summary_expenses_by_supplier(
         )
     )
 
+    trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
     supplier_totals = {}
     for tx in movements:
         source = str(tx.get("source") or "").strip().lower()
@@ -6691,16 +6750,9 @@ def summary_expenses_by_supplier(
         sap_card_code = str(identity.get("supplierCardCode") or "").strip()
         sap_business_partner = str(identity.get("businessPartner") or "").strip()
 
-        # Prefer canonical supplier identity (cardCode/businessPartner/name) to avoid
-        # legacy supplierId/vendor_id fallbacks contaminating current provider totals.
-        if supplier_key:
-            provider_key = supplier_key
-        elif supplier_id:
-            provider_key = f"supplier:{str(supplier_id).strip()}"
-        elif vendor_id:
-            provider_key = f"vendor:{str(vendor_id).strip()}"
-        else:
-            provider_key = f"tx:{str(tx.get('_id') or '').strip()}"
+        # Canonical key is preferred, but when canonical data is missing we bridge
+        # through IDs only if that ID maps to exactly one non-name supplier key.
+        provider_key = _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key)
 
         display_name = supplier_name or sap_business_partner or sap_card_code
         bucket = supplier_totals.setdefault(
