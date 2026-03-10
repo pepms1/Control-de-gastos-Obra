@@ -1776,12 +1776,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   const [selectedRows, setSelectedRows] = useState([]);
   const [bulkCategoryId, setBulkCategoryId] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
-  const [debugInfo, setDebugInfo] = useState({
-    projectId: '',
-    supplierId: '',
-    selectedVendor: null,
-    querystring: '',
-  });
 
   const isUncategorizedFilter = categoryFilter === UNCATEGORIZED_FILTER;
   const isSapIvaTransaction = (transaction) =>
@@ -1812,20 +1806,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
         from: dateFrom,
         to: dateTo,
       };
-      const querystring = new URLSearchParams(requestParams).toString();
-
-      setDebugInfo({
-        projectId: String(selectedProjectId || ''),
-        supplierId: supplierIdParam,
-        selectedVendor: selectedVendor
-          ? {
-              id: getVendorIdentity(selectedVendor),
-              name: String(selectedVendor?.name || '').trim(),
-            }
-          : null,
-        querystring,
-      });
-
       const response = await api.transactions(requestParams);
 
       setRows(dedupeTransactions(response?.items));
@@ -2092,16 +2072,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       </div>
 
       <div className="small" style={{ marginTop: 8 }}>Mostrando {rangeStart}–{rangeEnd} de {totalCount}</div>
-
-      {isAdmin && (
-        <div className="small" style={{ marginTop: 8, padding: 8, border: '1px dashed #94a3b8', borderRadius: 8 }}>
-          <div><strong>Detalle de filtros (admin)</strong></div>
-          <div>projectId: {debugInfo.projectId || '—'}</div>
-          <div>supplierId: {debugInfo.supplierId || '—'}</div>
-          <div>Proveedor seleccionado: {debugInfo.selectedVendor?.name || '—'} ({debugInfo.selectedVendor?.id || '—'})</div>
-          <div style={{ wordBreak: 'break-all' }}>Consulta /transactions: {debugInfo.querystring || '—'}</div>
-        </div>
-      )}
 
       {isAdmin && (
         <div className="row" style={{ marginTop: 10, justifyContent: 'space-between' }}>
