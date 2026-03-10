@@ -1242,23 +1242,6 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
           <h2 style={{ margin: 0 }}>Dashboard de egresos</h2>
           <div className="small" style={{ marginTop: 4 }}>{subtitle}</div>
         </div>
-        {isAdmin && (
-          <button
-            className="secondary"
-            onClick={async () => {
-              const confirmed = window.confirm('Esto solo agrega faltantes, no borra datos existentes.');
-              if (!confirmed) return;
-              try {
-                await api.seed();
-                location.reload();
-              } catch (_) {
-                // Intencionalmente silencioso para mantener el comportamiento previo.
-              }
-            }}
-          >
-            Seed categorías
-          </button>
-        )}
       </div>
 
       <div className="dashboard-tabs row" style={{ gap: 8 }}>
@@ -1956,7 +1939,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
       </form>
 
       <div className="small" style={{ marginTop: 10 }}>
-        Nota: si no ves categorías/proveedores, ve a “Catálogo” o presiona “Seed categorías” en Dashboard.
+        Nota: si no ves categorías/proveedores, ve a “Ajustes” → “Catálogo”.
       </div>
     </div>
   );
@@ -2854,7 +2837,22 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
   return (
     <div className="grid grid2">
       <div className="card">
-        <h2 style={{ margin: '0 0 8px' }}>Categorías</h2>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <h2 style={{ margin: 0 }}>Categorías</h2>
+          {isAdmin && (
+            <button
+              className="secondary"
+              onClick={async () => {
+                const confirmed = window.confirm('Esto solo agrega faltantes, no borra datos existentes.');
+                if (!confirmed) return;
+                await api.seed();
+                onChanged();
+              }}
+            >
+              Seed categorías
+            </button>
+          )}
+        </div>
 
         {isAdmin && (
           <form onSubmit={addCat} className="row">
@@ -2897,7 +2895,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
               )}
             </div>
           ))}
-          {!cats.length && <div className="small">No hay categorías. Puedes presionar “Seed categorías” en Dashboard.</div>}
+          {!cats.length && <div className="small">No hay categorías. Puedes presionar “Seed categorías” aquí.</div>}
         </div>
       </div>
 
