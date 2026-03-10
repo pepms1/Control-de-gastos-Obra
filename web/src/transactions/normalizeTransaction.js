@@ -71,6 +71,9 @@ export function normalizeTransaction(transaction) {
   const categoryManualCode = toNullableString(transaction.categoryManualCode);
   const categoryEffectiveName = toNullableString(transaction.categoryEffectiveName) || categoryManualName || categoryName;
   const categoryEffectiveCode = toNullableString(transaction.categoryEffectiveCode) || categoryManualCode || categoryCode;
+  const resolvedCategory2Id = toNullableString(transaction.resolvedCategory2Id);
+  const resolvedCategory2Name = toNullableString(transaction.resolvedCategory2Name);
+  const resolvedCategory2Source = toNullableString(transaction.resolvedCategory2Source);
 
   const normalizedType = resolveTransactionType(transaction);
 
@@ -114,6 +117,9 @@ export function normalizeTransaction(transaction) {
     categoryManualCode,
     categoryEffectiveCode,
     categoryEffectiveName,
+    resolvedCategory2Id,
+    resolvedCategory2Name,
+    resolvedCategory2Source,
     source: toNullableString(transaction.source) || '',
     sourceDb: toNullableString(transaction.sourceDb) || '',
     sourceSbo: sourceSbo || '',

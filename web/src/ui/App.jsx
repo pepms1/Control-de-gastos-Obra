@@ -12,6 +12,49 @@ const moneyFormatter = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 2,
 });
 
+const CATEGORY2_UNCLASSIFIED_ID = 'trabajos_especiales_unclassified';
+const CATEGORY2_UNCLASSIFIED_NAME = 'Trabajos Especiales sin clasificar';
+
+function resolveTransactionCategory2(transaction, catMap = {}) {
+  const resolvedName = String(transaction?.resolvedCategory2Name || '').trim();
+  const resolvedId = String(transaction?.resolvedCategory2Id || '').trim();
+  if (resolvedName || resolvedId) {
+    return {
+      id: resolvedId || resolvedName,
+      name: resolvedName || catMap[resolvedId] || resolvedId,
+    };
+  }
+
+  const fallbackName = String(
+    transaction?.categoryEffectiveName
+    || transaction?.categoryManualName
+    || transaction?.categoryName
+    || transaction?.category_hint_name
+    || transaction?.category
+    || '',
+  ).trim();
+  const fallbackId = String(
+    transaction?.categoryEffectiveCode
+    || transaction?.categoryCode
+    || transaction?.categoryHintCode
+    || transaction?.category_id
+    || transaction?.categoryId
+    || '',
+  ).trim();
+
+  if (fallbackName || fallbackId) {
+    return {
+      id: fallbackId || fallbackName,
+      name: fallbackName || catMap[fallbackId] || fallbackId,
+    };
+  }
+
+  return {
+    id: CATEGORY2_UNCLASSIFIED_ID,
+    name: CATEGORY2_UNCLASSIFIED_NAME,
+  };
+}
+
 function formatMoney(value) {
   const amount = Number(value);
   if (!Number.isFinite(amount)) return '0.00';
@@ -24,28 +67,8 @@ function parseMoneyInput(value) {
 }
 
 function getTransactionCategoryLabel(transaction, catMap) {
-  const normalizedCategory = String(
-    transaction?.categoryEffectiveName
-    || transaction?.categoryManualName
-    || transaction?.categoryName
-    || '',
-  ).trim();
-  if (normalizedCategory) return normalizedCategory;
-
-  const effectiveCode = (transaction?.categoryEffectiveCode || '').trim();
-  if (effectiveCode) {
-    const mappedCategory = (catMap[effectiveCode] || '').trim();
-    if (mappedCategory) return mappedCategory;
-    return effectiveCode;
-  }
-
-  const legacyCategory = (transaction?.category_name || transaction?.category || '').trim();
-  if (legacyCategory) return legacyCategory;
-
-  const hintName = String(transaction?.categoryName || transaction?.categoryHintName || '').trim();
-  if (hintName) return hintName;
-
-  return 'Sin categoría';
+  const category2 = resolveTransactionCategory2(transaction, catMap);
+  return category2.name || 'Sin categoría 2';
 }
 
 function getTransactionTotalValue(transaction) {
@@ -111,6 +134,7 @@ function buildTransactionSearchHaystack(transaction, catMap) {
   const fields = [
     transaction?.description,
     transaction?.supplierName,
+    transaction?.resolvedCategory2Name,
     transaction?.categoryName,
     getTransactionCategoryLabel(transaction, catMap),
     transaction?.projectDisplayName,
@@ -2112,8 +2136,8 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
     viewMode === 'supplier'
       ? 'Resumen operativo de egresos SAP/SBO por proveedor.'
       : viewMode === 'summary'
-        ? 'KPIs y visuales de categorías para seguimiento diario.'
-        : 'Detalle por categoría con proporción sobre el total de egresos.';
+        ? 'KPIs y visuales de Categoría 2 para seguimiento diario.'
+        : 'Detalle por Categoría 2 con proporción sobre el total de egresos.';
 
   const dashboardTotals = [
     {
@@ -2122,7 +2146,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       helper: 'Modelo V2 normalizado',
     },
     {
-      label: 'Categorías con movimiento',
+      label: 'Categorías 2 con movimiento',
       value: String(categoryRows.length),
       helper: 'Con al menos un movimiento',
     },
@@ -2152,7 +2176,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
           Resumen
         </button>
         <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
-          Por categoría
+          Por Categoría 2
         </button>
         <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
           Por proveedor
@@ -2233,12 +2257,12 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
               </div>
             )
           ) : !categoryRows.length ? (
-            <div className="dashboard-state">No hay egresos registrados para mostrar en categorías.</div>
+            <div className="dashboard-state">No hay egresos registrados para mostrar en Categoría 2.</div>
           ) : viewMode === 'summary' ? (
             <div className="dashboard-summary">
               <div className="dashboard-summary-grid">
                 <section className="dashboard-panel">
-                  <h3>Comportamiento por categoría</h3>
+                  <h3>Comportamiento por Categoría 2</h3>
                   <svg
                     viewBox="0 0 100 100"
                     preserveAspectRatio="none"
@@ -2248,11 +2272,11 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
                   >
                     <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
                   </svg>
-                  <div className="small">Comparativo visual de montos entre categorías principales.</div>
+                  <div className="small">Comparativo visual de montos entre categorías 2 principales.</div>
                 </section>
 
                 <section className="dashboard-panel dashboard-gauge-panel">
-                  <h3>Peso del top de categorías</h3>
+                  <h3>Peso del top de Categoría 2</h3>
                   <div
                     className="dashboard-gauge"
                     style={{
@@ -2261,11 +2285,11 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
                   >
                     <span>{allocatedPercent.toFixed(1)}%</span>
                   </div>
-                  <div className="small">Participación acumulada de las 6 categorías principales.</div>
+                  <div className="small">Participación acumulada de las 6 categorías 2 principales.</div>
                 </section>
 
                 <section className="dashboard-panel">
-                  <h3>Categorías principales</h3>
+                  <h3>Categorías 2 principales</h3>
                   <div className="grid">
                     {topCategories.map((row) => {
                       const percent = Number(row.percent) || 0;
@@ -2307,7 +2331,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
             </div>
           ) : (
             <div className="dashboard-panel" style={{ marginTop: 4 }}>
-              <h3 style={{ margin: 0 }}>Resumen por categoría</h3>
+              <h3 style={{ margin: 0 }}>Resumen por Categoría 2</h3>
               <div className="grid" style={{ marginTop: 8 }}>
                 {categoryRows.map((row) => {
                   const percent = Number(row.percent) || 0;
@@ -2344,8 +2368,9 @@ function summarizeTransactionsByCategory(transactions, includeIva = false) {
   let total = 0;
 
   transactions.forEach((tx) => {
-    const categoryId = String(tx?.categoryEffectiveCode || tx?.categoryCode || tx?.category_id || tx?.categoryId || 'SIN_CATEGORIA');
-    const categoryName = String(tx?.categoryEffectiveName || tx?.categoryName || tx?.category_hint_name || 'Sin categoría');
+    const category2 = resolveTransactionCategory2(tx);
+    const categoryId = String(category2.id || 'SIN_CATEGORIA_2');
+    const categoryName = String(category2.name || 'Sin categoría 2');
     const amount = Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
     total += amount;
 
@@ -2524,8 +2549,8 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
     viewMode === 'supplier'
       ? 'Resumen operativo de ingresos por proveedor.'
       : viewMode === 'summary'
-        ? 'KPIs y visuales de categorías para seguimiento diario de ingresos.'
-        : 'Detalle por categoría con proporción sobre el total de ingresos.';
+        ? 'KPIs y visuales de Categoría 2 para seguimiento diario de ingresos.'
+        : 'Detalle por Categoría 2 con proporción sobre el total de ingresos.';
 
   const dashboardTotals = [
     {
@@ -2534,7 +2559,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
       helper: 'Movimientos tipo ingreso',
     },
     {
-      label: 'Categorías con movimiento',
+      label: 'Categorías 2 con movimiento',
       value: String(categoryRows.length),
       helper: 'Con al menos un movimiento',
     },
@@ -2564,7 +2589,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
           Resumen
         </button>
         <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
-          Por categoría
+          Por Categoría 2
         </button>
         <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
           Por proveedor
@@ -2645,20 +2670,20 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
               </div>
             )
           ) : !categoryRows.length ? (
-            <div className="dashboard-state">No hay ingresos registrados para mostrar en categorías.</div>
+            <div className="dashboard-state">No hay ingresos registrados para mostrar en Categoría 2.</div>
           ) : viewMode === 'summary' ? (
             <div className="dashboard-summary">
               <div className="dashboard-summary-grid">
                 <section className="dashboard-panel">
-                  <h3>Comportamiento por categoría</h3>
+                  <h3>Comportamiento por Categoría 2</h3>
                   <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="dashboard-line-chart" role="img" aria-label="Tendencia de categorías por monto">
                     <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
                   </svg>
-                  <div className="small">Comparativo visual de montos entre categorías principales.</div>
+                  <div className="small">Comparativo visual de montos entre categorías 2 principales.</div>
                 </section>
 
                 <section className="dashboard-panel dashboard-gauge-panel">
-                  <h3>Peso del top de categorías</h3>
+                  <h3>Peso del top de Categoría 2</h3>
                   <div
                     className="dashboard-gauge"
                     style={{
@@ -2667,11 +2692,11 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
                   >
                     <span>{allocatedPercent.toFixed(1)}%</span>
                   </div>
-                  <div className="small">Participación acumulada de las 6 categorías principales.</div>
+                  <div className="small">Participación acumulada de las 6 categorías 2 principales.</div>
                 </section>
 
                 <section className="dashboard-panel">
-                  <h3>Categorías principales</h3>
+                  <h3>Categorías 2 principales</h3>
                   <div className="grid">
                     {topCategories.map((row) => {
                       const percent = Number(row.percent) || 0;
@@ -2713,7 +2738,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
             </div>
           ) : (
             <div className="dashboard-panel" style={{ marginTop: 4 }}>
-              <h3 style={{ margin: 0 }}>Resumen por categoría</h3>
+              <h3 style={{ margin: 0 }}>Resumen por Categoría 2</h3>
               <div className="grid" style={{ marginTop: 8 }}>
                 {categoryRows.map((row) => {
                   const percent = Number(row.percent) || 0;
@@ -3469,8 +3494,23 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   const [loading, setLoading] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [error, setError] = useState('');
+  const [category2Catalog, setCategory2Catalog] = useState([]);
   const limit = 50;
-  const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
+  const catMap = useMemo(() => {
+    const source = new Map();
+    cats.forEach((c) => {
+      const key = String(c?.code || c?.id || '').trim();
+      const label = String(c?.displayLabel || c?.name || '').trim();
+      if (key && label) source.set(key, label);
+    });
+    category2Catalog.forEach((c) => {
+      const key = String(c?.id || c?.code || '').trim();
+      const label = String(c?.name || c?.displayLabel || '').trim();
+      if (key && label) source.set(key, label);
+    });
+    source.set(CATEGORY2_UNCLASSIFIED_ID, CATEGORY2_UNCLASSIFIED_NAME);
+    return Object.fromEntries(source.entries());
+  }, [cats, category2Catalog]);
   const selectedProjectName = useMemo(
     () => {
       const project = projects.find((item) => String(item?._id || '') === String(selectedProjectId || ''));
@@ -3508,6 +3548,23 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       .finally(() => setLoading(false));
   }, [page, query, typeFilter, dateFrom, dateTo, selectedProjectId]);
 
+  useEffect(() => {
+    let isMounted = true;
+    api.supplierCategories()
+      .then((response) => {
+        if (!isMounted) return;
+        setCategory2Catalog(Array.isArray(response) ? response : []);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setCategory2Catalog([]);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const shown = useMemo(
     () => rows
       .filter((row) => {
@@ -3516,7 +3573,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       })
       .filter((row) => {
         if (categoryFilter === 'ALL') return true;
-        return String(row?.categoryCode || row?.categoryEffectiveCode || '').trim() === categoryFilter;
+        return String(resolveTransactionCategory2(row, catMap).id || '').trim() === categoryFilter;
       })
       .filter((row) => {
         if (sourceSboFilter === 'ALL') return true;
@@ -3547,18 +3604,25 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
 
   const categoryOptions = useMemo(() => {
     const source = new Map();
-    cats.forEach((category) => {
-      const key = String(category?.code || category?.id || '').trim();
+    category2Catalog.forEach((category) => {
+      const key = String(category?.id || category?.code || '').trim();
       if (!key) return;
       source.set(key, category?.displayLabel || category?.name || key);
     });
-    rows.forEach((row) => {
-      const key = String(row?.categoryCode || row?.categoryEffectiveCode || '').trim();
+    cats.forEach((category) => {
+      const key = String(category?.code || category?.id || '').trim();
       if (!key || source.has(key)) return;
-      source.set(key, row?.categoryName || row?.categoryEffectiveName || key);
+      source.set(key, category?.displayLabel || category?.name || key);
     });
+    rows.forEach((row) => {
+      const category2 = resolveTransactionCategory2(row, catMap);
+      const key = String(category2.id || '').trim();
+      if (!key || source.has(key)) return;
+      source.set(key, category2.name || key);
+    });
+    source.set(CATEGORY2_UNCLASSIFIED_ID, CATEGORY2_UNCLASSIFIED_NAME);
     return Array.from(source.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
-  }, [cats, rows]);
+  }, [cats, rows, category2Catalog, catMap]);
 
   const sourceSboOptions = useMemo(() => {
     const source = new Set();
@@ -3662,7 +3726,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Fecha</th><th>Proyecto</th><th>Proveedor</th><th>Descripción</th><th>Categoría</th><th style="text-align:right">Subtotal</th><th style="text-align:right">IVA</th><th style="text-align:right">Total</th><th>Tipo</th><th>Origen / SBO</th></tr>
+                    <tr><th>Fecha</th><th>Proyecto</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th style="text-align:right">Subtotal</th><th style="text-align:right">IVA</th><th style="text-align:right">Total</th><th>Tipo</th><th>Origen / SBO</th></tr>
                   </thead>
                   <tbody>${printableRows}</tbody>
                 </table>
@@ -3688,7 +3752,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       <h2 style={{ marginTop: 0 }}>Buscar movimientos</h2>
       <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
         <input
-          placeholder="Buscar por descripción, proveedor, categoría, proyecto o SBO"
+          placeholder="Buscar por descripción, proveedor, categoría 2, proyecto o SBO"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           style={{ minWidth: 320 }}
@@ -3709,7 +3773,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
             ))}
           </select>
           <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
-            <option value="ALL">Todas las categorías</option>
+            <option value="ALL">Todas las categorías 2</option>
             {categoryOptions.map(([categoryCode, categoryLabel]) => (
               <option key={categoryCode} value={categoryCode}>{categoryLabel}</option>
             ))}
@@ -3741,7 +3805,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
               <th>Proyecto</th>
               <th>Proveedor</th>
               <th>Descripción</th>
-              <th>Categoría</th>
+              <th>Categoría 2</th>
               <th>Subtotal</th>
               <th>IVA</th>
               <th>Total</th>
