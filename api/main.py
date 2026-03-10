@@ -2815,6 +2815,124 @@ def normalize_category_name(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip()).lower()
 
 
+def normalize_global_category_key(value: str | None) -> str:
+    return normalize_text_for_matching(value)
+
+
+def clean_global_category_name(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def iter_existing_global_category_names() -> list[str]:
+    names: list[str] = []
+
+    for row in db.transactions.aggregate(
+        [
+            {
+                "$project": {
+                    "names": [
+                        "$categoryEffectiveName",
+                        "$categoryManualName",
+                        "$categoryHintName",
+                    ]
+                }
+            },
+            {"$unwind": "$names"},
+            {"$match": {"names": {"$type": "string", "$nin": ["", None]}}},
+            {"$group": {"_id": "$names"}},
+        ]
+    ):
+        name = clean_global_category_name(row.get("_id"))
+        if name:
+            names.append(name)
+
+    for row in db.supplierCategory2Rules.find(
+        {"category2Name": {"$exists": True, "$nin": [None, ""]}},
+        {"category2Name": 1},
+    ):
+        name = clean_global_category_name(row.get("category2Name"))
+        if name:
+            names.append(name)
+
+    return names
+
+
+def ensure_global_categories_catalog() -> dict:
+    existing_rows = list(db.categories.find({}, {"name": 1, "active": 1, "nameKey": 1, "normalizedName": 1}))
+    by_key: dict[str, dict] = {}
+
+    for row in existing_rows:
+        name = clean_global_category_name(row.get("name"))
+        key = normalize_global_category_key(name)
+        if not key:
+            continue
+
+        row_id = row.get("_id")
+        current = by_key.get(key)
+        if current is None:
+            by_key[key] = row
+            continue
+
+        current_is_active = current.get("active") is not False
+        row_is_active = row.get("active") is not False
+        if row_is_active and not current_is_active:
+            by_key[key] = row
+        elif row_is_active == current_is_active and str(row_id) < str(current.get("_id")):
+            by_key[key] = row
+
+    candidate_names = [
+        *[clean_global_category_name(row.get("name")) for row in existing_rows],
+        *DEFAULT_CATEGORIES,
+        *iter_existing_global_category_names(),
+    ]
+
+    seeded = 0
+    reactivated = 0
+    normalized_updates = 0
+
+    for raw_name in candidate_names:
+        name = clean_global_category_name(raw_name)
+        key = normalize_global_category_key(name)
+        if not name or not key:
+            continue
+
+        keeper = by_key.get(key)
+        if keeper is None:
+            inserted_id = db.categories.insert_one(
+                {
+                    "name": name,
+                    "active": True,
+                    "nameKey": key,
+                    "normalizedName": key,
+                }
+            ).inserted_id
+            by_key[key] = {"_id": inserted_id, "name": name, "active": True, "nameKey": key, "normalizedName": key}
+            seeded += 1
+            continue
+
+        updates: dict = {}
+        if keeper.get("active") is False:
+            updates["active"] = True
+            reactivated += 1
+        if keeper.get("nameKey") != key:
+            updates["nameKey"] = key
+        if keeper.get("normalizedName") != key:
+            updates["normalizedName"] = key
+        if clean_global_category_name(keeper.get("name")) != name:
+            updates["name"] = name
+
+        if updates:
+            db.categories.update_one({"_id": keeper.get("_id")}, {"$set": updates})
+            keeper.update(updates)
+            normalized_updates += 1
+
+    return {
+        "seeded": seeded,
+        "reactivated": reactivated,
+        "normalizedUpdates": normalized_updates,
+    }
+
+
 def normalize_non_empty_string(value) -> str | None:
     if value is None:
         return None
@@ -6761,8 +6879,24 @@ def list_admin_trabajos_especiales_supplier_category2_rules(_: dict = Depends(re
 
 @app.get("/api/admin/categories/global")
 def list_admin_global_categories(_: dict = Depends(require_admin)):
-    rows = db.categories.find({"active": {"$ne": False}}).sort("name", 1)
-    return [serialize(row) for row in rows]
+    ensure_global_categories_catalog()
+    rows = list(db.categories.find({"active": {"$ne": False}}))
+    deduped_by_key: dict[str, dict] = {}
+
+    for row in rows:
+        name = clean_global_category_name(row.get("name"))
+        key = normalize_global_category_key(name)
+        if not key:
+            continue
+        current = deduped_by_key.get(key)
+        if current is None or str(row.get("_id")) < str(current.get("_id")):
+            deduped_by_key[key] = row
+
+    ordered_rows = sorted(
+        deduped_by_key.values(),
+        key=lambda row: (normalize_global_category_key(row.get("name")), str(row.get("_id") or "")),
+    )
+    return [serialize(row) for row in ordered_rows]
 
 
 @app.put("/api/admin/trabajos-especiales/supplier-category2-rules")
