@@ -4045,8 +4045,13 @@ def update_supplier(supplier_id: str, payload: dict, request: FastAPIRequest, _:
 
 
 @app.get("/api/projects/{project_id}/supplier-categories")
-def list_project_supplier_categories(project_id: str, _: dict = Depends(require_authenticated)):
+def list_project_supplier_categories(project_id: str, user: dict = Depends(require_authenticated)):
     resolved_project_id = resolve_project_id(project_id)
+    if not can_access_project(user, resolved_project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     rows = list(db.supplierCategories.find({"projectId": resolved_project_id}).sort("updatedAt", -1))
 
     supplier_ids = [oid(row.get("supplierId")) for row in rows if ObjectId.is_valid(str(row.get("supplierId") or ""))]
@@ -6202,9 +6207,14 @@ def summary_expenses_by_supplier(
     projectId: str | None = None,
     project: str | None = None,
     include_iva: bool = False,
-    _: dict = Depends(require_authenticated),
+    user: dict = Depends(require_authenticated),
 ):
     project_id = resolve_project_id(projectId or project)
+    if not can_access_project(user, project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     movements_query = build_transactions_query(type_value="EXPENSE")
     movements_query = with_legacy_project_filter(movements_query, project_id)
     movements = list(
@@ -7355,9 +7365,14 @@ def spend_by_category(
     include_iva: bool = False,
     projectId: str | None = None,
     project: str | None = None,
-    _: dict = Depends(require_authenticated),
+    user: dict = Depends(require_authenticated),
 ):
     active_project_id = resolve_project_id(projectId or project)
+    if not can_access_project(user, active_project_id):
+        if is_viewer(user):
+            return {"total_expenses": 0.0, "rows": []}
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     match = {"type": "EXPENSE", "projectId": active_project_id}
     if vendor_id:
         match["vendor_id"] = vendor_id
