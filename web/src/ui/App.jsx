@@ -150,6 +150,7 @@ function Nav({
   const canSeeSettings = role !== 'VIEWER';
   const items = [
     ['dashboard', 'Dashboard', true],
+    ['dashboard-ingresos', 'Dashboard ingresos', true],
     ['search', 'Buscar movimientos', true],
     ['transactions', 'Movimientos (Admin)', role === 'ADMIN'],
     ['settings', 'Ajustes', canSeeSettings],
@@ -406,6 +407,10 @@ export default function App() {
 
         {tab === 'dashboard' && (
           <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={dataVersion} />
+        )}
+
+        {tab === 'dashboard-ingresos' && (
+          <DashboardIngresos selectedProjectId={selectedProjectId} refreshKey={dataVersion} />
         )}
 
         {tab === 'transactions' && isAdmin && (
@@ -1321,6 +1326,376 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
                     role="img"
                     aria-label="Tendencia de categorías por monto"
                   >
+                    <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
+                  </svg>
+                  <div className="small">Comparativo visual de montos entre categorías principales.</div>
+                </section>
+
+                <section className="dashboard-panel dashboard-gauge-panel">
+                  <h3>Peso del top de categorías</h3>
+                  <div
+                    className="dashboard-gauge"
+                    style={{
+                      background: `conic-gradient(#1f4d96 0deg ${(allocatedPercent / 100) * 360}deg, #e2e8f0 ${(allocatedPercent / 100) * 360}deg 360deg)`,
+                    }}
+                  >
+                    <span>{allocatedPercent.toFixed(1)}%</span>
+                  </div>
+                  <div className="small">Participación acumulada de las 6 categorías principales.</div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Categorías principales</h3>
+                  <div className="grid">
+                    {topCategories.map((row) => {
+                      const percent = Number(row.percent) || 0;
+                      const fillWidth = Math.max(0, Math.min(100, percent));
+                      return (
+                        <div key={row.category_id} style={{ display: 'grid', gap: 4 }}>
+                          <div className="row" style={{ justifyContent: 'space-between' }}>
+                            <strong>{row.category_name}</strong>
+                            <span className="small">{percent.toFixed(2)}%</span>
+                          </div>
+                          <div className="bar" aria-label={`Barra de avance de ${row.category_name}`}>
+                            <div style={{ width: `${fillWidth}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Montos principales</h3>
+                  <div className="dashboard-column-chart">
+                    {topCategories.slice(0, 5).map((row) => {
+                      const amount = Number(row.amount) || 0;
+                      const maxAmount = Number(biggestCategory?.amount) || 1;
+                      return (
+                        <div key={`column-${row.category_id}`} className="dashboard-column-item">
+                          <div className="dashboard-column-value">{formatCurrency(amount)}</div>
+                          <div className="dashboard-column-track">
+                            <div className="dashboard-column-fill" style={{ height: `${Math.max(12, (amount / maxAmount) * 100)}%` }} />
+                          </div>
+                          <div className="dashboard-column-label">{row.category_name}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            </div>
+          ) : (
+            <div className="dashboard-panel" style={{ marginTop: 4 }}>
+              <h3 style={{ margin: 0 }}>Resumen por categoría</h3>
+              <div className="grid" style={{ marginTop: 8 }}>
+                {categoryRows.map((row) => {
+                  const percent = Number(row.percent) || 0;
+                  const fillWidth = Math.max(0, Math.min(100, percent));
+
+                  return (
+                    <div key={row.category_id} style={{ display: 'grid', gap: 6 }}>
+                      <div className="row" style={{ justifyContent: 'space-between' }}>
+                        <strong>{row.category_name}</strong>
+                        <div>
+                          {formatCurrency(row.amount)} <span className="small">({percent.toFixed(2)}%)</span>
+                        </div>
+                      </div>
+                      <div className="bar" aria-label={`Barra de avance de ${row.category_name}`}>
+                        <div style={{ width: `${fillWidth}%` }}>
+                          <span>{percent.toFixed(2)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+
+function summarizeTransactionsByCategory(transactions, includeIva = false) {
+  const totalsByCategory = new Map();
+  let total = 0;
+
+  transactions.forEach((tx) => {
+    const categoryId = String(tx?.categoryEffectiveCode || tx?.categoryCode || tx?.category_id || tx?.categoryId || 'SIN_CATEGORIA');
+    const categoryName = String(tx?.categoryEffectiveName || tx?.categoryName || tx?.category_hint_name || 'Sin categoría');
+    const amount = Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
+    total += amount;
+
+    const current = totalsByCategory.get(categoryId) || { category_id: categoryId, category_name: categoryName, amount: 0 };
+    current.amount += amount;
+    if (!current.category_name && categoryName) current.category_name = categoryName;
+    totalsByCategory.set(categoryId, current);
+  });
+
+  const safeTotal = total || 0;
+  const rows = [...totalsByCategory.values()]
+    .map((row) => ({
+      ...row,
+      amount: Number(row.amount.toFixed(2)),
+      percent: safeTotal > 0 ? Number(((row.amount / safeTotal) * 100).toFixed(2)) : 0,
+    }))
+    .sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0));
+
+  return {
+    rows,
+    total_expenses: Number(safeTotal.toFixed(2)),
+  };
+}
+
+function summarizeTransactionsBySupplier(transactions, includeIva = false) {
+  const totalsBySupplier = new Map();
+
+  transactions.forEach((tx) => {
+    const supplierName = String(tx?.supplierName || tx?.sapMeta?.businessPartner || '(Sin proveedor)');
+    const supplierId = String(tx?.supplierId || tx?.supplier_id || tx?.vendor_id || supplierName);
+    const amount = Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
+
+    const current = totalsBySupplier.get(supplierId) || {
+      supplierId,
+      supplierName,
+      totalAmount: 0,
+      count: 0,
+    };
+    current.totalAmount += amount;
+    current.count += 1;
+    if (!current.supplierName && supplierName) current.supplierName = supplierName;
+    totalsBySupplier.set(supplierId, current);
+  });
+
+  return [...totalsBySupplier.values()].map((row) => ({
+    ...row,
+    totalAmount: Number(row.totalAmount.toFixed(2)),
+  }));
+}
+
+function DashboardIngresos({ selectedProjectId, refreshKey }) {
+  const [stats, setStats] = useState(null);
+  const [supplierSummary, setSupplierSummary] = useState([]);
+  const [supplierSummaryError, setSupplierSummaryError] = useState('');
+  const [viewMode, setViewMode] = useState('summary');
+  const [showCategoryIva, setShowCategoryIva] = useState(false);
+  const [showSupplierIva, setShowSupplierIva] = useState(false);
+  const [supplierSortMode, setSupplierSortMode] = useState('alpha');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let ok = true;
+    const PAGE_LIMIT = 500;
+
+    async function loadIncomeDashboard() {
+      setLoading(true);
+      setSupplierSummaryError('');
+      try {
+        let page = 1;
+        let totalCount = 0;
+        let items = [];
+
+        do {
+          const response = await api.transactions({
+            type: 'INCOME',
+            page: String(page),
+            limit: String(PAGE_LIMIT),
+          });
+          const chunk = Array.isArray(response?.items) ? response.items : [];
+          items = items.concat(chunk);
+          totalCount = Number(response?.totalCount) || items.length;
+          page += 1;
+          if (!chunk.length) break;
+        } while (items.length < totalCount);
+
+        if (!ok) return;
+
+        setStats(summarizeTransactionsByCategory(items, showCategoryIva));
+        setSupplierSummary(summarizeTransactionsBySupplier(items, showSupplierIva));
+      } catch (error) {
+        if (!ok) return;
+        setStats({ error: error?.message || 'No se pudo cargar el dashboard de ingresos.' });
+        setSupplierSummary([]);
+        setSupplierSummaryError(error?.message || 'No se pudo cargar el resumen por proveedor de ingresos.');
+      } finally {
+        if (ok) setLoading(false);
+      }
+    }
+
+    loadIncomeDashboard();
+    return () => {
+      ok = false;
+    };
+  }, [showCategoryIva, showSupplierIva, selectedProjectId, refreshKey]);
+
+  const supplierTotal = supplierSummary.reduce((acc, row) => acc + (Number(row.totalAmount) || 0), 0);
+  const sortedSupplierSummary = useMemo(() => {
+    const rows = [...supplierSummary];
+    if (supplierSortMode === 'amount') {
+      return rows.sort((a, b) => {
+        const amountDiff = (Number(b.totalAmount) || 0) - (Number(a.totalAmount) || 0);
+        if (amountDiff !== 0) return amountDiff;
+        return (a.supplierName || '').localeCompare(b.supplierName || '', 'es');
+      });
+    }
+
+    return rows.sort((a, b) => (a.supplierName || '').localeCompare(b.supplierName || '', 'es'));
+  }, [supplierSummary, supplierSortMode]);
+
+  const categoryRows = Array.isArray(stats?.rows) ? stats.rows : [];
+  const topCategories = useMemo(
+    () => [...categoryRows].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0)).slice(0, 6),
+    [categoryRows]
+  );
+  const chartPoints = useMemo(() => {
+    if (!categoryRows.length) return '';
+    const sorted = [...categoryRows].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0)).slice(0, 10);
+    const maxAmount = Math.max(...sorted.map((row) => Number(row.amount) || 0), 1);
+    return sorted
+      .map((row, index) => {
+        const x = sorted.length === 1 ? 0 : (index / (sorted.length - 1)) * 100;
+        const y = 100 - ((Number(row.amount) || 0) / maxAmount) * 80;
+        return `${x},${Math.max(4, y)}`;
+      })
+      .join(' ');
+  }, [categoryRows]);
+
+  const biggestCategory = topCategories[0] || null;
+  const allocatedPercent = Math.min(
+    100,
+    Math.max(0, topCategories.reduce((acc, row) => acc + (Number(row.percent) || 0), 0))
+  );
+
+  const subtitle =
+    viewMode === 'supplier'
+      ? 'Resumen operativo de ingresos por proveedor.'
+      : viewMode === 'summary'
+        ? 'KPIs y visuales de categorías para seguimiento diario de ingresos.'
+        : 'Detalle por categoría con proporción sobre el total de ingresos.';
+
+  const dashboardTotals = [
+    {
+      label: showCategoryIva ? 'Total ingresos con IVA' : 'Total ingresos sin IVA',
+      value: formatCurrency(stats?.total_expenses || 0),
+      helper: 'Movimientos tipo ingreso',
+    },
+    {
+      label: 'Categorías con movimiento',
+      value: String(categoryRows.length),
+      helper: 'Con al menos un movimiento',
+    },
+    {
+      label: 'Proveedores con ingreso',
+      value: String(supplierSummary.length),
+      helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+  ];
+
+  return (
+    <div className="card dashboard-shell">
+      <div className="dashboard-header">
+        <div>
+          <h2 style={{ margin: 0 }}>Dashboard ingresos</h2>
+          <div className="small" style={{ marginTop: 4 }}>{subtitle}</div>
+        </div>
+      </div>
+
+      <div className="dashboard-tabs row" style={{ gap: 8 }}>
+        <button className={viewMode === 'summary' ? '' : 'secondary'} onClick={() => setViewMode('summary')}>
+          Resumen
+        </button>
+        <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
+          Por categoría
+        </button>
+        <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
+          Por proveedor
+        </button>
+      </div>
+
+      <div className="dashboard-controls row">
+        {viewMode === 'supplier' ? (
+          <>
+            <label className="small dashboard-checkbox">
+              <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
+              Mostrar IVA
+            </label>
+            <label className="small dashboard-checkbox">
+              <input
+                type="checkbox"
+                checked={supplierSortMode === 'amount'}
+                onChange={(e) => setSupplierSortMode(e.target.checked ? 'amount' : 'alpha')}
+              />
+              Ordenar por monto (mayor a menor)
+            </label>
+          </>
+        ) : (
+          <label className="small dashboard-checkbox">
+            <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
+            Mostrar IVA
+          </label>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="dashboard-state">Cargando indicadores del dashboard de ingresos...</div>
+      ) : stats?.error ? (
+        <div className="dashboard-state dashboard-state-error">Error al cargar categorías: {stats.error}</div>
+      ) : (
+        <>
+          <div className="dashboard-kpi-grid">
+            {dashboardTotals.map((item) => (
+              <div key={item.label} className="dashboard-kpi-card">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <div className="small">{item.helper}</div>
+              </div>
+            ))}
+          </div>
+
+          {viewMode === 'supplier' ? (
+            supplierSummaryError ? (
+              <div className="dashboard-state dashboard-state-error">Error al cargar proveedores: {supplierSummaryError}</div>
+            ) : !sortedSupplierSummary.length ? (
+              <div className="dashboard-state">No hay ingresos agrupados por proveedor para este proyecto.</div>
+            ) : (
+              <div className="dashboard-panel" style={{ marginTop: 4 }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <h3 style={{ margin: 0 }}>Resumen por proveedor</h3>
+                  <span className="badge">Total del resumen: {formatCurrency(supplierTotal)}</span>
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Proveedor</th>
+                        <th>Movimientos</th>
+                        <th>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedSupplierSummary.map((row) => (
+                        <tr key={row.supplierId || row.supplierName}>
+                          <td>{row.supplierName || '(Sin proveedor)'}</td>
+                          <td>{row.count || 0}</td>
+                          <td>{formatCurrency(row.totalAmount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          ) : !categoryRows.length ? (
+            <div className="dashboard-state">No hay ingresos registrados para mostrar en categorías.</div>
+          ) : viewMode === 'summary' ? (
+            <div className="dashboard-summary">
+              <div className="dashboard-summary-grid">
+                <section className="dashboard-panel">
+                  <h3>Comportamiento por categoría</h3>
+                  <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="dashboard-line-chart" role="img" aria-label="Tendencia de categorías por monto">
                     <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
                   </svg>
                   <div className="small">Comparativo visual de montos entre categorías principales.</div>
