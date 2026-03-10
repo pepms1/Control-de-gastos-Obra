@@ -92,6 +92,26 @@ function getProjectDisplayName(project) {
   return project?.displayName || project?.name || 'Sin nombre';
 }
 
+function formatCurrency(value) {
+  return `$${formatMoney(value || 0)}`;
+}
+
+function SourceBadges({ transaction }) {
+  const sourceLabel = transaction?.sapBadgeLabel || 'SAP/SBO';
+  const sourceSbo = String(transaction?.sourceSbo || '').trim();
+
+  if (isSapSboTransaction(transaction)) {
+    return (
+      <span className="badge-row">
+        <span className="badge badge-source">{sourceLabel}</span>
+        {sourceSbo && <span className="badge badge-sbo">{sourceSbo}</span>}
+      </span>
+    );
+  }
+
+  return <span className="small">{transaction?.source || '—'}</span>;
+}
+
 /* ================= NAV ================= */
 function Nav({
   tab,
@@ -627,7 +647,7 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
                       disabled={savingId === rowId}
                       onChange={(e) => onToggleVisibility(rowId, e.target.checked)}
                     />
-                    {isVisible ? 'Visible' : 'Oculto'}
+                    <span className={isVisible ? 'badge badge-visible' : 'badge badge-hidden'}>{isVisible ? 'Visible' : 'Oculto'}</span>
                   </label>
                 </td>
               </tr>
@@ -1270,7 +1290,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
         setSupplierSummaryError('');
       } else {
         setSupplierSummary([]);
-        setSupplierSummaryError(supplierResult.reason?.message || 'No se pudo cargar la vista por proveedor.');
+        setSupplierSummaryError(supplierResult.reason?.message || 'No se pudo cargar el resumen por proveedor.');
       }
 
       setLoading(false);
@@ -1294,6 +1314,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
 
     return rows.sort((a, b) => (a.supplierName || '').localeCompare(b.supplierName || '', 'es'));
   }, [supplierSummary, supplierSortMode]);
+
   const categoryRows = Array.isArray(stats?.rows) ? stats.rows : [];
   const topCategories = useMemo(
     () => [...categoryRows].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0)).slice(0, 6),
@@ -1311,7 +1332,8 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       })
       .join(' ');
   }, [categoryRows]);
-  const biggestCategory = topCategories[0];
+
+  const biggestCategory = topCategories[0] || null;
   const allocatedPercent = Math.min(
     100,
     Math.max(0, topCategories.reduce((acc, row) => acc + (Number(row.percent) || 0), 0))
@@ -1319,201 +1341,58 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
 
   const subtitle =
     viewMode === 'supplier'
-      ? 'Totales agrupados por proveedor (SAP).'
+      ? 'Resumen operativo de egresos SAP/SBO por proveedor.'
       : viewMode === 'experimental'
-        ? 'Vista visual experimental de categorías.'
-        : 'Porcentaje = gasto de la categoría / total de egresos';
+        ? 'KPIs y visuales rápidos de categorías para seguimiento diario.'
+        : 'Detalle por categoría con proporción sobre el total de egresos.';
 
-  const renderCategorySummaryHeader = () => (
-    <div className="row" style={{ justifyContent: 'space-between' }}>
-      <div className="badge">Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(stats.total_expenses || 0)}</div>
-      {isAdmin && (
-        <button
-          className="secondary"
-          onClick={async () => {
-            const confirmed = window.confirm('Esto solo agrega faltantes, no borra');
-            if (!confirmed) return;
-            try {
-              await api.seed();
-              location.reload();
-            } catch (_) {
-              // Intencionalmente silencioso para mantener el comportamiento previo.
-            }
-          }}
-        >
-          Seed categorías
-        </button>
-      )}
-    </div>
-  );
-
-  let dashboardContent = <div style={{ padding: '12px 0' }}>No hay egresos aún. Registra uno para ver el dashboard.</div>;
-
-  if (loading) {
-    dashboardContent = <div style={{ padding: '12px 0' }}>Cargando...</div>;
-  } else if (viewMode === 'supplier') {
-    if (supplierSummaryError) {
-      dashboardContent = <div style={{ padding: '12px 0' }}>Error: {supplierSummaryError}</div>;
-    } else if (supplierSummary.length) {
-      dashboardContent = (
-        <div style={{ marginTop: 12 }} className="grid">
-          <div className="badge">Total egresos SAP {showSupplierIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(supplierTotal)}</div>
-          <div style={{ overflowX: 'auto' }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Proveedor</th>
-                  <th>Movimientos</th>
-                  <th>Subtotal</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedSupplierSummary.map((row) => (
-                  <tr key={row.supplierId || row.supplierName}>
-                    <td>{row.supplierName || '(Sin proveedor)'}</td>
-                    <td>{row.count}</td>
-                    <td>${formatMoney(row.totalAmount)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      );
-    } else {
-      dashboardContent = <div style={{ padding: '12px 0' }}>No hay egresos SAP agrupados por proveedor para mostrar.</div>;
-    }
-  } else if (stats?.error) {
-    dashboardContent = <div style={{ padding: '12px 0' }}>Error: {stats.error}</div>;
-  } else if (categoryRows.length) {
-    if (viewMode === 'experimental') {
-      dashboardContent = (
-        <div style={{ marginTop: 12 }} className="dashboard-experimental">
-          <div className="dashboard-kpi-grid">
-            <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">💰</div>
-              <strong>${formatMoney(stats.total_expenses || 0)}</strong>
-              <span>Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}</span>
-            </div>
-            <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">📊</div>
-              <strong>{categoryRows.length}</strong>
-              <span>Categorías con movimiento</span>
-            </div>
-            <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">🏷️</div>
-              <strong>{biggestCategory?.category_name || 'Sin datos'}</strong>
-              <span>Mayor categoría (${formatMoney(biggestCategory?.amount || 0)})</span>
-            </div>
-          </div>
-
-          <div className="dashboard-experimental-grid">
-            <section className="dashboard-panel">
-              <h3>Comportamiento por categoría</h3>
-              <svg
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-                className="dashboard-line-chart"
-                role="img"
-                aria-label="Tendencia de categorías por monto"
-              >
-                <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
-              </svg>
-              <div className="small">Visual experimental para comparar magnitudes entre categorías.</div>
-            </section>
-
-            <section className="dashboard-panel dashboard-gauge-panel">
-              <h3>Distribución top categorías</h3>
-              <div
-                className="dashboard-gauge"
-                style={{
-                  background: `conic-gradient(#1f4d96 0deg ${(allocatedPercent / 100) * 360}deg, #e2e8f0 ${(allocatedPercent / 100) * 360}deg 360deg)`,
-                }}
-              >
-                <span>{allocatedPercent.toFixed(1)}%</span>
-              </div>
-              <div className="small">Participación acumulada de las 6 categorías principales.</div>
-            </section>
-
-            <section className="dashboard-panel">
-              <h3>Avance por categoría</h3>
-              <div className="grid">
-                {topCategories.map((r) => {
-                  const percent = Number(r.percent) || 0;
-                  const fillWidth = Math.max(0, Math.min(100, percent));
-                  return (
-                    <div key={r.category_id} style={{ display: 'grid', gap: 4 }}>
-                      <div className="row" style={{ justifyContent: 'space-between' }}>
-                        <div style={{ fontWeight: 700 }}>{r.category_name}</div>
-                        <div className="small">{percent.toFixed(2)}%</div>
-                      </div>
-                      <div className="bar" aria-label={`Barra de avance de ${r.category_name}`}>
-                        <div style={{ width: fillWidth + '%' }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="dashboard-panel">
-              <h3>Montos principales</h3>
-              <div className="dashboard-column-chart">
-                {topCategories.slice(0, 5).map((r) => {
-                  const amount = Number(r.amount) || 0;
-                  const maxAmount = Number(biggestCategory?.amount) || 1;
-                  return (
-                    <div key={`column-${r.category_id}`} className="dashboard-column-item">
-                      <div className="dashboard-column-value">${formatMoney(amount)}</div>
-                      <div className="dashboard-column-track">
-                        <div className="dashboard-column-fill" style={{ height: `${Math.max(12, (amount / maxAmount) * 100)}%` }} />
-                      </div>
-                      <div className="dashboard-column-label">{r.category_name}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          </div>
-
-          {renderCategorySummaryHeader()}
-        </div>
-      );
-    } else {
-      dashboardContent = (
-        <div style={{ marginTop: 12 }} className="grid">
-          {renderCategorySummaryHeader()}
-          {categoryRows.map((r) => {
-            const percent = Number(r.percent) || 0;
-            const fillWidth = Math.max(0, Math.min(100, percent));
-
-            return (
-              <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <div style={{ fontWeight: 700 }}>{r.category_name}</div>
-                  <div>
-                    ${formatMoney(r.amount)} <span className="small">({percent.toFixed(2)}%)</span>
-                  </div>
-                </div>
-                <div className="bar" aria-label={`Barra de avance de ${r.category_name}`}>
-                  <div style={{ width: fillWidth + '%' }}>
-                    <span>{percent.toFixed(2)}%</span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      );
-    }
-  }
+  const dashboardTotals = [
+    {
+      label: showCategoryIva ? 'Total egresos con IVA' : 'Total egresos sin IVA',
+      value: formatCurrency(stats?.total_expenses || 0),
+      helper: 'Modelo V2 normalizado',
+    },
+    {
+      label: 'Categorías con movimiento',
+      value: String(categoryRows.length),
+      helper: 'Con al menos un movimiento',
+    },
+    {
+      label: 'Proveedores con gasto',
+      value: String(supplierSummary.length),
+      helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+  ];
 
   return (
-    <div className="card">
-      <h2 style={{ margin: '0 0 8px' }}>Dashboard de egresos</h2>
-      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+    <div className="card dashboard-shell">
+      <div className="dashboard-header">
+        <div>
+          <h2 style={{ margin: 0 }}>Dashboard de egresos</h2>
+          <div className="small" style={{ marginTop: 4 }}>{subtitle}</div>
+        </div>
+        {isAdmin && (
+          <button
+            className="secondary"
+            onClick={async () => {
+              const confirmed = window.confirm('Esto solo agrega faltantes, no borra datos existentes.');
+              if (!confirmed) return;
+              try {
+                await api.seed();
+                location.reload();
+              } catch (_) {
+                // Intencionalmente silencioso para mantener el comportamiento previo.
+              }
+            }}
+          >
+            Seed categorías
+          </button>
+        )}
+      </div>
+
+      <div className="dashboard-tabs row" style={{ gap: 8 }}>
         <button className={viewMode === 'experimental' ? '' : 'secondary'} onClick={() => setViewMode('experimental')}>
-          Vista experimental
+          Resumen
         </button>
         <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
           Por categoría
@@ -1522,34 +1401,186 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
           Por proveedor
         </button>
       </div>
-      <div className="small">{subtitle}</div>
 
-      {viewMode === 'supplier' ? (
-        <div className="row" style={{ marginTop: 8 }}>
-          <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
+      <div className="dashboard-controls row">
+        {viewMode === 'supplier' ? (
+          <>
+            <label className="small dashboard-checkbox">
+              <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
+              Mostrar IVA
+            </label>
+            <label className="small dashboard-checkbox">
+              <input
+                type="checkbox"
+                checked={supplierSortMode === 'amount'}
+                onChange={(e) => setSupplierSortMode(e.target.checked ? 'amount' : 'alpha')}
+              />
+              Ordenar por monto (mayor a menor)
+            </label>
+          </>
+        ) : (
+          <label className="small dashboard-checkbox">
+            <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
             Mostrar IVA
           </label>
-          <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={supplierSortMode === 'amount'}
-              onChange={(e) => setSupplierSortMode(e.target.checked ? 'amount' : 'alpha')}
-            />
-            Ordenar por monto (mayor a menor)
-          </label>
-        </div>
-      ) : (
-        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
-          Mostrar IVA
-        </label>
-      )}
+        )}
+      </div>
 
-      {dashboardContent}
+      {loading ? (
+        <div className="dashboard-state">Cargando indicadores del dashboard...</div>
+      ) : stats?.error ? (
+        <div className="dashboard-state dashboard-state-error">Error al cargar categorías: {stats.error}</div>
+      ) : (
+        <>
+          <div className="dashboard-kpi-grid">
+            {dashboardTotals.map((item) => (
+              <div key={item.label} className="dashboard-kpi-card">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <div className="small">{item.helper}</div>
+              </div>
+            ))}
+          </div>
+
+          {viewMode === 'supplier' ? (
+            supplierSummaryError ? (
+              <div className="dashboard-state dashboard-state-error">Error al cargar proveedores: {supplierSummaryError}</div>
+            ) : !sortedSupplierSummary.length ? (
+              <div className="dashboard-state">No hay egresos SAP/SBO agrupados por proveedor para este proyecto.</div>
+            ) : (
+              <div className="dashboard-panel" style={{ marginTop: 4 }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <h3 style={{ margin: 0 }}>Resumen por proveedor</h3>
+                  <span className="badge">Total del resumen: {formatCurrency(supplierTotal)}</span>
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Proveedor</th>
+                        <th>Movimientos</th>
+                        <th>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedSupplierSummary.map((row) => (
+                        <tr key={row.supplierId || row.supplierName}>
+                          <td>{row.supplierName || '(Sin proveedor)'}</td>
+                          <td>{row.count || 0}</td>
+                          <td>{formatCurrency(row.totalAmount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          ) : !categoryRows.length ? (
+            <div className="dashboard-state">No hay egresos registrados para mostrar en categorías.</div>
+          ) : viewMode === 'experimental' ? (
+            <div className="dashboard-experimental">
+              <div className="dashboard-experimental-grid">
+                <section className="dashboard-panel">
+                  <h3>Comportamiento por categoría</h3>
+                  <svg
+                    viewBox="0 0 100 100"
+                    preserveAspectRatio="none"
+                    className="dashboard-line-chart"
+                    role="img"
+                    aria-label="Tendencia de categorías por monto"
+                  >
+                    <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
+                  </svg>
+                  <div className="small">Comparativo visual de montos entre categorías principales.</div>
+                </section>
+
+                <section className="dashboard-panel dashboard-gauge-panel">
+                  <h3>Peso del top de categorías</h3>
+                  <div
+                    className="dashboard-gauge"
+                    style={{
+                      background: `conic-gradient(#1f4d96 0deg ${(allocatedPercent / 100) * 360}deg, #e2e8f0 ${(allocatedPercent / 100) * 360}deg 360deg)`,
+                    }}
+                  >
+                    <span>{allocatedPercent.toFixed(1)}%</span>
+                  </div>
+                  <div className="small">Participación acumulada de las 6 categorías principales.</div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Categorías principales</h3>
+                  <div className="grid">
+                    {topCategories.map((row) => {
+                      const percent = Number(row.percent) || 0;
+                      const fillWidth = Math.max(0, Math.min(100, percent));
+                      return (
+                        <div key={row.category_id} style={{ display: 'grid', gap: 4 }}>
+                          <div className="row" style={{ justifyContent: 'space-between' }}>
+                            <strong>{row.category_name}</strong>
+                            <span className="small">{percent.toFixed(2)}%</span>
+                          </div>
+                          <div className="bar" aria-label={`Barra de avance de ${row.category_name}`}>
+                            <div style={{ width: `${fillWidth}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Montos principales</h3>
+                  <div className="dashboard-column-chart">
+                    {topCategories.slice(0, 5).map((row) => {
+                      const amount = Number(row.amount) || 0;
+                      const maxAmount = Number(biggestCategory?.amount) || 1;
+                      return (
+                        <div key={`column-${row.category_id}`} className="dashboard-column-item">
+                          <div className="dashboard-column-value">{formatCurrency(amount)}</div>
+                          <div className="dashboard-column-track">
+                            <div className="dashboard-column-fill" style={{ height: `${Math.max(12, (amount / maxAmount) * 100)}%` }} />
+                          </div>
+                          <div className="dashboard-column-label">{row.category_name}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            </div>
+          ) : (
+            <div className="dashboard-panel" style={{ marginTop: 4 }}>
+              <h3 style={{ margin: 0 }}>Resumen por categoría</h3>
+              <div className="grid" style={{ marginTop: 8 }}>
+                {categoryRows.map((row) => {
+                  const percent = Number(row.percent) || 0;
+                  const fillWidth = Math.max(0, Math.min(100, percent));
+
+                  return (
+                    <div key={row.category_id} style={{ display: 'grid', gap: 6 }}>
+                      <div className="row" style={{ justifyContent: 'space-between' }}>
+                        <strong>{row.category_name}</strong>
+                        <div>
+                          {formatCurrency(row.amount)} <span className="small">({percent.toFixed(2)}%)</span>
+                        </div>
+                      </div>
+                      <div className="bar" aria-label={`Barra de avance de ${row.category_name}`}>
+                        <div style={{ width: `${fillWidth}%` }}>
+                          <span>{percent.toFixed(2)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
+
 
 
 const ADD_NEW_VENDOR_VALUE = '__add_new_vendor__';
@@ -2099,9 +2130,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       )}
 
       <div className="row" style={{ gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-        <div className="badge">Total egresos sin IVA: ${formatMoney(backendTotals.expensesWithoutTax)}</div>
-        <div className="badge">Total IVA: ${formatMoney(backendTotals.expensesTax)}</div>
-        <div className="badge">Total egresos con IVA: ${formatMoney(backendTotals.expensesGross)}</div>
+        <div className="badge">Total egresos sin IVA: {formatCurrency(backendTotals.expensesWithoutTax)}</div>
+        <div className="badge">Total IVA: {formatCurrency(backendTotals.expensesTax)}</div>
+        <div className="badge">Total egresos con IVA: {formatCurrency(backendTotals.expensesGross)}</div>
       </div>
 
       {loading ? (
@@ -2149,15 +2180,14 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                   <td>{r.description || ''}</td>
                   <td>
                     {getTransactionCategoryLabel(r, catMap)}
-                    {r.categoryManualName && <span className="badge" style={{ marginLeft: 6 }}>Manual</span>}
+                    {r.categoryManualName && <span className="badge badge-manual" style={{ marginLeft: 6 }}>Manual</span>}
                   </td>
-                  <td style={{ fontWeight: 800 }}>${formatMoney(r.subtotal ?? 0)}</td>
-                  <td style={{ fontWeight: 700 }}>${formatMoney(r.iva ?? 0)}</td>
-                  <td style={{ fontWeight: 700 }}>${formatMoney(totalValue)}</td>
+                  <td style={{ fontWeight: 800 }}>{formatCurrency(r.subtotal ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>{formatCurrency(r.iva ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>{formatCurrency(totalValue)}</td>
                   <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
                   <td>
-                    {isSapSboTransaction(r) ? <span className="badge">{r.sapBadgeLabel || 'SAP/SBO'}</span> : <span className="small">{r.source || '—'}</span>}
-                    {r.sourceSbo && <span className="badge" style={{ marginLeft: 6 }}>{r.sourceSbo}</span>}
+                    <SourceBadges transaction={r} />
                   </td>
                   {isAdmin && (
                     <td>
@@ -2199,11 +2229,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
               <tr>
                 <td colSpan={7} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (dataset filtrado):</td>
                 <td style={{ fontWeight: 800 }}>
-                  ${formatMoney(backendTotals.incomeGross)} / ${formatMoney(backendTotals.expensesGross)}
+                  {formatCurrency(backendTotals.incomeGross)} / {formatCurrency(backendTotals.expensesGross)}
                 </td>
                 <td style={{ fontWeight: 700 }}>—</td>
                 <td style={{ fontWeight: 700 }}>—</td>
-                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: ${formatMoney(backendTotals.net)}</td>}
+                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {formatCurrency(backendTotals.net)}</td>}
                 {isAdmin && <td />}
               </tr>
             </tfoot>
@@ -2232,7 +2262,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <label>Categoría actual</label>
             <input value={getTransactionCategoryLabel(editing, catMap)} disabled />
             <label>Subtotal / IVA / Total</label>
-            <input value={`$${formatMoney(editing.subtotal ?? 0)} / $${formatMoney(editing.iva ?? 0)} / $${formatMoney(getTransactionTotalValue(editing))}`} disabled />
+            <input value={`${formatCurrency(editing.subtotal ?? 0)} / ${formatCurrency(editing.iva ?? 0)} / ${formatCurrency(getTransactionTotalValue(editing))}`} disabled />
             <label>Origen / SBO</label>
             <input value={`${editing.sapBadgeLabel || editing.source || '—'} ${editing.sourceSbo || ''}`.trim()} disabled />
             {!isSapIvaTransaction(editing) && (
@@ -2565,13 +2595,12 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
                 <td>{row.supplierName || '—'}</td>
                 <td>{row.description || '—'}</td>
                 <td>{getTransactionCategoryLabel(row, catMap)}</td>
-                <td>${formatMoney(row.subtotal ?? 0)}</td>
-                <td>${formatMoney(row.iva ?? 0)}</td>
-                <td>${formatMoney(getTransactionTotalValue(row))}</td>
+                <td>{formatCurrency(row.subtotal ?? 0)}</td>
+                <td>{formatCurrency(row.iva ?? 0)}</td>
+                <td>{formatCurrency(getTransactionTotalValue(row))}</td>
                 <td>{row.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
                 <td>
-                  {isSapSboTransaction(row) ? <span className="badge">{row.sapBadgeLabel || 'SAP/SBO'}</span> : <span className="small">{row.source || '—'}</span>}
-                  {row.sourceSbo && <span className="badge" style={{ marginLeft: 6 }}>{row.sourceSbo}</span>}
+                  <SourceBadges transaction={row} />
                 </td>
               </tr>
             ))}
@@ -2582,7 +2611,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
           <tfoot>
             <tr>
               <td colSpan={7} style={{ textAlign: 'right', fontWeight: 700 }}>Total visible</td>
-              <td style={{ fontWeight: 700 }}>${formatMoney(filteredTotal)}</td>
+              <td style={{ fontWeight: 700 }}>{formatCurrency(filteredTotal)}</td>
               <td colSpan={2} />
             </tr>
           </tfoot>
