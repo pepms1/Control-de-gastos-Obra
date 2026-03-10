@@ -15,6 +15,9 @@ const TOKEN_KEY = 'obra_token';
 const ROLE_KEY = 'obra_role';
 const USER_KEY = 'obra_user';
 const DISPLAY_NAME_KEY = 'obra_display_name';
+const USER_ID_KEY = 'obra_user_id';
+const USER_EMAIL_KEY = 'obra_user_email';
+const USER_ACTIVE_KEY = 'obra_user_is_active';
 export const SELECTED_PROJECT_KEY = 'selectedProjectId';
 
 function getSelectedProjectId() {
@@ -59,14 +62,20 @@ export function getSession() {
     role: localStorage.getItem(ROLE_KEY) || '',
     username: localStorage.getItem(USER_KEY) || '',
     displayName: localStorage.getItem(DISPLAY_NAME_KEY) || '',
+    id: localStorage.getItem(USER_ID_KEY) || '',
+    email: localStorage.getItem(USER_EMAIL_KEY) || '',
+    isActive: localStorage.getItem(USER_ACTIVE_KEY) !== 'false',
   };
 }
 
-export function saveSession({ access_token, token, role, username, displayName }) {
+export function saveSession({ access_token, token, role, username, displayName, id, email, isActive, name }) {
   localStorage.setItem(TOKEN_KEY, access_token || token || '');
   localStorage.setItem(ROLE_KEY, role || '');
   localStorage.setItem(USER_KEY, username || '');
-  localStorage.setItem(DISPLAY_NAME_KEY, displayName || username || '');
+  localStorage.setItem(DISPLAY_NAME_KEY, displayName || name || username || '');
+  localStorage.setItem(USER_ID_KEY, id || '');
+  localStorage.setItem(USER_EMAIL_KEY, email || '');
+  localStorage.setItem(USER_ACTIVE_KEY, String(isActive !== false));
 }
 
 export function clearSession() {
@@ -74,6 +83,9 @@ export function clearSession() {
   localStorage.removeItem(ROLE_KEY);
   localStorage.removeItem(USER_KEY);
   localStorage.removeItem(DISPLAY_NAME_KEY);
+  localStorage.removeItem(USER_ID_KEY);
+  localStorage.removeItem(USER_EMAIL_KEY);
+  localStorage.removeItem(USER_ACTIVE_KEY);
 }
 
 async function request(baseUrl, path, opts = {}) {
@@ -178,7 +190,7 @@ export const api = {
       body: JSON.stringify({ username, password }),
     }),
 
-  me: () => req('/auth/me'),
+  me: () => req('/api/me'),
 
   seed: () =>
     req('/seed', {
