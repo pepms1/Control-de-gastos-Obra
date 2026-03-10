@@ -800,6 +800,18 @@ function AdminUsersAccessSection() {
   const [draftRoleByUserId, setDraftRoleByUserId] = useState({});
   const [savingRoleUserId, setSavingRoleUserId] = useState('');
   const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    displayName: '',
+    username: '',
+    password: '',
+    email: '',
+    role: 'VIEWER',
+    allowedProjectIds: [],
+  });
+  const [editingNameUserId, setEditingNameUserId] = useState('');
+  const [draftDisplayName, setDraftDisplayName] = useState('');
 
   const projectMap = useMemo(() => {
     const map = new Map();
@@ -808,22 +820,13 @@ function AdminUsersAccessSection() {
   }, [projects]);
 
   const summary = useMemo(() => {
-    const counters = {
-      total: users.length,
-      active: 0,
-      inactive: 0,
-      SUPERADMIN: 0,
-      ADMIN: 0,
-      VIEWER: 0,
-    };
-
+    const counters = { total: users.length, active: 0, inactive: 0, SUPERADMIN: 0, ADMIN: 0, VIEWER: 0 };
     users.forEach((user) => {
       const role = normalizeRole(user?.role);
       counters[role] = (counters[role] || 0) + 1;
       if (user?.isActive === false) counters.inactive += 1;
       else counters.active += 1;
     });
-
     return counters;
   }, [users]);
 
@@ -833,16 +836,7 @@ function AdminUsersAccessSection() {
       const role = normalizeRole(user?.role);
       if (roleFilter !== 'ALL' && role !== roleFilter) return false;
       if (!query) return true;
-
-      const candidates = [
-        user?.displayName,
-        user?.name,
-        user?.username,
-        user?.email,
-      ]
-        .filter(Boolean)
-        .map((value) => String(value).toLowerCase());
-
+      const candidates = [user?.displayName, user?.name, user?.username, user?.email].filter(Boolean).map((value) => String(value).toLowerCase());
       return candidates.some((value) => value.includes(query));
     });
   }, [users, searchTerm, roleFilter]);
@@ -863,14 +857,71 @@ function AdminUsersAccessSection() {
     }
   }
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  useEffect(() => { loadData(); }, []);
 
   function startEdit(user) {
     const nextId = String(user?.id || user?._id || '');
     setEditingUserId(nextId);
     setDraftProjectIds(Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds.map(String) : []);
+  }
+
+  function startEditName(user) {
+    const userId = String(user?.id || user?._id || '');
+    setEditingNameUserId(userId);
+    setDraftDisplayName(String(user?.displayName || user?.name || user?.username || ''));
+  }
+
+  async function saveDisplayName(user) {
+    const userId = String(user?.id || user?._id || '');
+    if (!userId) return;
+    const nextDisplayName = draftDisplayName.trim();
+    if (!nextDisplayName) {
+      setError('El nombre visible no puede estar vacío.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await api.updateAdminUser(userId, { displayName: nextDisplayName });
+      setUsers((prev) => prev.map((row) => (String(row?.id || row?._id || '') === userId ? { ...row, ...updated } : row)));
+      setEditingNameUserId('');
+      setDraftDisplayName('');
+    } catch (e) {
+      setError(e.message || 'No se pudo actualizar el nombre visible.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleCreateProject(projectId) {
+    const key = String(projectId || '');
+    setCreateForm((prev) => ({
+      ...prev,
+      allowedProjectIds: prev.allowedProjectIds.includes(key) ? prev.allowedProjectIds.filter((id) => id !== key) : [...prev.allowedProjectIds, key],
+    }));
+  }
+
+  async function handleCreateUser() {
+    const payload = {
+      displayName: createForm.displayName,
+      username: createForm.username,
+      password: createForm.password,
+      email: createForm.email,
+      role: createForm.role,
+      allowedProjectIds: createForm.role === 'VIEWER' ? createForm.allowedProjectIds : [],
+    };
+    setCreating(true);
+    setError('');
+    try {
+      const created = await api.createAdminUser(payload);
+      setUsers((prev) => [created, ...prev]);
+      setShowCreateForm(false);
+      setCreateForm({ displayName: '', username: '', password: '', email: '', role: 'VIEWER', allowedProjectIds: [] });
+    } catch (e) {
+      setError(e.message || 'No se pudo crear el usuario.');
+    } finally {
+      setCreating(false);
+    }
   }
 
   function handleRoleDraft(userId, role) {
@@ -890,10 +941,7 @@ function AdminUsersAccessSection() {
     setError('');
     try {
       const updated = await api.updateAdminUser(userId, { role: nextRole });
-      setUsers((prev) => prev.map((row) => {
-        const rowId = String(row?.id || row?._id || '');
-        return rowId === userId ? { ...row, ...updated } : row;
-      }));
+      setUsers((prev) => prev.map((row) => (String(row?.id || row?._id || '') === userId ? { ...row, ...updated } : row)));
     } catch (e) {
       setError(e.message || 'No se pudo cambiar el rol del usuario.');
     } finally {
@@ -918,10 +966,7 @@ function AdminUsersAccessSection() {
     setError('');
     try {
       const updated = await api.updateAdminUser(userId, { allowedProjectIds: draftProjectIds });
-      setUsers((prev) => prev.map((row) => {
-        const rowId = String(row?.id || row?._id || '');
-        return rowId === userId ? { ...row, ...updated } : row;
-      }));
+      setUsers((prev) => prev.map((row) => (String(row?.id || row?._id || '') === userId ? { ...row, ...updated } : row)));
       cancelEdit();
     } catch (e) {
       setError(e.message || 'No se pudo guardar accesos del usuario.');
@@ -933,12 +978,10 @@ function AdminUsersAccessSection() {
   function renderAllowedProjects(user) {
     const ids = Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds : [];
     if (!ids.length) return 'Sin proyectos asignados';
-    return ids
-      .map((id) => {
-        const project = projectMap.get(String(id));
-        return project ? getProjectDisplayName(project) : String(id);
-      })
-      .join(', ');
+    return ids.map((id) => {
+      const project = projectMap.get(String(id));
+      return project ? getProjectDisplayName(project) : String(id);
+    }).join(', ');
   }
 
   function getViewerProjectsLabel(user) {
@@ -949,7 +992,7 @@ function AdminUsersAccessSection() {
   function getRoleHelp(role) {
     if (role === 'SUPERADMIN') return 'Acceso total';
     if (role === 'ADMIN') return 'Operación general';
-    return 'Solo proyectos asignados';
+    return 'Solo verá proyectos asignados';
   }
 
   return (
@@ -957,28 +1000,67 @@ function AdminUsersAccessSection() {
       <div>
         <h3 style={{ margin: 0 }}>Usuarios y accesos</h3>
         <div className="small">SUPERADMIN = acceso total · ADMIN = operación general · VIEWER = solo proyectos asignados.</div>
-        <div className="small">Configura qué proyectos puede consultar cada usuario con rol VIEWER.</div>
+        <div className="small">Username = login · Nombre visible = cómo se muestra en el sistema.</div>
       </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <span className="badge">{summary.SUPERADMIN} superadmins</span>
+        <span className="badge">{summary.ADMIN} admins</span>
+        <span className="badge">{summary.VIEWER} viewers</span>
+        <button type="button" onClick={() => setShowCreateForm((prev) => !prev)}>{showCreateForm ? 'Cerrar' : 'Agregar usuario'}</button>
+      </div>
+
+      {showCreateForm && (
+        <div className="card" style={{ margin: 0 }}>
+          <div className="small" style={{ marginBottom: 8 }}>Crear usuario nuevo</div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <label className="small">Nombre visible
+              <input value={createForm.displayName} onChange={(e) => setCreateForm((prev) => ({ ...prev, displayName: e.target.value }))} placeholder="Ej: Juan Pérez" />
+            </label>
+            <label className="small">Username (login)
+              <input value={createForm.username} onChange={(e) => setCreateForm((prev) => ({ ...prev, username: e.target.value }))} placeholder="usuario_login" />
+            </label>
+            <label className="small">Password inicial
+              <input type="password" value={createForm.password} onChange={(e) => setCreateForm((prev) => ({ ...prev, password: e.target.value }))} />
+            </label>
+            <label className="small">Email (opcional)
+              <input value={createForm.email} onChange={(e) => setCreateForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="usuario@empresa.com" />
+            </label>
+            <label className="small">Rol
+              <select value={createForm.role} onChange={(e) => setCreateForm((prev) => ({ ...prev, role: normalizeRole(e.target.value), allowedProjectIds: normalizeRole(e.target.value) === 'VIEWER' ? prev.allowedProjectIds : [] }))}>
+                <option value="SUPERADMIN">SUPERADMIN</option>
+                <option value="ADMIN">ADMIN</option>
+                <option value="VIEWER">VIEWER</option>
+              </select>
+            </label>
+            {createForm.role === 'VIEWER' && (
+              <div>
+                <div className="small" style={{ marginBottom: 6 }}>Proyectos permitidos (el VIEWER solo verá estos proyectos)</div>
+                <div style={{ display: 'grid', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
+                  {projects.map((project) => {
+                    const projectId = String(project?._id || '');
+                    return (
+                      <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input type="checkbox" checked={createForm.allowedProjectIds.includes(projectId)} onChange={() => toggleCreateProject(projectId)} />
+                        <span>{getProjectDisplayName(project)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={handleCreateUser} disabled={creating}>{creating ? 'Creando...' : 'Crear usuario'}</button>
+              <button type="button" className="secondary" onClick={() => setShowCreateForm(false)} disabled={creating}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gap: 8 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <span className="badge">{summary.SUPERADMIN} superadmins</span>
-          <span className="badge">{summary.ADMIN} admins</span>
-          <span className="badge">{summary.VIEWER} viewers</span>
-          <span className="badge">{summary.active} activos</span>
-          <span className="badge">{summary.inactive} inactivos</span>
-        </div>
-        <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'minmax(220px,2fr) minmax(180px,1fr)', alignItems: 'end' }}>
-          <label style={{ display: 'grid', gap: 4 }}>
-            <span className="small">Buscar usuario</span>
-            <input
-              placeholder="Nombre, username o email"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </label>
-          <label style={{ display: 'grid', gap: 4 }}>
-            <span className="small">Filtrar por rol</span>
+          <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Buscar por nombre, usuario o email" />
+          <label className="small">Rol
             <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
               <option value="ALL">Todos</option>
               <option value="SUPERADMIN">SUPERADMIN</option>
@@ -1006,16 +1088,13 @@ function AdminUsersAccessSection() {
               </tr>
             </thead>
             <tbody>
-              {!filteredUsers.length && (
-                <tr>
-                  <td colSpan={6} className="small">No hay usuarios que coincidan con la búsqueda/filtro.</td>
-                </tr>
-              )}
+              {!filteredUsers.length && <tr><td colSpan={6} className="small">No hay usuarios que coincidan con la búsqueda/filtro.</td></tr>}
               {filteredUsers.map((user) => {
                 const userId = String(user?.id || user?._id || '');
                 const role = normalizeRole(user?.role);
                 const viewer = role === 'VIEWER';
                 const isEditing = editingUserId === userId;
+                const isEditingName = editingNameUserId === userId;
                 const draftRole = normalizeRole(draftRoleByUserId[userId] || user?.role);
                 const roleDirty = draftRole !== normalizeRole(user?.role);
                 const savingRole = savingRoleUserId === userId;
@@ -1023,8 +1102,21 @@ function AdminUsersAccessSection() {
                   <React.Fragment key={userId || user?.username}>
                     <tr>
                       <td>
-                        <div>{user?.displayName || user?.name || user?.username || 'Sin nombre'}</div>
-                        <div className="small">@{user?.username || '—'}</div>
+                        {isEditingName ? (
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            <input value={draftDisplayName} onChange={(e) => setDraftDisplayName(e.target.value)} />
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button type="button" onClick={() => saveDisplayName(user)} disabled={saving}>{saving ? 'Guardando...' : 'Guardar nombre'}</button>
+                              <button type="button" className="secondary" onClick={() => setEditingNameUserId('')} disabled={saving}>Cancelar</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div>{user?.displayName || user?.name || user?.username || 'Sin nombre'}</div>
+                            <div className="small">@{user?.username || '—'}</div>
+                            <button type="button" className="secondary" onClick={() => startEditName(user)} disabled={saving} style={{ marginTop: 6 }}>Editar nombre visible</button>
+                          </>
+                        )}
                       </td>
                       <td>{user?.email || '—'}</td>
                       <td>
@@ -1034,42 +1126,19 @@ function AdminUsersAccessSection() {
                             <option value="ADMIN">ADMIN</option>
                             <option value="VIEWER">VIEWER</option>
                           </select>
-                          <div>
-                            <button type="button" className="secondary" onClick={() => saveRole(user)} disabled={!roleDirty || savingRole || saving}>
-                              {savingRole ? 'Guardando rol...' : 'Guardar rol'}
-                            </button>
-                          </div>
+                          <div><button type="button" className="secondary" onClick={() => saveRole(user)} disabled={!roleDirty || savingRole || saving}>{savingRole ? 'Guardando rol...' : 'Guardar rol'}</button></div>
                           <div className="small">{getRoleHelp(role)}</div>
                         </div>
                       </td>
-                      <td>
-                        <span className="badge">{user?.isActive === false ? 'Inactivo' : 'Activo'}</span>
-                      </td>
-                      <td className="small">
-                        {viewer ? (
-                          <div style={{ display: 'grid', gap: 4 }}>
-                            <strong style={{ fontSize: 12 }}>{getViewerProjectsLabel(user)}</strong>
-                            <span>{renderAllowedProjects(user)}</span>
-                          </div>
-                        ) : 'No aplica'}
-                      </td>
-                      <td>
-                        {viewer ? (
-                          <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>
-                            Editar accesos
-                          </button>
-                        ) : (
-                          <span className="small">No editable</span>
-                        )}
-                      </td>
+                      <td><span className="badge">{user?.isActive === false ? 'Inactivo' : 'Activo'}</span></td>
+                      <td className="small">{viewer ? <div style={{ display: 'grid', gap: 4 }}><strong style={{ fontSize: 12 }}>{getViewerProjectsLabel(user)}</strong><span>{renderAllowedProjects(user)}</span></div> : 'No aplica'}</td>
+                      <td>{viewer ? <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>Editar accesos</button> : <span className="small">No editable</span>}</td>
                     </tr>
                     {viewer && isEditing && (
                       <tr>
                         <td colSpan={6}>
                           <div className="card" style={{ margin: 0 }}>
-                            <div className="small" style={{ marginBottom: 8 }}>
-                              Selecciona proyectos permitidos para este VIEWER:
-                            </div>
+                            <div className="small" style={{ marginBottom: 8 }}>Selecciona proyectos permitidos para este VIEWER (solo verá estos proyectos):</div>
                             <div style={{ display: 'grid', gap: 6, maxHeight: 240, overflowY: 'auto' }}>
                               {projects.map((project) => {
                                 const projectId = String(project?._id || '');
@@ -1078,18 +1147,13 @@ function AdminUsersAccessSection() {
                                 return (
                                   <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                     <input type="checkbox" checked={checked} onChange={() => toggleProject(projectId)} disabled={saving} />
-                                    <span>
-                                      {getProjectDisplayName(project)}
-                                      <span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `· ${sourceSbo}` : ''}</span>
-                                    </span>
+                                    <span>{getProjectDisplayName(project)}<span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `· ${sourceSbo}` : ''}</span></span>
                                   </label>
                                 );
                               })}
                             </div>
                             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                              <button type="button" onClick={() => saveViewerAccess(user)} disabled={saving}>
-                                {saving ? 'Guardando...' : 'Guardar accesos'}
-                              </button>
+                              <button type="button" onClick={() => saveViewerAccess(user)} disabled={saving}>{saving ? 'Guardando...' : 'Guardar accesos'}</button>
                               <button type="button" className="secondary" onClick={cancelEdit} disabled={saving}>Cancelar</button>
                             </div>
                           </div>

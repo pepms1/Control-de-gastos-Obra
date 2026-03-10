@@ -3662,15 +3662,18 @@ def update_my_preferences(payload: dict, user: dict = Depends(require_authentica
 def create_user(payload: dict, _: dict = Depends(require_admin)):
     username = (payload.get("username") or "").strip()
     password = payload.get("password") or ""
-    role = normalize_user_role((payload.get("role") or "").strip().upper() or "VIEWER")
+    role_raw = (payload.get("role") or "").strip().upper()
+    role = normalize_user_role(role_raw)
     active = bool(payload.get("active", payload.get("isActive", True)))
-    allowed_project_ids = normalize_allowed_project_ids(payload.get("allowedProjectIds"))
+    display_name = (payload.get("displayName") or payload.get("name") or "").strip()
+    email = str(payload.get("email") or "").strip()
+    allowed_project_ids = normalize_allowed_project_ids(payload.get("allowedProjectIds")) if role == "VIEWER" else []
 
     if len(username) < 3:
         raise HTTPException(status_code=400, detail="username must have at least 3 characters")
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="password must have at least 6 characters")
-    if role not in USER_ROLES:
+    if role_raw not in USER_ROLES:
         raise HTTPException(status_code=400, detail="role must be SUPERADMIN, ADMIN or VIEWER")
     if db.users.find_one({"username": username}):
         raise HTTPException(status_code=409, detail="User already exists")
@@ -3680,6 +3683,8 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
         "password_hash": pwd_context.hash(password),
         "role": role,
         "roleVersion": ROLE_SCHEMA_VERSION,
+        "displayName": display_name or username,
+        "email": email,
         "active": active,
         "isActive": active,
         "allowedProjectIds": allowed_project_ids,
@@ -3687,6 +3692,11 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
     }
     _id = db.users.insert_one(doc).inserted_id
     return serialize_user(db.users.find_one({"_id": _id}))
+
+
+@app.post("/api/admin/users")
+def create_admin_user(payload: dict, _: dict = Depends(require_admin)):
+    return create_user(payload, _)
 
 
 @app.get("/users")
@@ -3728,6 +3738,12 @@ def update_admin_user(user_id: str, payload: dict, _: dict = Depends(require_adm
 
         update_fields["role"] = next_role
         update_fields["roleVersion"] = ROLE_SCHEMA_VERSION
+
+    if "displayName" in payload or "name" in payload:
+        display_name = str(payload.get("displayName") or payload.get("name") or "").strip()
+        if not display_name:
+            raise HTTPException(status_code=400, detail="displayName cannot be empty")
+        update_fields["displayName"] = display_name
 
     if not update_fields:
         raise HTTPException(status_code=400, detail="No editable fields in payload")
