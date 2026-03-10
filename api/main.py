@@ -351,6 +351,17 @@ def is_viewer(user: dict | None) -> bool:
     return normalize_user_role((user or {}).get("role")) == "VIEWER"
 
 
+def count_superadmins(exclude_user_id: str | None = None) -> int:
+    total = 0
+    for user_doc in db.users.find({}, {"role": 1, "roleVersion": 1}):
+        user_id = str(user_doc.get("_id") or "")
+        if exclude_user_id and user_id == str(exclude_user_id):
+            continue
+        if resolve_effective_user_role(user_doc) == "SUPERADMIN":
+            total += 1
+    return total
+
+
 def get_accessible_project_ids(user: dict | None) -> list[str] | None:
     if is_superadmin(user) or is_admin(user):
         return None
@@ -3646,6 +3657,13 @@ def update_admin_user(user_id: str, payload: dict, _: dict = Depends(require_adm
         next_role = normalize_user_role(payload.get("role"))
         if next_role not in USER_ROLES:
             raise HTTPException(status_code=400, detail="role must be SUPERADMIN, ADMIN or VIEWER")
+
+        current_role = resolve_effective_user_role(existing, fallback_role=existing.get("role"))
+        if current_role == "SUPERADMIN" and next_role != "SUPERADMIN":
+            remaining_superadmins = count_superadmins(exclude_user_id=user_id)
+            if remaining_superadmins < 1:
+                raise HTTPException(status_code=400, detail="No se puede degradar al último SUPERADMIN")
+
         update_fields["role"] = next_role
         update_fields["roleVersion"] = ROLE_SCHEMA_VERSION
 

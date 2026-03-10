@@ -584,6 +584,8 @@ function AdminUsersAccessSection() {
   const [error, setError] = useState('');
   const [editingUserId, setEditingUserId] = useState('');
   const [draftProjectIds, setDraftProjectIds] = useState([]);
+  const [draftRoleByUserId, setDraftRoleByUserId] = useState({});
+  const [savingRoleUserId, setSavingRoleUserId] = useState('');
   const [saving, setSaving] = useState(false);
 
   const projectMap = useMemo(() => {
@@ -616,6 +618,34 @@ function AdminUsersAccessSection() {
     const nextId = String(user?.id || user?._id || '');
     setEditingUserId(nextId);
     setDraftProjectIds(Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds.map(String) : []);
+  }
+
+  function handleRoleDraft(userId, role) {
+    const key = String(userId || '');
+    if (!key) return;
+    setDraftRoleByUserId((prev) => ({ ...prev, [key]: normalizeRole(role) }));
+  }
+
+  async function saveRole(user) {
+    const userId = String(user?.id || user?._id || '');
+    if (!userId) return;
+    const nextRole = normalizeRole(draftRoleByUserId[userId] || user?.role);
+    const currentRole = normalizeRole(user?.role);
+    if (nextRole === currentRole) return;
+
+    setSavingRoleUserId(userId);
+    setError('');
+    try {
+      const updated = await api.updateAdminUser(userId, { role: nextRole });
+      setUsers((prev) => prev.map((row) => {
+        const rowId = String(row?.id || row?._id || '');
+        return rowId === userId ? { ...row, ...updated } : row;
+      }));
+    } catch (e) {
+      setError(e.message || 'No se pudo cambiar el rol del usuario.');
+    } finally {
+      setSavingRoleUserId('');
+    }
   }
 
   function cancelEdit() {
@@ -662,8 +692,8 @@ function AdminUsersAccessSection() {
     <div className="card grid" style={{ gap: 12 }}>
       <div>
         <h3 style={{ margin: 0 }}>Usuarios y accesos</h3>
+        <div className="small">SUPERADMIN = acceso total · ADMIN = operación general · VIEWER = solo proyectos asignados.</div>
         <div className="small">Configura qué proyectos puede consultar cada usuario con rol VIEWER.</div>
-        <div className="small">Esto no cambia la visibilidad global de proyectos en frontend.</div>
       </div>
 
       {loading && <div className="small">Cargando usuarios...</div>}
@@ -687,12 +717,28 @@ function AdminUsersAccessSection() {
                 const userId = String(user?.id || user?._id || '');
                 const viewer = normalizeRole(user?.role) === 'VIEWER';
                 const isEditing = editingUserId === userId;
+                const draftRole = normalizeRole(draftRoleByUserId[userId] || user?.role);
+                const roleDirty = draftRole !== normalizeRole(user?.role);
+                const savingRole = savingRoleUserId === userId;
                 return (
                   <React.Fragment key={userId || user?.username}>
                     <tr>
                       <td>{user?.displayName || user?.name || user?.username || 'Sin nombre'}<div className="small">{user?.username || '—'}</div></td>
                       <td>{user?.email || '—'}</td>
-                      <td>{normalizeRole(user?.role)}</td>
+                      <td>
+                        <div style={{ display: 'grid', gap: 6 }}>
+                          <select value={draftRole} onChange={(e) => handleRoleDraft(userId, e.target.value)} disabled={savingRole || saving}>
+                            <option value="SUPERADMIN">SUPERADMIN</option>
+                            <option value="ADMIN">ADMIN</option>
+                            <option value="VIEWER">VIEWER</option>
+                          </select>
+                          <div>
+                            <button type="button" className="secondary" onClick={() => saveRole(user)} disabled={!roleDirty || savingRole || saving}>
+                              {savingRole ? 'Guardando rol...' : 'Guardar rol'}
+                            </button>
+                          </div>
+                        </div>
+                      </td>
                       <td>{user?.isActive === false ? 'Inactivo' : 'Activo'}</td>
                       <td className="small">{viewer ? renderAllowedProjects(user) : 'No aplica (solo VIEWER)'}</td>
                       <td>
