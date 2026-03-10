@@ -3161,6 +3161,8 @@ def build_transactions_query(
             ]
         else:
             q["$or"] = [
+                {"resolvedCategory2Id": category_id},
+                {"resolvedCategory2Name": category_id},
                 {"categoryEffectiveCode": category_id},
                 {"categoryEffectiveName": category_id},
                 {"categoryManualCode": category_id},
@@ -3272,6 +3274,8 @@ def build_transactions_query(
             {"proveedorNombre": {"$regex": escaped_search, "$options": "i"}},
             {"beneficiario": {"$regex": escaped_search, "$options": "i"}},
             {"proveedor.name": {"$regex": escaped_search, "$options": "i"}},
+            {"resolvedCategory2Name": {"$regex": escaped_search, "$options": "i"}},
+            {"resolvedCategory2Id": {"$regex": escaped_search, "$options": "i"}},
             {"categoryHintName": {"$regex": escaped_search, "$options": "i"}},
             {"categoryHintCode": {"$regex": escaped_search, "$options": "i"}},
         ]
@@ -8092,14 +8096,27 @@ def spend_by_category(
                 "categoryHintName": 1,
                 "categoryEffectiveCode": 1,
                 "categoryEffectiveName": 1,
+                "resolvedCategory2Id": 1,
+                "resolvedCategory2Name": 1,
+                "resolvedCategory2Source": 1,
                 "amount": 1,
                 "tax": 1,
             },
         )
     )
 
+    supplier_rules_by_key = {
+        str(rule.get("supplierKey") or "").strip(): rule
+        for rule in db.supplierCategory2Rules.find(
+            {"isActive": {"$ne": False}},
+            {"supplierKey": 1, "category2Id": 1, "category2Name": 1},
+        )
+        if str(rule.get("supplierKey") or "").strip()
+    }
+
     totals_by_category = {}
     for tx in transactions:
+        tx.update(resolve_transaction_category2(tx, supplier_rules_by_key=supplier_rules_by_key))
         category_manual_code = normalize_non_empty_string(tx.get("categoryManualCode"))
         category_manual_name = normalize_non_empty_string(tx.get("categoryManualName"))
         category_hint_code = normalize_non_empty_string(tx.get("categoryHintCode"))
@@ -8112,17 +8129,20 @@ def spend_by_category(
         )
         category_effective_code = normalize_non_empty_string(tx.get("categoryEffectiveCode")) or effective.get("categoryEffectiveCode")
         category_effective_name = normalize_non_empty_string(tx.get("categoryEffectiveName")) or effective.get("categoryEffectiveName")
+        resolved_category2_id = normalize_non_empty_string(tx.get("resolvedCategory2Id"))
+        resolved_category2_name = normalize_non_empty_string(tx.get("resolvedCategory2Name"))
         legacy_category_id = normalize_non_empty_string(tx.get("category_id") or tx.get("categoryId"))
-        category_key = category_effective_code or category_effective_name or legacy_category_id
+        category_key = resolved_category2_id or resolved_category2_name or category_effective_code or category_effective_name or legacy_category_id
+        category_display_name = resolved_category2_name or category_effective_name
 
         amount_value = float(tx.get("amount") or 0)
         movement_amount = amount_value if include_iva else compute_monto_sin_iva(tx)
         if category_key not in totals_by_category:
-            totals_by_category[category_key] = {"amount": 0.0, "display_name": category_effective_name}
+            totals_by_category[category_key] = {"amount": 0.0, "display_name": category_display_name}
 
         totals_by_category[category_key]["amount"] = round(totals_by_category[category_key]["amount"] + movement_amount, 2)
-        if not totals_by_category[category_key].get("display_name") and category_effective_name:
-            totals_by_category[category_key]["display_name"] = category_effective_name
+        if not totals_by_category[category_key].get("display_name") and category_display_name:
+            totals_by_category[category_key]["display_name"] = category_display_name
 
     rows = [
         {"_id": category_id, "amount": values.get("amount", 0.0), "display_name": values.get("display_name")}
