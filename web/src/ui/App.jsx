@@ -150,7 +150,6 @@ function Nav({
   const canSeeSettings = role !== 'VIEWER';
   const items = [
     ['dashboard', 'Dashboard', true],
-    ['dashboard-ingresos', 'Dashboard ingresos', true],
     ['search', 'Buscar movimientos', true],
     ['transactions', 'Movimientos (Admin)', role === 'ADMIN'],
     ['settings', 'Ajustes', canSeeSettings],
@@ -271,7 +270,8 @@ function Login({ onLogin }) {
 
 /* ================= APP ================= */
 export default function App() {
-  const [tab, setTab] = useState('search');
+  const [tab, setTab] = useState('dashboard');
+  const [dashboardType, setDashboardType] = useState('expenses');
   const [cats, setCats] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [toast, setToast] = useState('');
@@ -406,11 +406,13 @@ export default function App() {
         {toast && <div className="card">{toast}</div>}
 
         {tab === 'dashboard' && (
-          <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={dataVersion} />
-        )}
-
-        {tab === 'dashboard-ingresos' && (
-          <DashboardIngresos selectedProjectId={selectedProjectId} refreshKey={dataVersion} />
+          <DashboardSection
+            dashboardType={dashboardType}
+            onDashboardTypeChange={setDashboardType}
+            isAdmin={isAdmin}
+            selectedProjectId={selectedProjectId}
+            refreshKey={dataVersion}
+          />
         )}
 
         {tab === 'transactions' && isAdmin && (
@@ -1090,6 +1092,38 @@ function RawDataAdmin() {
             ))}
           </tbody>
         </table>
+      )}
+    </div>
+  );
+}
+
+
+function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selectedProjectId, refreshKey }) {
+  const isIncome = dashboardType === 'income';
+
+  return (
+    <div className="grid" style={{ gap: 14 }}>
+      <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <button
+          type="button"
+          className={isIncome ? 'secondary' : ''}
+          onClick={() => onDashboardTypeChange('expenses')}
+        >
+          Dashboard egresos
+        </button>
+        <button
+          type="button"
+          className={isIncome ? '' : 'secondary'}
+          onClick={() => onDashboardTypeChange('income')}
+        >
+          Dashboard ingresos
+        </button>
+      </div>
+
+      {isIncome ? (
+        <DashboardIngresos selectedProjectId={selectedProjectId} refreshKey={refreshKey} />
+      ) : (
+        <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={refreshKey} />
       )}
     </div>
   );
