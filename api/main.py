@@ -6704,6 +6704,63 @@ def list_admin_trabajos_especiales_supplier_category2_rules(_: dict = Depends(re
     return {"items": [serialize_raw_doc(row) for row in rows]}
 
 
+@app.get("/api/admin/categories/global")
+def list_admin_global_categories(_: dict = Depends(require_admin)):
+    categories = [serialize(c) for c in db.categories.find({"active": {"$ne": False}}).sort("name", 1)]
+    combined = []
+    seen_keys = set()
+
+    for category in categories:
+        cat_id = str(category.get("id") or "").strip()
+        name = normalize_non_empty_string(category.get("name"))
+        code = normalize_non_empty_string(category.get("code")) or cat_id
+        if not name:
+            continue
+        key = f"code:{code}" if code else f"name:{normalize_category_name(name)}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        combined.append({
+            **category,
+            "code": code,
+            "name": name,
+            "source": category.get("source") or "catalog",
+            "displayLabel": f"{name} ({code})" if code and code != name else name,
+        })
+
+    projection = {
+        "categoryManualCode": 1,
+        "categoryManualName": 1,
+        "categoryHintCode": 1,
+        "categoryHintName": 1,
+    }
+    for tx in db.transactions.find({}, projection):
+        for source, code_key, name_key in (
+            ("manual", "categoryManualCode", "categoryManualName"),
+            ("sap", "categoryHintCode", "categoryHintName"),
+        ):
+            code = normalize_non_empty_string(tx.get(code_key))
+            name = normalize_non_empty_string(tx.get(name_key))
+            if not code and not name:
+                continue
+            normalized_name = normalize_category_name(name or code or "")
+            key = f"code:{code}" if code else f"name:{normalized_name}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            option_value = code or name
+            combined.append({
+                "id": f"{source}:{option_value}",
+                "name": name or code,
+                "code": code,
+                "source": source,
+                "displayLabel": f"{name or code} ({code})" if code and name and code != name else (name or code),
+            })
+
+    combined.sort(key=lambda c: normalize_category_name(str(c.get("name") or "")))
+    return combined
+
+
 @app.put("/api/admin/trabajos-especiales/supplier-category2-rules")
 def upsert_admin_trabajos_especiales_supplier_category2_rule(payload: dict, user: dict = Depends(require_admin)):
     category2_id = normalize_non_empty_string(payload.get("category2Id"))

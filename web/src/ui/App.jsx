@@ -637,7 +637,7 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
 
       {section === 'special-work-suppliers' &&
         (isSuperAdmin ? (
-          <SpecialWorkSuppliersReviewSection cats={cats} />
+          <SpecialWorkSuppliersReviewSection />
         ) : (
           <div className="card">Solo los superadministradores pueden revisar proveedores de trabajos especiales.</div>
         ))}
@@ -1597,7 +1597,8 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
   );
 }
 
-function SpecialWorkSuppliersReviewSection({ cats = [] }) {
+function SpecialWorkSuppliersReviewSection() {
+  const [globalCategories, setGlobalCategories] = useState([]);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState('');
@@ -1607,6 +1608,16 @@ function SpecialWorkSuppliersReviewSection({ cats = [] }) {
   const [search, setSearch] = useState('');
   const [sboFilter, setSboFilter] = useState('all');
   const [selectedCategoryBySupplier, setSelectedCategoryBySupplier] = useState({});
+
+  function loadGlobalCategories() {
+    return api.adminGlobalCategories()
+      .then((response) => {
+        setGlobalCategories(Array.isArray(response) ? response : []);
+      })
+      .catch(() => {
+        setGlobalCategories([]);
+      });
+  }
 
   function loadSuppliers() {
     setLoading(true);
@@ -1635,6 +1646,7 @@ function SpecialWorkSuppliersReviewSection({ cats = [] }) {
   }
 
   useEffect(() => {
+    loadGlobalCategories().catch(() => undefined);
     loadSuppliers().catch(() => undefined);
   }, []);
 
@@ -1706,6 +1718,9 @@ function SpecialWorkSuppliersReviewSection({ cats = [] }) {
         Clasificación interna derivada: la Categoría 1 original del movimiento no se modifica.
         Aquí asignas una regla global por proveedor para resolver Categoría 2 en lectura.
       </div>
+      <div className="small" style={{ marginBottom: 10 }}>
+        El selector de Categoría 2 usa el catálogo global de categorías (no depende del proyecto activo).
+      </div>
 
       <div className="row" style={{ gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <input
@@ -1773,7 +1788,7 @@ function SpecialWorkSuppliersReviewSection({ cats = [] }) {
                       }}
                     >
                       <option value="">Selecciona Categoría 2</option>
-                      {cats.map((category) => (
+                      {globalCategories.map((category) => (
                         <option key={category?.id || category?._id} value={category?.id || category?._id}>
                           {category?.name}
                         </option>

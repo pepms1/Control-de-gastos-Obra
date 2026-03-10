@@ -357,6 +357,7 @@ export const api = {
   adminTrabajosEspecialesSuppliers: () => backendReq('/api/admin/trabajos-especiales/suppliers'),
 
   adminTrabajosEspecialesSupplierCategory2Rules: () => backendReq('/api/admin/trabajos-especiales/supplier-category2-rules'),
+  adminGlobalCategories: () => backendReq('/api/admin/categories/global'),
 
   upsertAdminTrabajosEspecialesSupplierCategory2Rule: (payload) =>
     backendReq('/api/admin/trabajos-especiales/supplier-category2-rules', {
