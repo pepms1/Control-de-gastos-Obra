@@ -269,7 +269,15 @@ function Login({ onLogin }) {
     <div className="container login-container">
       <div className="card">
         <div className="login-brand">
-          <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="login-brand-image" />
+          <img
+            src="/LOGO%20GRUPO%20MDI.jpg"
+            alt="Logo Grupo MDI"
+            className="login-brand-image"
+            onError={(event) => {
+              event.currentTarget.onerror = null;
+              event.currentTarget.src = '/logo-grupo-mdi.svg';
+            }}
+          />
           <h1>Grupo MDI</h1>
           <p>control de obra</p>
         </div>
