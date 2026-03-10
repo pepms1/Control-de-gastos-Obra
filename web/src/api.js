@@ -1,3 +1,5 @@
+import { normalizeTransaction } from './transactions/normalizeTransaction.js';
+
 const RAW_API_URL =
   (import.meta.env?.VITE_API_URL && import.meta.env.VITE_API_URL.trim()) ||
   'https://control-de-gastos-obra.onrender.com';
@@ -164,94 +166,6 @@ function normalizeSapMovementsBySboResponse(payload) {
     unmatched: normalized?.unmatched ?? null,
     importRunId: normalized?.importRunId ?? null,
     already_imported: normalized?.already_imported ?? null,
-  };
-}
-
-/**
- * @typedef {Object} TransactionDTO
- * @property {string=} category_hint_code
- * @property {string=} category_hint_name
- * @property {string=} CategoryHintCode
- * @property {string=} CategoryHintName
- */
-
-export function normalizeTransaction(transaction) {
-  if (!transaction || typeof transaction !== 'object') return transaction;
-
-  const source = String(transaction.source || '').trim().toLowerCase();
-  const sourceDb = String(transaction.sourceDb || '').trim().toUpperCase();
-  const sourceSbo = String(transaction.sourceSbo || transaction?.sap?.sourceSbo || '').trim();
-  const isSapSbo = source === 'sap-sbo';
-  const isSboFlow = isSapSbo || sourceDb.startsWith('SBO_') || sourceSbo !== '';
-
-  const pickNumber = (...values) => {
-    for (const value of values) {
-      if (value === null || value === undefined) continue;
-      if (typeof value === 'number' && Number.isFinite(value)) return value;
-      if (typeof value === 'string') {
-        const trimmed = value.trim();
-        if (!trimmed) continue;
-        const parsed = Number(trimmed);
-        if (Number.isFinite(parsed)) return parsed;
-      }
-    }
-    return null;
-  };
-
-  const categoryHintName = transaction.categoryHintName
-    || transaction.category_hint_name
-    || transaction.CategoryHintName
-    || transaction.categorySapName
-    || '';
-  const categoryHintCode = transaction.categoryHintCode
-    || transaction.category_hint_code
-    || transaction.CategoryHintCode
-    || transaction.categorySapCode
-    || '';
-  const categoryManualName = transaction.categoryManualName || '';
-  const categoryManualCode = transaction.categoryManualCode || '';
-  const categoryEffectiveName = transaction.categoryEffectiveName || categoryManualName || categoryHintName || '';
-  const categoryEffectiveCode = transaction.categoryEffectiveCode || categoryManualCode || categoryHintCode || '';
-
-  const normalizedAmount = isSboFlow
-    ? pickNumber(transaction.amount, transaction.monto)
-    : (Number.isFinite(Number(transaction.amount)) ? Number(transaction.amount) : transaction.amount);
-  const normalizedSubtotal = isSboFlow
-    ? pickNumber(transaction.subtotal, transaction.montoSinIva, transaction?.tax?.subtotal, transaction?.sap?.invoiceSubtotal)
-    : pickNumber(transaction.subtotal, transaction.montoSinIva, transaction?.tax?.subtotal);
-  const normalizedIva = isSboFlow
-    ? pickNumber(transaction.iva, transaction.montoIva, transaction?.tax?.iva, transaction?.sap?.invoiceIva)
-    : pickNumber(transaction.iva, transaction.montoIva, transaction?.tax?.iva);
-  const normalizedTotalFactura = isSboFlow
-    ? pickNumber(transaction.totalFactura, transaction?.tax?.totalFactura, transaction?.sap?.invoiceTotal)
-    : pickNumber(transaction.totalFactura, transaction?.tax?.totalFactura);
-
-  return {
-    ...transaction,
-    date: transaction.date || (isSapSbo ? transaction.fecha : transaction.date),
-    sourceSbo: transaction.sourceSbo || transaction?.sap?.sourceSbo || '',
-    amount: normalizedAmount,
-    subtotal: normalizedSubtotal ?? transaction.subtotal,
-    montoSinIva: normalizedSubtotal ?? transaction.montoSinIva,
-    iva: normalizedIva ?? transaction.iva,
-    montoIva: normalizedIva ?? transaction.montoIva,
-    totalFactura: normalizedTotalFactura ?? transaction.totalFactura,
-    tax: {
-      ...(transaction.tax && typeof transaction.tax === 'object' ? transaction.tax : {}),
-      subtotal: normalizedSubtotal ?? transaction?.tax?.subtotal ?? null,
-      iva: normalizedIva ?? transaction?.tax?.iva ?? null,
-      totalFactura: normalizedTotalFactura ?? transaction?.tax?.totalFactura ?? null,
-    },
-    supplierName: transaction.supplierName || (isSapSbo ? transaction.proveedor : transaction.supplierName),
-    description: transaction.description || (isSapSbo ? transaction.descripcion : transaction.description),
-    categoryHintName,
-    categoryHintCode,
-    categoryManualName,
-    categoryManualCode,
-    categoryEffectiveName,
-    categoryEffectiveCode,
-    category_hint_name: transaction.category_hint_name || categoryHintName,
-    category_hint_code: transaction.category_hint_code || categoryHintCode,
   };
 }
 
