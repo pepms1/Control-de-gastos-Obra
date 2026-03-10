@@ -273,6 +273,24 @@ def serialize_user(user):
     return user_doc
 
 
+def normalize_allowed_project_ids(raw_ids) -> list[str]:
+    if not isinstance(raw_ids, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_ids:
+        candidate = str(raw or "").strip()
+        if not candidate or not ObjectId.is_valid(candidate):
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+
+    return normalized
+
+
 def normalize_user_role(raw_role: str | None) -> str:
     normalized = str(raw_role or "").strip().upper()
     if normalized in USER_ROLES:
@@ -313,6 +331,36 @@ def is_user_active(user: dict | None) -> bool:
     return bool(user.get("active", True))
 
 
+def is_superadmin(user: dict | None) -> bool:
+    return normalize_user_role((user or {}).get("role")) == "SUPERADMIN"
+
+
+def is_admin(user: dict | None) -> bool:
+    return normalize_user_role((user or {}).get("role")) == "ADMIN"
+
+
+def is_viewer(user: dict | None) -> bool:
+    return normalize_user_role((user or {}).get("role")) == "VIEWER"
+
+
+def get_accessible_project_ids(user: dict | None) -> list[str] | None:
+    if is_superadmin(user) or is_admin(user):
+        return None
+    if is_viewer(user):
+        return normalize_allowed_project_ids((user or {}).get("allowedProjectIds"))
+    return None
+
+
+def can_access_project(user: dict | None, project_id: str | None) -> bool:
+    normalized_project_id = str(project_id or "").strip()
+    if not normalized_project_id:
+        return False
+    accessible_project_ids = get_accessible_project_ids(user)
+    if accessible_project_ids is None:
+        return True
+    return normalized_project_id in set(accessible_project_ids)
+
+
 def build_current_user_payload(username: str, role: str, display_name: str, user_doc: dict | None = None) -> dict:
     normalized_role = normalize_user_role(role)
     is_active = is_user_active(user_doc) if user_doc is not None else True
@@ -323,6 +371,8 @@ def build_current_user_payload(username: str, role: str, display_name: str, user
         user_id = str(user_doc.get("_id") or username)
         resolved_email = str(user_doc.get("email") or "").strip()
 
+    allowed_project_ids = normalize_allowed_project_ids((user_doc or {}).get("allowedProjectIds"))
+
     return {
         "id": user_id,
         "username": username,
@@ -332,6 +382,7 @@ def build_current_user_payload(username: str, role: str, display_name: str, user
         "role": normalized_role,
         "isActive": is_active,
         "active": is_active,
+        "allowedProjectIds": allowed_project_ids,
     }
 
 
@@ -500,6 +551,7 @@ def ensure_default_users():
                         "displayName": existing.get("displayName") or display_name,
                         "role": target_role,
                         "roleVersion": target_role_version,
+                        "allowedProjectIds": normalize_allowed_project_ids(existing.get("allowedProjectIds")),
                     }
                 },
             )
@@ -513,6 +565,7 @@ def ensure_default_users():
                 "displayName": display_name,
                 "active": True,
                 "isActive": True,
+                "allowedProjectIds": [],
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -520,6 +573,11 @@ def ensure_default_users():
     users.update_many({"active": {"$exists": False}}, {"$set": {"active": True}})
     users.update_many({"isActive": {"$exists": False}}, [{"$set": {"isActive": {"$ifNull": ["$active", True]}}}])
     users.update_many({"role": {"$exists": False}}, {"$set": {"role": "SUPERADMIN"}})
+    users.update_many({"allowedProjectIds": {"$exists": False}}, {"$set": {"allowedProjectIds": []}})
+    users.update_many(
+        {"allowedProjectIds": {"$type": "array"}},
+        [{"$set": {"allowedProjectIds": {"$setUnion": [{"$ifNull": ["$allowedProjectIds", []]}, []]}}}],
+    )
     users.update_many(
         {"role": "ADMIN", "roleVersion": {"$exists": False}},
         {
@@ -3515,6 +3573,7 @@ def me(user=Depends(require_authenticated)):
         "isActive": bool(user.get("isActive", user.get("active", True))),
         "username": user.get("username"),
         "displayName": user.get("displayName") or user.get("name") or user.get("username"),
+        "allowedProjectIds": normalize_allowed_project_ids(user.get("allowedProjectIds")),
     }
 
 
@@ -3524,6 +3583,7 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
     password = payload.get("password") or ""
     role = normalize_user_role((payload.get("role") or "").strip().upper() or "VIEWER")
     active = bool(payload.get("active", payload.get("isActive", True)))
+    allowed_project_ids = normalize_allowed_project_ids(payload.get("allowedProjectIds"))
 
     if len(username) < 3:
         raise HTTPException(status_code=400, detail="username must have at least 3 characters")
@@ -3541,6 +3601,7 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
         "roleVersion": ROLE_SCHEMA_VERSION,
         "active": active,
         "isActive": active,
+        "allowedProjectIds": allowed_project_ids,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _id = db.users.insert_one(doc).inserted_id
@@ -3610,9 +3671,16 @@ def list_supplier_categories(_: dict = Depends(require_authenticated)):
 
 
 @app.get("/api/projects")
-def list_projects(_: dict = Depends(require_authenticated)):
+def list_projects(user: dict = Depends(require_authenticated)):
+    query: dict = {"visibleInFrontend": {"$ne": False}}
+    accessible_project_ids = get_accessible_project_ids(user)
+    if accessible_project_ids is not None:
+        if not accessible_project_ids:
+            return []
+        query["_id"] = {"$in": [ObjectId(pid) for pid in accessible_project_ids]}
+
     rows = db.projects.find(
-        {"visibleInFrontend": {"$ne": False}},
+        query,
         {"name": 1, "displayName": 1, "slug": 1},
     ).sort("name", 1)
     return [
@@ -7132,11 +7200,28 @@ def list_transactions(
     q: str | None = None,
     page: int = 1,
     limit: int = 50,
-    _: dict = Depends(require_authenticated),
+    user: dict = Depends(require_authenticated),
 ):
     normalized_page = max(page, 1)
     resolved_project_id = resolve_project_id(project_id)
     logger.info("transactions projectId=%s resolved=%s", project_id, resolved_project_id)
+
+    if not can_access_project(user, resolved_project_id):
+        if is_viewer(user):
+            return {
+                "items": [],
+                "page": normalized_page,
+                "limit": min(max(limit, 1), 500),
+                "totalCount": 0,
+                "totals": {
+                    "expensesGross": 0.0,
+                    "expensesTax": 0.0,
+                    "expensesWithoutTax": 0.0,
+                    "incomeGross": 0.0,
+                    "net": 0.0,
+                },
+            }
+        raise HTTPException(status_code=403, detail="Project access denied")
     normalized_limit = min(max(limit, 1), 500)
     skip = (normalized_page - 1) * normalized_limit
     effective_date_from = from_date or date_from
