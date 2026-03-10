@@ -1662,7 +1662,7 @@ function SpecialWorkSuppliersReviewSection() {
     <div className="card" style={{ overflowX: 'auto' }}>
       <h3 style={{ marginTop: 0 }}>Proveedores de Trabajos Especiales</h3>
       <div className="small" style={{ marginBottom: 10 }}>
-        Vista de revisión/preparación: lista consolidada de proveedores detectados en movimientos cuyo concepto empieza por “trabajos especiales”.
+        Vista de revisión/preparación: lista consolidada de proveedores detectados en movimientos cuya categoría efectiva actual guardada en DB empieza por “trabajos especiales”.
         Esta pantalla todavía no asigna Categoría 2; se usará como base para facilitar esa asignación por proveedor en una fase futura.
       </div>
 
@@ -1699,6 +1699,7 @@ function SpecialWorkSuppliersReviewSection() {
               <th>Business Partner</th>
               <th>Movimientos</th>
               <th>Proyectos</th>
+              <th>Categorías encontradas</th>
               <th>Ejemplos de descripción</th>
               <th>Última fecha</th>
             </tr>
@@ -1716,6 +1717,7 @@ function SpecialWorkSuppliersReviewSection() {
                     <div className="small">{item?.projectCount || projects.length || 0} proyecto(s)</div>
                     <div className="small">{projects.map((project) => project?.projectName || project?.projectId).filter(Boolean).join(', ') || '—'}</div>
                   </td>
+                  <td className="small">{(item?.matchedCategories || []).join(' · ') || '—'}</td>
                   <td className="small">{(item?.sampleDescriptions || []).join(' · ') || '—'}</td>
                   <td>{item?.lastSeenAt || '—'}</td>
                 </tr>

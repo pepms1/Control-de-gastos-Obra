@@ -6466,9 +6466,18 @@ def summary_expenses_by_supplier(
 
 @app.get("/api/admin/trabajos-especiales/suppliers")
 def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
-    tx_query = {"description": {"$exists": True, "$nin": [None, ""]}}
+    tx_query = {
+        "$or": [
+            {"categoryEffectiveName": {"$exists": True, "$nin": [None, ""]}},
+            {"categoryManualName": {"$exists": True, "$nin": [None, ""]}},
+            {"categoryHintName": {"$exists": True, "$nin": [None, ""]}},
+        ]
+    }
     projection = {
         "description": 1,
+        "categoryEffectiveName": 1,
+        "categoryManualName": 1,
+        "categoryHintName": 1,
         "supplierId": 1,
         "supplierName": 1,
         "supplierCardCode": 1,
@@ -6486,13 +6495,22 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
 
     grouped = {}
     for tx in db.transactions.find(tx_query, projection):
-        description = str(tx.get("description") or "").strip()
-        if not description:
+        category_manual_name = normalize_non_empty_string(tx.get("categoryManualName"))
+        category_hint_name = normalize_non_empty_string(tx.get("categoryHintName"))
+        category_effective_name = normalize_non_empty_string(tx.get("categoryEffectiveName")) or build_effective_category_fields(
+            None,
+            category_manual_name,
+            None,
+            category_hint_name,
+        ).get("categoryEffectiveName")
+        if not category_effective_name:
             continue
 
-        normalized_description = normalize_text_for_matching(description)
-        if not normalized_description.startswith("trabajos especiales"):
+        normalized_effective_category = normalize_text_for_matching(category_effective_name)
+        if not normalized_effective_category.startswith("trabajos especiales"):
             continue
+
+        description = str(tx.get("description") or "").strip()
 
         sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
         supplier_card_code = str(tx.get("supplierCardCode") or sap_doc.get("cardCode") or "").strip()
@@ -6524,6 +6542,8 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
                 "projects": [],
                 "sampleDescriptions": [],
                 "_sampleSeen": set(),
+                "matchedCategories": [],
+                "_matchedCategorySeen": set(),
                 "_lastSeenDate": None,
             },
         )
@@ -6550,6 +6570,15 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
                 }
             )
 
+        normalized_category_sample = normalize_text_for_matching(category_effective_name)
+        if (
+            normalized_category_sample
+            and normalized_category_sample not in bucket["_matchedCategorySeen"]
+            and len(bucket["matchedCategories"]) < 5
+        ):
+            bucket["_matchedCategorySeen"].add(normalized_category_sample)
+            bucket["matchedCategories"].append(category_effective_name)
+
         normalized_sample = normalize_text_for_matching(description)
         if normalized_sample and normalized_sample not in bucket["_sampleSeen"] and len(bucket["sampleDescriptions"]) < 5:
             bucket["_sampleSeen"].add(normalized_sample)
@@ -6574,6 +6603,7 @@ def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
                     values.get("projects") or [],
                     key=lambda item: (str(item.get("projectName") or "").lower(), str(item.get("projectId") or "")),
                 ),
+                "matchedCategories": values.get("matchedCategories") or [],
                 "sampleDescriptions": values.get("sampleDescriptions") or [],
                 "lastSeenAt": values.get("_lastSeenDate").isoformat() if values.get("_lastSeenDate") else None,
             }
