@@ -354,6 +354,8 @@ export const api = {
 
   suppliers: () => backendReq('/api/suppliers'),
 
+  adminTrabajosEspecialesSuppliers: () => backendReq('/api/admin/trabajos-especiales/suppliers'),
+
   updateSupplierCategory: (id, categoryId) =>
     backendReq(`/api/suppliers/${id}`, {
       method: 'PATCH',

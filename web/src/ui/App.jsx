@@ -578,6 +578,15 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
         {isSuperAdmin && (
           <button
             type="button"
+            className={section === 'special-work-suppliers' ? '' : 'secondary'}
+            onClick={() => setSection('special-work-suppliers')}
+          >
+            Proveedores de Trabajos Especiales
+          </button>
+        )}
+        {isSuperAdmin && (
+          <button
+            type="button"
             className={section === 'projects-unmatched' ? '' : 'secondary'}
             onClick={() => setSection('projects-unmatched')}
           >
@@ -624,6 +633,13 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
           <SupplierCategory2Assignment cats={cats} selectedProjectId={selectedProjectId} />
         ) : (
           <div className="card">Solo los superadministradores pueden asignar categoría por proveedor.</div>
+        ))}
+
+      {section === 'special-work-suppliers' &&
+        (isSuperAdmin ? (
+          <SpecialWorkSuppliersReviewSection />
+        ) : (
+          <div className="card">Solo los superadministradores pueden revisar proveedores de trabajos especiales.</div>
         ))}
 
       {section === 'projects-unmatched' && isSuperAdmin && <AdminProjectsFromUnmatchedSection onProjectCreated={onProjectCreated} />}
@@ -1577,6 +1593,137 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
           {saving ? 'Guardando...' : 'Guardar regla de categoría 2'}
         </button>
       </form>
+    </div>
+  );
+}
+
+function SpecialWorkSuppliersReviewSection() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [search, setSearch] = useState('');
+  const [sboFilter, setSboFilter] = useState('all');
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError('');
+
+    api.adminTrabajosEspecialesSuppliers()
+      .then((response) => {
+        if (!active) return;
+        setItems(Array.isArray(response?.items) ? response.items : []);
+      })
+      .catch((e) => {
+        if (!active) return;
+        setItems([]);
+        setError(e.message || 'No se pudieron cargar los proveedores de trabajos especiales.');
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const sboOptions = useMemo(() => {
+    const set = new Set();
+    items.forEach((item) => {
+      (Array.isArray(item?.projects) ? item.projects : []).forEach((project) => {
+        const code = String(project?.sourceSbo || '').trim();
+        if (code) set.add(code);
+      });
+    });
+    return ['all', ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [items]);
+
+  const filteredItems = useMemo(() => {
+    const normalizedQuery = normalizeSearchText(search);
+    return items.filter((item) => {
+      const projects = Array.isArray(item?.projects) ? item.projects : [];
+      if (sboFilter !== 'all' && !projects.some((project) => String(project?.sourceSbo || '').trim() === sboFilter)) {
+        return false;
+      }
+
+      if (!normalizedQuery) return true;
+      const haystack = normalizeSearchText([
+        item?.supplierName,
+        item?.supplierCardCode,
+        item?.businessPartner,
+        projects.map((project) => project?.projectName).join(' '),
+      ].join(' '));
+      return haystack.includes(normalizedQuery);
+    });
+  }, [items, search, sboFilter]);
+
+  return (
+    <div className="card" style={{ overflowX: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>Proveedores de Trabajos Especiales</h3>
+      <div className="small" style={{ marginBottom: 10 }}>
+        Vista de revisión/preparación: lista consolidada de proveedores detectados en movimientos cuyo concepto empieza por “trabajos especiales”.
+        Esta pantalla todavía no asigna Categoría 2; se usará como base para facilitar esa asignación por proveedor en una fase futura.
+      </div>
+
+      <div className="row" style={{ gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar por proveedor, cardCode, businessPartner o proyecto"
+          style={{ minWidth: 320 }}
+        />
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span className="small">SBO</span>
+          <select value={sboFilter} onChange={(e) => setSboFilter(e.target.value)}>
+            {sboOptions.map((option) => (
+              <option key={option} value={option}>{option === 'all' ? 'Todos' : option}</option>
+            ))}
+          </select>
+        </label>
+        <span className="small">{filteredItems.length} proveedores</span>
+      </div>
+
+      {error && <div className="small" style={{ color: '#b00020', marginBottom: 8 }}>{error}</div>}
+
+      {loading ? (
+        <div className="small">Cargando proveedores...</div>
+      ) : !filteredItems.length ? (
+        <div className="small">No se encontraron proveedores para el prefijo “trabajos especiales” con los filtros actuales.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Proveedor</th>
+              <th>CardCode</th>
+              <th>Business Partner</th>
+              <th>Movimientos</th>
+              <th>Proyectos</th>
+              <th>Ejemplos de descripción</th>
+              <th>Última fecha</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredItems.map((item) => {
+              const projects = Array.isArray(item?.projects) ? item.projects : [];
+              return (
+                <tr key={item?.supplierKey || item?.supplierName}>
+                  <td>{item?.supplierName || 'Sin proveedor'}</td>
+                  <td>{item?.supplierCardCode || '—'}</td>
+                  <td>{item?.businessPartner || '—'}</td>
+                  <td>{item?.transactionCount || 0}</td>
+                  <td>
+                    <div className="small">{item?.projectCount || projects.length || 0} proyecto(s)</div>
+                    <div className="small">{projects.map((project) => project?.projectName || project?.projectId).filter(Boolean).join(', ') || '—'}</div>
+                  </td>
+                  <td className="small">{(item?.sampleDescriptions || []).join(' · ') || '—'}</td>
+                  <td>{item?.lastSeenAt || '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
