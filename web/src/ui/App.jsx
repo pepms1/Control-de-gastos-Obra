@@ -22,15 +22,15 @@ function parseMoneyInput(value) {
   return Number(value.replace(/,/g, '').trim());
 }
 
-function getCategory2Label(transaction) {
-  return (
-    transaction?.categoryManualName
-    || transaction?.categoryManualCode
-    || ''
-  ).trim();
-}
-
 function getTransactionCategoryLabel(transaction, catMap) {
+  const normalizedCategory = String(
+    transaction?.categoryEffectiveName
+    || transaction?.categoryManualName
+    || transaction?.categoryName
+    || '',
+  ).trim();
+  if (normalizedCategory) return normalizedCategory;
+
   const effectiveName = (transaction?.categoryEffectiveName || '').trim();
   if (effectiveName) return effectiveName;
 
@@ -48,6 +48,13 @@ function getTransactionCategoryLabel(transaction, catMap) {
   if (hintName) return hintName;
 
   return 'Sin categoría';
+}
+
+function getTransactionTotalValue(transaction) {
+  if (Number.isFinite(transaction?.totalFactura)) return transaction.totalFactura;
+  if (Number.isFinite(transaction?.amount)) return transaction.amount;
+  if (Number.isFinite(transaction?.subtotal)) return transaction.subtotal;
+  return 0;
 }
 
 function normalizeSlug(value) {
@@ -1704,14 +1711,12 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     tx?._id ?? tx?.id ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sap?.pagoNum || ''}|${tx?.sap?.facturaNum || ''}|${tx?.sap?.montoAplicado || ''}`;
   const dedupeTransactions = (items) => Array.from(new Map((Array.isArray(items) ? items : []).map((tx) => [getTransactionStableKey(tx), tx])).values());
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
-  const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   const [rows, setRows] = useState([]);
   const [serverTotals, setServerTotals] = useState(null);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
-  const [sapCategoryFilter, setSapCategoryFilter] = useState('ALL');
   const [supplierFilter, setSupplierFilter] = useState('ALL');
   const [sourceDbFilter, setSourceDbFilter] = useState('ALL');
   const [searchFilter, setSearchFilter] = useState('');
@@ -1829,23 +1834,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setSupplierFilter('ALL');
   }, [selectedProjectId]);
 
-  const sapCategoryOptions = useMemo(() => {
-    const map = new Map();
-    cats
-      .filter((c) => c?.source === 'sap')
-      .forEach((c) => {
-        const value = String(c?.code || c?.name || '').trim();
-        if (!value || map.has(value)) return;
-        map.set(value, c?.displayLabel || c?.name || value);
-      });
-    rows.forEach((row) => {
-      const value = String(row?.categoryHintCode || row?.categoryHintName || '').trim();
-      if (!value || map.has(value)) return;
-      map.set(value, row?.categoryHintName || row?.categoryHintCode || value);
-    });
-    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es', { sensitivity: 'base' }));
-  }, [cats, rows]);
-
   const shown = rows
     .filter((row) => {
       if (categoryFilter === 'ALL') return true;
@@ -1857,12 +1845,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       if (!query) return true;
       const searchableFields = [
         row.description,
-        row.concept,
-        row.proveedorNombre,
         row.supplierName,
-        row.proveedor?.name,
+        row.projectDisplayName,
         getTransactionCategoryLabel(row, catMap),
         row.categoryCode,
+        row.sourceSbo,
       ];
       return searchableFields.some((field) => String(field || '').toLowerCase().includes(query));
     })
@@ -1879,8 +1866,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     }
 
     if (sortBy === 'supplier_asc') {
-      const aSupplier = (a.proveedorNombre || a.supplierName || vendorMap[a.vendor_id] || a.proveedor?.name || '').toLowerCase();
-      const bSupplier = (b.proveedorNombre || b.supplierName || vendorMap[b.vendor_id] || b.proveedor?.name || '').toLowerCase();
+      const aSupplier = String(a.supplierName || '').toLowerCase();
+      const bSupplier = String(b.supplierName || '').toLowerCase();
       if (aSupplier !== bSupplier) return aSupplier.localeCompare(bSupplier, 'es');
     }
 
@@ -2046,7 +2033,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             ))}
           </select>
           <select value={sourceDbFilter} onChange={(e) => { setPage(1); setSourceDbFilter(e.target.value); }}>
-            <option value="ALL">Todas las bases</option>
+            <option value="ALL">Todos los orígenes</option>
             <option value="IVA">Base IVA</option>
             <option value="EFECTIVO">Base EFECTIVO</option>
           </select>
@@ -2119,16 +2106,15 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <thead>
               <tr>
                 <th>Fecha</th>
-                <th>Tipo</th>
-                <th>Origen</th>
-                <th>Base</th>
-                <th>Descripción</th>
-                <th>Categoría 2</th>
-                <th>Categoría SAP</th>
+                <th>Proyecto</th>
                 <th>Proveedor</th>
-                <th>Monto</th>
+                <th>Descripción</th>
+                <th>Categoría</th>
+                <th>Subtotal</th>
                 <th>IVA</th>
-                <th>Total Factura</th>
+                <th>Total</th>
+                <th>Tipo</th>
+                <th>Origen / SBO</th>
                 {isAdmin && <th>Acciones</th>}
                 {isAdmin && <th>Seleccionar</th>}
               </tr>
@@ -2136,7 +2122,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <tbody>
               {isAdmin && (
                 <tr>
-                  <td colSpan={isAdmin ? 13 : 11} style={{ textAlign: 'right' }}>
+                  <td colSpan={isAdmin ? 12 : 10} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (página actual)
@@ -2146,23 +2132,25 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
               )}
               {shown.map((r) => {
                 const isSapIva = isSapIvaTransaction(r);
-                const taxBreakdown = getTransactionTaxBreakdown(r);
+                const totalValue = getTransactionTotalValue(r);
                 return (
                 <tr key={getTransactionStableKey(r)}>
-                  <td>{r.date}</td>
-                  <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
-                  <td>{isSapSboTransaction(r) ? <span className="badge">{r.sapBadgeLabel || 'SAP/SBO'}</span> : ''}</td>
-                  <td>{r.sourceDb ? <span className="badge">{String(r.sourceDb).toUpperCase()}</span> : 'LEGACY/UNKNOWN'}</td>
-                  <td>{r.description || r.concept || ''}</td>
+                  <td>{r.date || '—'}</td>
+                  <td>{r.projectDisplayName || 'Sin proyecto'}</td>
+                  <td>{r.supplierName || '—'}</td>
+                  <td>{r.description || ''}</td>
                   <td>
                     {getTransactionCategoryLabel(r, catMap)}
                     {r.categoryManualName && <span className="badge" style={{ marginLeft: 6 }}>Manual</span>}
                   </td>
-                  <td>{getSapCategoryLabel(r) || '—'}</td>
-                  <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
-                  <td style={{ fontWeight: 800 }}>${formatMoney(taxBreakdown.subtotal ?? r.amount)}</td>
-                  <td style={{ fontWeight: 700 }}>${formatMoney(taxBreakdown.iva ?? 0)}</td>
-                  <td style={{ fontWeight: 700 }}>${formatMoney(taxBreakdown.totalFactura ?? 0)}</td>
+                  <td style={{ fontWeight: 800 }}>${formatMoney(r.subtotal ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>${formatMoney(r.iva ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>${formatMoney(totalValue)}</td>
+                  <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
+                  <td>
+                    {isSapSboTransaction(r) ? <span className="badge">{r.sapBadgeLabel || 'SAP/SBO'}</span> : <span className="small">{r.source || '—'}</span>}
+                    {r.sourceSbo && <span className="badge" style={{ marginLeft: 6 }}>{r.sourceSbo}</span>}
+                  </td>
                   {isAdmin && (
                     <td>
                       {(r.source !== 'sap' || isSapIva) && (
@@ -2229,6 +2217,16 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
           onSave={saveEdit}
         >
           <div className="grid">
+            <label>Proyecto</label>
+            <input value={editing.projectDisplayName || ''} disabled />
+            <label>Proveedor</label>
+            <input value={editing.supplierName || ''} disabled />
+            <label>Categoría actual</label>
+            <input value={getTransactionCategoryLabel(editing, catMap)} disabled />
+            <label>Subtotal / IVA / Total</label>
+            <input value={`$${formatMoney(editing.subtotal ?? 0)} / $${formatMoney(editing.iva ?? 0)} / $${formatMoney(getTransactionTotalValue(editing))}`} disabled />
+            <label>Origen / SBO</label>
+            <input value={`${editing.sapBadgeLabel || editing.source || '—'} ${editing.sourceSbo || ''}`.trim()} disabled />
             {!isSapIvaTransaction(editing) && (
               <>
                 <label>Fecha</label>
@@ -2285,7 +2283,6 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   const [error, setError] = useState('');
   const limit = 50;
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
-  const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
   const selectedProjectName = useMemo(
     () => {
       const project = projects.find((item) => String(item?._id || '') === String(selectedProjectId || ''));
