@@ -185,7 +185,15 @@ function Nav({
   return (
     <div className="nav">
       <div className="nav-header">
-        <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="nav-logo" />
+        <img
+          src="/LOGO%20GRUPO%20MDI.jpg"
+          alt="Logo Grupo MDI"
+          className="nav-logo"
+          onError={(event) => {
+            event.currentTarget.onerror = null;
+            event.currentTarget.src = '/logo-grupo-mdi.svg';
+          }}
+        />
         <div className="nav-title-wrap">
           <div className="nav-title">CONTROL DE GASTOS 2.0</div>
           <div className="nav-subtitle">Grupo MDI</div>
