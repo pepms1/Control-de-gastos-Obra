@@ -382,6 +382,12 @@ export const api = {
 
   adminUsers: () => backendReq('/api/admin/users'),
 
+  createAdminUser: (payload) =>
+    backendReq('/api/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   updateAdminUser: (userId, payload) =>
     backendReq(`/api/admin/users/${userId}`, {
       method: 'PATCH',
