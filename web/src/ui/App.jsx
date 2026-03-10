@@ -1138,6 +1138,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
   const [showCategoryIva, setShowCategoryIva] = useState(false);
   const [showSupplierIva, setShowSupplierIva] = useState(false);
   const [supplierSortMode, setSupplierSortMode] = useState('alpha');
+  const [projectBalance, setProjectBalance] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -1147,7 +1148,9 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
     Promise.allSettled([
       api.spendByCategory({ include_iva: showCategoryIva ? 'true' : 'false' }),
       api.expensesSummaryBySupplier({ include_iva: showSupplierIva ? 'true' : 'false' }),
-    ]).then(([categoryResult, supplierResult]) => {
+      fetchTransactionsTotalByType('EXPENSE', showCategoryIva),
+      fetchTransactionsTotalByType('INCOME', showCategoryIva),
+    ]).then(([categoryResult, supplierResult, expenseTotalResult, incomeTotalResult]) => {
       if (!ok) return;
 
       if (categoryResult.status === 'fulfilled') {
@@ -1163,6 +1166,10 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
         setSupplierSummary([]);
         setSupplierSummaryError(supplierResult.reason?.message || 'No se pudo cargar el resumen por proveedor.');
       }
+
+      const expensesTotal = expenseTotalResult.status === 'fulfilled' ? Number(expenseTotalResult.value) || 0 : 0;
+      const incomeTotal = incomeTotalResult.status === 'fulfilled' ? Number(incomeTotalResult.value) || 0 : 0;
+      setProjectBalance(Number((incomeTotal - expensesTotal).toFixed(2)));
 
       setLoading(false);
     });
@@ -1232,6 +1239,11 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       label: 'Proveedores con gasto',
       value: String(supplierSummary.length),
       helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+    {
+      label: 'Balance total del proyecto',
+      value: formatCurrency(projectBalance),
+      helper: 'Ingresos menos egresos',
     },
   ];
 
@@ -1510,6 +1522,30 @@ function summarizeTransactionsBySupplier(transactions, includeIva = false) {
   }));
 }
 
+async function fetchTransactionsTotalByType(type, includeIva = false) {
+  const PAGE_LIMIT = 500;
+  let page = 1;
+  let totalCount = 0;
+  let total = 0;
+
+  do {
+    const response = await api.transactions({
+      type,
+      page: String(page),
+      limit: String(PAGE_LIMIT),
+    });
+    const chunk = Array.isArray(response?.items) ? response.items : [];
+    chunk.forEach((tx) => {
+      total += Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
+    });
+    totalCount = Number(response?.totalCount) || 0;
+    page += 1;
+    if (!chunk.length) break;
+  } while ((page - 1) * PAGE_LIMIT < totalCount);
+
+  return Number(total.toFixed(2));
+}
+
 function DashboardIngresos({ selectedProjectId, refreshKey }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
@@ -1518,6 +1554,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
   const [showCategoryIva, setShowCategoryIva] = useState(false);
   const [showSupplierIva, setShowSupplierIva] = useState(false);
   const [supplierSortMode, setSupplierSortMode] = useState('alpha');
+  const [projectBalance, setProjectBalance] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -1547,8 +1584,14 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
 
         if (!ok) return;
 
-        setStats(summarizeTransactionsByCategory(items, showCategoryIva));
+        const incomeByCategory = summarizeTransactionsByCategory(items, showCategoryIva);
+        setStats(incomeByCategory);
         setSupplierSummary(summarizeTransactionsBySupplier(items, showSupplierIva));
+
+        const expenseTotal = await fetchTransactionsTotalByType('EXPENSE', showCategoryIva);
+        if (!ok) return;
+        const incomeTotal = Number(incomeByCategory.total_expenses) || 0;
+        setProjectBalance(Number((incomeTotal - expenseTotal).toFixed(2)));
       } catch (error) {
         if (!ok) return;
         setStats({ error: error?.message || 'No se pudo cargar el dashboard de ingresos.' });
@@ -1625,6 +1668,11 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
       label: 'Proveedores con ingreso',
       value: String(supplierSummary.length),
       helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+    {
+      label: 'Balance total del proyecto',
+      value: formatCurrency(projectBalance),
+      helper: 'Ingresos menos egresos',
     },
   ];
 
