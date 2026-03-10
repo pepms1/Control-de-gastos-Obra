@@ -4721,6 +4721,51 @@ def normalize_project_name_for_matching(raw_value) -> str:
     return str(raw_value or "").strip().upper()
 
 
+def pick_first_non_empty_value(row: dict, *keys: str) -> str | None:
+    for key in keys:
+        value = normalize_non_empty_string(row.get(key))
+        if value:
+            return value
+    return None
+
+
+def resolve_sbo_project_fields_from_row(row: dict, movement_type: str) -> dict:
+    document_project_code = pick_first_non_empty_value(row, "document_project_code", "documentProjectCode")
+    document_project_name = pick_first_non_empty_value(row, "document_project_name", "documentProjectName")
+    payment_project_code = pick_first_non_empty_value(row, "payment_project_code", "paymentProjectCode")
+    payment_project_name = pick_first_non_empty_value(row, "payment_project_name", "paymentProjectName")
+    resolved_project_code = pick_first_non_empty_value(row, "resolved_project_code", "resolvedProjectCode")
+    resolved_project_name = pick_first_non_empty_value(row, "resolved_project_name", "resolvedProjectName")
+    project_resolution_source = pick_first_non_empty_value(
+        row,
+        "project_resolution_source",
+        "projectResolutionSource",
+    )
+    raw_project_code = pick_first_non_empty_value(row, "raw_project_code", "rawProjectCode")
+    raw_project_name = pick_first_non_empty_value(row, "raw_project_name", "rawProjectName")
+
+    # V2 outgoing payments resolve project from JDT1 when available. Keep backward
+    # compatibility with old files where only raw_project_* exists.
+    if movement_type == "egreso":
+        effective_raw_project_code = resolved_project_code or raw_project_code or document_project_code
+        effective_raw_project_name = resolved_project_name or raw_project_name or document_project_name
+    else:
+        effective_raw_project_code = raw_project_code or resolved_project_code
+        effective_raw_project_name = raw_project_name or resolved_project_name
+
+    return {
+        "raw_project_code": effective_raw_project_code or "",
+        "raw_project_name": effective_raw_project_name or "",
+        "document_project_code": document_project_code,
+        "document_project_name": document_project_name,
+        "payment_project_code": payment_project_code,
+        "payment_project_name": payment_project_name,
+        "resolved_project_code": resolved_project_code,
+        "resolved_project_name": resolved_project_name,
+        "project_resolution_source": project_resolution_source,
+    }
+
+
 def build_sbo_dedupe_key(row: dict) -> str:
     amount_applied = parse_optional_decimal(row.get("amount_applied"))
     dedupe_parts = [
@@ -4831,8 +4876,10 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
     for idx, row in enumerate(reader, start=2):
         rows_total += 1
         try:
-            raw_project_name = str(row.get("raw_project_name") or "").strip()
-            raw_project_code = str(row.get("raw_project_code") or "").strip()
+            movement_type = str(row.get("movement_type") or row.get("movementType") or "").strip().lower()
+            project_fields = resolve_sbo_project_fields_from_row(row, movement_type)
+            raw_project_name = project_fields["raw_project_name"]
+            raw_project_code = project_fields["raw_project_code"]
             normalized_project_name = normalize_project_name_for_matching(raw_project_name)
             project_id = normalized_projects.get(normalized_project_name)
             category_hint_code = normalize_non_empty_string(
@@ -4873,7 +4920,6 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
             invoice_subtotal = parse_optional_decimal(row.get("invoice_subtotal"))
             invoice_iva = parse_optional_decimal(row.get("invoice_iva"))
             invoice_total = parse_optional_decimal(row.get("invoice_total"))
-            movement_type = str(row.get("movement_type") or row.get("movementType") or "").strip().lower()
             tx_type = "INCOME" if movement_type == "ingreso" else "EXPENSE" if movement_type == "egreso" else "EXPENSE"
 
             tx_doc = {
@@ -4922,6 +4968,11 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
                     "categoryHintName": category_hint_name,
                     "rawProjectCode": raw_project_code,
                     "rawProjectName": raw_project_name,
+                    "documentProjectCode": project_fields["document_project_code"],
+                    "documentProjectName": project_fields["document_project_name"],
+                    "paymentProjectCode": project_fields["payment_project_code"],
+                    "paymentProjectName": project_fields["payment_project_name"],
+                    "projectResolutionSource": project_fields["project_resolution_source"],
                     "normalizedProjectName": normalized_project_name,
                     "sourceDb": source_db,
                     "sourceSbo": source_sbo,

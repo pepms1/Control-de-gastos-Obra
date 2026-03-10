@@ -21,6 +21,11 @@
  * @property {string|null} categoryHintName
  * @property {string|null} rawProjectCode
  * @property {string|null} rawProjectName
+ * @property {string|null} documentProjectCode
+ * @property {string|null} documentProjectName
+ * @property {string|null} paymentProjectCode
+ * @property {string|null} paymentProjectName
+ * @property {string|null} projectResolutionSource
  * @property {string|null} normalizedProjectName
  * @property {string|null} sourceDb
  * @property {string|null} sourceSbo
