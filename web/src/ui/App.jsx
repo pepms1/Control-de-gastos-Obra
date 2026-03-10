@@ -111,8 +111,8 @@ function Nav({
   const canSeeSettings = role !== 'VIEWER';
   const items = [
     ['dashboard', 'Dashboard', true],
-    ['transactions', 'Movimientos', true],
-    ['search', 'Buscar', true],
+    ['search', 'Buscar movimientos', true],
+    ['transactions', 'Movimientos (Admin)', role === 'ADMIN'],
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
@@ -231,7 +231,7 @@ function Login({ onLogin }) {
 
 /* ================= APP ================= */
 export default function App() {
-  const [tab, setTab] = useState('dashboard');
+  const [tab, setTab] = useState('search');
   const [cats, setCats] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [toast, setToast] = useState('');
@@ -338,6 +338,12 @@ export default function App() {
     setTab('dashboard');
   }
 
+  useEffect(() => {
+    if (!isAdmin && tab === 'transactions') {
+      setTab('search');
+    }
+  }, [isAdmin, tab]);
+
   if (!session.token) return <Login onLogin={setSession} />;
 
   return (
@@ -363,7 +369,7 @@ export default function App() {
           <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={dataVersion} />
         )}
 
-        {tab === 'transactions' && (
+        {tab === 'transactions' && isAdmin && (
           <Transactions
             isAdmin={isAdmin}
             cats={cats}
@@ -2066,9 +2072,10 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
 function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [supplierFilter, setSupplierFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
-  const [typeFilter, setTypeFilter] = useState('EXPENSE');
+  const [typeFilter, setTypeFilter] = useState('ALL');
   const [sourceSboFilter, setSourceSboFilter] = useState('ALL');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -2290,35 +2297,42 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
           onChange={(e) => setQuery(e.target.value)}
           style={{ minWidth: 320 }}
         />
-        <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
-          <option value="ALL">Todos los proveedores</option>
-          {supplierOptions.map((supplierName) => (
-            <option key={supplierName} value={supplierName}>{supplierName}</option>
-          ))}
-        </select>
-        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
-          <option value="ALL">Todas las categorías</option>
-          {categoryOptions.map(([categoryCode, categoryLabel]) => (
-            <option key={categoryCode} value={categoryCode}>{categoryLabel}</option>
-          ))}
-        </select>
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-          <option value="ALL">Todos los tipos</option>
-          <option value="EXPENSE">Egreso</option>
-          <option value="INCOME">Ingreso</option>
-        </select>
-        <select value={sourceSboFilter} onChange={(e) => setSourceSboFilter(e.target.value)}>
-          <option value="ALL">Todos los SBO</option>
-          {sourceSboOptions.map((sourceSbo) => (
-            <option key={sourceSbo} value={sourceSbo}>{sourceSbo}</option>
-          ))}
-        </select>
-        <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="Fecha desde" />
-        <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} aria-label="Fecha hasta" />
+        <button type="button" className="secondary" onClick={() => setShowAdvancedFilters((prev) => !prev)}>
+          {showAdvancedFilters ? 'Ocultar filtros' : 'Mostrar filtros'}
+        </button>
         <button type="button" onClick={exportSearchResultsToPdf} disabled={loading || exportingPdf || !shown.length}>
           {exportingPdf ? 'Exportando...' : 'Exportar PDF'}
         </button>
       </div>
+      {showAdvancedFilters && (
+        <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+          <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+            <option value="ALL">Todos los proveedores</option>
+            {supplierOptions.map((supplierName) => (
+              <option key={supplierName} value={supplierName}>{supplierName}</option>
+            ))}
+          </select>
+          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+            <option value="ALL">Todas las categorías</option>
+            {categoryOptions.map(([categoryCode, categoryLabel]) => (
+              <option key={categoryCode} value={categoryCode}>{categoryLabel}</option>
+            ))}
+          </select>
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+            <option value="ALL">Todos los tipos</option>
+            <option value="EXPENSE">Egreso</option>
+            <option value="INCOME">Ingreso</option>
+          </select>
+          <select value={sourceSboFilter} onChange={(e) => setSourceSboFilter(e.target.value)}>
+            <option value="ALL">Todos los SBO</option>
+            {sourceSboOptions.map((sourceSbo) => (
+              <option key={sourceSbo} value={sourceSbo}>{sourceSbo}</option>
+            ))}
+          </select>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="Fecha desde" />
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} aria-label="Fecha hasta" />
+        </div>
+      )}
       <div className="small" style={{ marginTop: 8 }}>
         {loading ? 'Buscando...' : `${totalCount} resultados${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''} · ${shown.length} visibles tras filtros`}
       </div>
