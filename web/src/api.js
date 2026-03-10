@@ -18,6 +18,7 @@ const DISPLAY_NAME_KEY = 'obra_display_name';
 const USER_ID_KEY = 'obra_user_id';
 const USER_EMAIL_KEY = 'obra_user_email';
 const USER_ACTIVE_KEY = 'obra_user_is_active';
+const USER_UI_PREFS_KEY = 'obra_user_ui_prefs';
 export const SELECTED_PROJECT_KEY = 'selectedProjectId';
 
 function getSelectedProjectId() {
@@ -65,10 +66,18 @@ export function getSession() {
     id: localStorage.getItem(USER_ID_KEY) || '',
     email: localStorage.getItem(USER_EMAIL_KEY) || '',
     isActive: localStorage.getItem(USER_ACTIVE_KEY) !== 'false',
+    uiPrefs: (() => {
+      try {
+        const raw = localStorage.getItem(USER_UI_PREFS_KEY);
+        return raw ? JSON.parse(raw) : { hiddenProjectIds: [] };
+      } catch {
+        return { hiddenProjectIds: [] };
+      }
+    })(),
   };
 }
 
-export function saveSession({ access_token, token, role, username, displayName, id, email, isActive, name }) {
+export function saveSession({ access_token, token, role, username, displayName, id, email, isActive, name, uiPrefs }) {
   localStorage.setItem(TOKEN_KEY, access_token || token || '');
   localStorage.setItem(ROLE_KEY, role || '');
   localStorage.setItem(USER_KEY, username || '');
@@ -76,6 +85,7 @@ export function saveSession({ access_token, token, role, username, displayName, 
   localStorage.setItem(USER_ID_KEY, id || '');
   localStorage.setItem(USER_EMAIL_KEY, email || '');
   localStorage.setItem(USER_ACTIVE_KEY, String(isActive !== false));
+  localStorage.setItem(USER_UI_PREFS_KEY, JSON.stringify(uiPrefs && typeof uiPrefs === 'object' ? uiPrefs : { hiddenProjectIds: [] }));
 }
 
 export function clearSession() {
@@ -86,6 +96,7 @@ export function clearSession() {
   localStorage.removeItem(USER_ID_KEY);
   localStorage.removeItem(USER_EMAIL_KEY);
   localStorage.removeItem(USER_ACTIVE_KEY);
+  localStorage.removeItem(USER_UI_PREFS_KEY);
 }
 
 async function request(baseUrl, path, opts = {}) {
@@ -191,6 +202,12 @@ export const api = {
     }),
 
   me: () => req('/api/me'),
+
+  updateMyPreferences: (payload) =>
+    req('/api/me/preferences', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
 
   seed: () =>
     req('/seed', {

@@ -299,6 +299,17 @@ def normalize_allowed_project_ids(raw_ids) -> list[str]:
     return normalized
 
 
+def normalize_hidden_project_ids(raw_ids) -> list[str]:
+    return normalize_allowed_project_ids(raw_ids)
+
+
+def normalize_ui_prefs(raw_ui_prefs) -> dict:
+    ui_prefs = raw_ui_prefs if isinstance(raw_ui_prefs, dict) else {}
+    return {
+        "hiddenProjectIds": normalize_hidden_project_ids(ui_prefs.get("hiddenProjectIds")),
+    }
+
+
 def normalize_user_role(raw_role: str | None) -> str:
     normalized = str(raw_role or "").strip().upper()
     if normalized in USER_ROLES:
@@ -391,6 +402,7 @@ def build_current_user_payload(username: str, role: str, display_name: str, user
         resolved_email = str(user_doc.get("email") or "").strip()
 
     allowed_project_ids = normalize_allowed_project_ids((user_doc or {}).get("allowedProjectIds"))
+    ui_prefs = normalize_ui_prefs((user_doc or {}).get("uiPrefs"))
 
     return {
         "id": user_id,
@@ -402,6 +414,7 @@ def build_current_user_payload(username: str, role: str, display_name: str, user
         "isActive": is_active,
         "active": is_active,
         "allowedProjectIds": allowed_project_ids,
+        "uiPrefs": ui_prefs,
     }
 
 
@@ -571,6 +584,7 @@ def ensure_default_users():
                         "role": target_role,
                         "roleVersion": target_role_version,
                         "allowedProjectIds": normalize_allowed_project_ids(existing.get("allowedProjectIds")),
+                        "uiPrefs": normalize_ui_prefs(existing.get("uiPrefs")),
                     }
                 },
             )
@@ -585,6 +599,7 @@ def ensure_default_users():
                 "active": True,
                 "isActive": True,
                 "allowedProjectIds": [],
+                "uiPrefs": {"hiddenProjectIds": []},
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -593,9 +608,14 @@ def ensure_default_users():
     users.update_many({"isActive": {"$exists": False}}, [{"$set": {"isActive": {"$ifNull": ["$active", True]}}}])
     users.update_many({"role": {"$exists": False}}, {"$set": {"role": "SUPERADMIN"}})
     users.update_many({"allowedProjectIds": {"$exists": False}}, {"$set": {"allowedProjectIds": []}})
+    users.update_many({"uiPrefs": {"$exists": False}}, {"$set": {"uiPrefs": {"hiddenProjectIds": []}}})
     users.update_many(
         {"allowedProjectIds": {"$type": "array"}},
         [{"$set": {"allowedProjectIds": {"$setUnion": [{"$ifNull": ["$allowedProjectIds", []]}, []]}}}],
+    )
+    users.update_many(
+        {"uiPrefs.hiddenProjectIds": {"$exists": False}},
+        [{"$set": {"uiPrefs.hiddenProjectIds": {"$setUnion": [{"$ifNull": ["$uiPrefs.hiddenProjectIds", []]}, []]}}}],
     )
     users.update_many(
         {"role": "ADMIN", "roleVersion": {"$exists": False}},
@@ -3593,7 +3613,49 @@ def me(user=Depends(require_authenticated)):
         "username": user.get("username"),
         "displayName": user.get("displayName") or user.get("name") or user.get("username"),
         "allowedProjectIds": normalize_allowed_project_ids(user.get("allowedProjectIds")),
+        "uiPrefs": normalize_ui_prefs(user.get("uiPrefs")),
     }
+
+
+@app.patch("/api/me/preferences")
+def update_my_preferences(payload: dict, user: dict = Depends(require_authenticated)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    if "uiPrefs" in payload:
+        raw_hidden_project_ids = (payload.get("uiPrefs") or {}).get("hiddenProjectIds")
+    else:
+        raw_hidden_project_ids = payload.get("hiddenProjectIds")
+
+    normalized_hidden_project_ids = normalize_hidden_project_ids(raw_hidden_project_ids)
+    if normalized_hidden_project_ids:
+        candidate_object_ids = [ObjectId(project_id) for project_id in normalized_hidden_project_ids]
+        rows = db.projects.find(
+            {"_id": {"$in": candidate_object_ids}},
+            {"_id": 1},
+        )
+        existing_ids = {str(row.get("_id")) for row in rows}
+        normalized_hidden_project_ids = [project_id for project_id in normalized_hidden_project_ids if project_id in existing_ids]
+
+    user_id = str(user.get("id") or "").strip()
+    if not user_id or not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    ui_prefs = {"hiddenProjectIds": normalized_hidden_project_ids}
+    updated = db.users.find_one_and_update(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "uiPrefs": ui_prefs,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"ok": True, "uiPrefs": normalize_ui_prefs(updated.get("uiPrefs"))}
 
 
 @app.post("/users")
