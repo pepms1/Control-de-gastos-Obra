@@ -1609,13 +1609,29 @@ function SpecialWorkSuppliersReviewSection() {
   const [sboFilter, setSboFilter] = useState('all');
   const [selectedCategoryBySupplier, setSelectedCategoryBySupplier] = useState({});
 
+  function normalizeGlobalCategories(response) {
+    const rawCategories = Array.isArray(response)
+      ? response
+      : (Array.isArray(response?.items) ? response.items : []);
+
+    return dedupeCategories(rawCategories)
+      .map((category) => {
+        const id = String(category?.id || category?._id || category?.categoryId || category?.code || '').trim();
+        const name = String(category?.name || category?.nombre || category?.label || category?.displayLabel || '').trim();
+        if (!id || !name) return null;
+        return { id, name };
+      })
+      .filter(Boolean);
+  }
+
   function loadGlobalCategories() {
     return api.adminGlobalCategories()
       .then((response) => {
-        setGlobalCategories(Array.isArray(response) ? response : []);
+        setGlobalCategories(normalizeGlobalCategories(response));
       })
-      .catch(() => {
+      .catch((e) => {
         setGlobalCategories([]);
+        setError(e.message || 'No se pudo cargar el catálogo global de categorías.');
       });
   }
 
@@ -1789,8 +1805,8 @@ function SpecialWorkSuppliersReviewSection() {
                     >
                       <option value="">Selecciona Categoría 2</option>
                       {globalCategories.map((category) => (
-                        <option key={category?.id || category?._id} value={category?.id || category?._id}>
-                          {category?.name}
+                        <option key={category.id} value={category.id}>
+                          {category.name}
                         </option>
                       ))}
                     </select>
