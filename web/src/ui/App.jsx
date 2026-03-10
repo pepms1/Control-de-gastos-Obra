@@ -522,6 +522,15 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, selectedProj
             Visibilidad de proyectos
           </button>
         )}
+        {isSuperAdmin && (
+          <button
+            type="button"
+            className={section === 'users-access' ? '' : 'secondary'}
+            onClick={() => setSection('users-access')}
+          >
+            Usuarios y accesos
+          </button>
+        )}
         <button
           type="button"
           className={section === 'raw-data' ? '' : 'secondary'}
@@ -560,8 +569,182 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, selectedProj
 
       {section === 'projects-visibility' && isSuperAdmin && <AdminProjectVisibilitySection onProjectUpdated={onProjectCreated} />}
 
+      {section === 'users-access' && isSuperAdmin && <AdminUsersAccessSection />}
+
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los superadministradores pueden ver raw data.</div>)}
+    </div>
+  );
+}
+
+function AdminUsersAccessSection() {
+  const [users, setUsers] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [editingUserId, setEditingUserId] = useState('');
+  const [draftProjectIds, setDraftProjectIds] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  const projectMap = useMemo(() => {
+    const map = new Map();
+    projects.forEach((project) => map.set(String(project?._id || ''), project));
+    return map;
+  }, [projects]);
+
+  async function loadData() {
+    setLoading(true);
+    setError('');
+    try {
+      const [usersData, projectsData] = await Promise.all([api.adminUsers(), api.adminProjects()]);
+      setUsers(Array.isArray(usersData) ? usersData : []);
+      setProjects(Array.isArray(projectsData) ? projectsData : []);
+    } catch (e) {
+      setError(e.message || 'No se pudo cargar usuarios/proyectos.');
+      setUsers([]);
+      setProjects([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  function startEdit(user) {
+    const nextId = String(user?.id || user?._id || '');
+    setEditingUserId(nextId);
+    setDraftProjectIds(Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds.map(String) : []);
+  }
+
+  function cancelEdit() {
+    setEditingUserId('');
+    setDraftProjectIds([]);
+  }
+
+  function toggleProject(projectId) {
+    const key = String(projectId || '');
+    setDraftProjectIds((prev) => (prev.includes(key) ? prev.filter((id) => id !== key) : [...prev, key]));
+  }
+
+  async function saveViewerAccess(user) {
+    const userId = String(user?.id || user?._id || '');
+    if (!userId) return;
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await api.updateAdminUser(userId, { allowedProjectIds: draftProjectIds });
+      setUsers((prev) => prev.map((row) => {
+        const rowId = String(row?.id || row?._id || '');
+        return rowId === userId ? { ...row, ...updated } : row;
+      }));
+      cancelEdit();
+    } catch (e) {
+      setError(e.message || 'No se pudo guardar accesos del usuario.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function renderAllowedProjects(user) {
+    const ids = Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds : [];
+    if (!ids.length) return 'Sin proyectos asignados';
+    return ids
+      .map((id) => {
+        const project = projectMap.get(String(id));
+        return project ? getProjectDisplayName(project) : String(id);
+      })
+      .join(', ');
+  }
+
+  return (
+    <div className="card grid" style={{ gap: 12 }}>
+      <div>
+        <h3 style={{ margin: 0 }}>Usuarios y accesos</h3>
+        <div className="small">Configura qué proyectos puede consultar cada usuario con rol VIEWER.</div>
+        <div className="small">Esto no cambia la visibilidad global de proyectos en frontend.</div>
+      </div>
+
+      {loading && <div className="small">Cargando usuarios...</div>}
+      {error && <div className="small" style={{ color: '#b00020' }}>{error}</div>}
+
+      {!loading && (
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Usuario</th>
+                <th>Email</th>
+                <th>Rol</th>
+                <th>Estado</th>
+                <th>Proyectos permitidos (VIEWER)</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => {
+                const userId = String(user?.id || user?._id || '');
+                const viewer = normalizeRole(user?.role) === 'VIEWER';
+                const isEditing = editingUserId === userId;
+                return (
+                  <React.Fragment key={userId || user?.username}>
+                    <tr>
+                      <td>{user?.displayName || user?.name || user?.username || 'Sin nombre'}<div className="small">{user?.username || '—'}</div></td>
+                      <td>{user?.email || '—'}</td>
+                      <td>{normalizeRole(user?.role)}</td>
+                      <td>{user?.isActive === false ? 'Inactivo' : 'Activo'}</td>
+                      <td className="small">{viewer ? renderAllowedProjects(user) : 'No aplica (solo VIEWER)'}</td>
+                      <td>
+                        {viewer ? (
+                          <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>
+                            Editar accesos
+                          </button>
+                        ) : (
+                          <span className="small">No editable</span>
+                        )}
+                      </td>
+                    </tr>
+                    {viewer && isEditing && (
+                      <tr>
+                        <td colSpan={6}>
+                          <div className="card" style={{ margin: 0 }}>
+                            <div className="small" style={{ marginBottom: 8 }}>
+                              Selecciona proyectos permitidos para este VIEWER:
+                            </div>
+                            <div style={{ display: 'grid', gap: 6, maxHeight: 240, overflowY: 'auto' }}>
+                              {projects.map((project) => {
+                                const projectId = String(project?._id || '');
+                                const checked = draftProjectIds.includes(projectId);
+                                const sourceSbo = project?.sap?.sourceSbo || '';
+                                return (
+                                  <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                    <input type="checkbox" checked={checked} onChange={() => toggleProject(projectId)} disabled={saving} />
+                                    <span>
+                                      {getProjectDisplayName(project)}
+                                      <span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `· ${sourceSbo}` : ''}</span>
+                                    </span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                              <button type="button" onClick={() => saveViewerAccess(user)} disabled={saving}>
+                                {saving ? 'Guardando...' : 'Guardar accesos'}
+                              </button>
+                              <button type="button" className="secondary" onClick={cancelEdit} disabled={saving}>Cancelar</button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
