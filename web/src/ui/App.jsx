@@ -3,7 +3,7 @@ import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from
 import { isSapSboTransaction } from '../transactions/helpers.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
-import { isSuperAdmin, isViewer, normalizeRole } from './roles.js';
+import { isAdmin as isAdminRole, isSuperAdmin, isViewer, normalizeRole } from './roles.js';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
 
@@ -69,6 +69,18 @@ function isMongoObjectId(value) {
 
 function getProjectDisplayName(project) {
   return project?.displayName || project?.name || 'Sin nombre';
+}
+
+function getAdminPersonalizedProjects(projects, session) {
+  const normalizedRole = normalizeRole(session?.role);
+  if (!isAdminRole(normalizedRole)) return Array.isArray(projects) ? projects : [];
+
+  const hiddenIds = new Set(
+    Array.isArray(session?.uiPrefs?.hiddenProjectIds)
+      ? session.uiPrefs.hiddenProjectIds.map((id) => String(id || '').trim()).filter(Boolean)
+      : [],
+  );
+  return (Array.isArray(projects) ? projects : []).filter((project) => !hiddenIds.has(String(project?._id || '')));
 }
 
 function formatCurrency(value) {
@@ -280,6 +292,7 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [session, setSession] = useState(getSession());
   const [projects, setProjects] = useState([]);
+  const personalizedProjects = useMemo(() => getAdminPersonalizedProjects(projects, session), [projects, session]);
   const [selectedProjectId, setSelectedProjectId] = useState(localStorage.getItem(SELECTED_PROJECT_KEY) || '');
   const [dataVersion, setDataVersion] = useState(0);
   const [themePreference, setThemePreference] = useState(() => {
@@ -290,6 +303,8 @@ export default function App() {
   const userRole = normalizeRole(session.role);
   const isSuperAdminUser = isSuperAdmin(userRole);
   const isViewerUser = isViewer(userRole);
+  const isAdminUser = isAdminRole(userRole);
+  const canUseAdminPreferences = isAdminUser || isSuperAdminUser;
   const isAdmin = isSuperAdminUser;
   const isDarkMode = themePreference === 'dark';
 
@@ -310,15 +325,17 @@ export default function App() {
     const list = Array.isArray(data) ? data : [];
     setProjects(list);
 
-    if (!list.length) {
+    const selectableList = getAdminPersonalizedProjects(list, session);
+
+    if (!selectableList.length) {
       setSelectedProjectId('');
       localStorage.removeItem(SELECTED_PROJECT_KEY);
       return;
     }
 
     const currentProjectId = localStorage.getItem(SELECTED_PROJECT_KEY) || '';
-    const exists = list.some((project) => project._id === currentProjectId);
-    const fallbackProjectId = list[0]?._id || '';
+    const exists = selectableList.some((project) => project._id === currentProjectId);
+    const fallbackProjectId = selectableList[0]?._id || '';
     const nextProjectId = exists ? currentProjectId : fallbackProjectId;
 
     setSelectedProjectId(nextProjectId);
@@ -389,6 +406,17 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!session.token) return;
+    const current = String(selectedProjectId || '');
+    const exists = personalizedProjects.some((project) => String(project?._id || '') === current);
+    if (exists) return;
+    const fallbackProjectId = personalizedProjects[0]?._id || '';
+    setSelectedProjectId(fallbackProjectId);
+    if (fallbackProjectId) localStorage.setItem(SELECTED_PROJECT_KEY, fallbackProjectId);
+    else localStorage.removeItem(SELECTED_PROJECT_KEY);
+  }, [session.token, personalizedProjects, selectedProjectId]);
+
+  useEffect(() => {
     if (!isSuperAdminUser && tab === 'transactions') {
       setTab('search');
     }
@@ -410,7 +438,7 @@ export default function App() {
         onLogout={logout}
         isDarkMode={isDarkMode}
         onToggleTheme={toggleTheme}
-        projects={projects}
+        projects={personalizedProjects}
         selectedProjectId={selectedProjectId}
         onProjectChange={handleProjectChange}
       />
@@ -443,7 +471,7 @@ export default function App() {
           <SearchTransactions
             cats={cats}
             vendors={vendors}
-            projects={projects}
+            projects={personalizedProjects}
             selectedProjectId={selectedProjectId}
           />
         )}
@@ -454,9 +482,13 @@ export default function App() {
             isSuperAdmin={isSuperAdminUser}
             cats={cats}
             vendors={vendors}
-            projects={projects}
+            projects={personalizedProjects}
+            allProjects={projects}
+            session={session}
+            canUseAdminPreferences={canUseAdminPreferences}
             selectedProjectId={selectedProjectId}
             onProjectCreated={loadProjects}
+            onSessionUpdated={setSession}
             onCatalogChanged={async () => {
               await refreshCatalog();
               setToast('Catálogo actualizado');
@@ -468,7 +500,7 @@ export default function App() {
   );
 }
 
-function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, selectedProjectId, onCatalogChanged, onProjectCreated }) {
+function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects, session, canUseAdminPreferences, selectedProjectId, onCatalogChanged, onProjectCreated, onSessionUpdated }) {
   const [section, setSection] = useState('catalog');
 
   return (
@@ -477,6 +509,11 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, selectedProj
         <button type="button" className={section === 'catalog' ? '' : 'secondary'} onClick={() => setSection('catalog')}>
           Catálogo
         </button>
+        {canUseAdminPreferences && (
+          <button type="button" className={section === 'my-project-visibility' ? '' : 'secondary'} onClick={() => setSection('my-project-visibility')}>
+            Mi visualización de proyectos
+          </button>
+        )}
         <button
           type="button"
           className={section === 'import-sap' ? '' : 'secondary'}
@@ -542,6 +579,14 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, selectedProj
         </button>
       </div>
 
+      {section === 'my-project-visibility' && canUseAdminPreferences && (
+        <MyProjectVisibilitySection
+          allProjects={allProjects}
+          session={session}
+          onSessionUpdated={onSessionUpdated}
+        />
+      )}
+
       {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
 
       {section === 'import-sap' &&
@@ -573,6 +618,94 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, selectedProj
 
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los superadministradores pueden ver raw data.</div>)}
+    </div>
+  );
+}
+
+
+function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) {
+  const [hiddenProjectIds, setHiddenProjectIds] = useState(() => (
+    Array.isArray(session?.uiPrefs?.hiddenProjectIds)
+      ? session.uiPrefs.hiddenProjectIds.map(String)
+      : []
+  ));
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const visibleProjects = useMemo(
+    () => (Array.isArray(allProjects) ? allProjects.filter((project) => project?.visibleInFrontend !== false) : []),
+    [allProjects],
+  );
+
+  useEffect(() => {
+    setHiddenProjectIds(
+      Array.isArray(session?.uiPrefs?.hiddenProjectIds)
+        ? session.uiPrefs.hiddenProjectIds.map(String)
+        : [],
+    );
+  }, [session?.uiPrefs]);
+
+  function isVisibleForMe(projectId) {
+    return !hiddenProjectIds.includes(String(projectId || ''));
+  }
+
+  function toggleProject(projectId) {
+    const key = String(projectId || '');
+    setHiddenProjectIds((prev) => (
+      prev.includes(key) ? prev.filter((id) => id !== key) : [...prev, key]
+    ));
+  }
+
+  async function savePreferences() {
+    setSaving(true);
+    setMessage('');
+    try {
+      const response = await api.updateMyPreferences({ uiPrefs: { hiddenProjectIds } });
+      const nextUiPrefs = response?.uiPrefs || { hiddenProjectIds: [] };
+      const nextSession = { ...getSession(), ...session, uiPrefs: nextUiPrefs };
+      saveSession(nextSession);
+      onSessionUpdated(nextSession);
+      setMessage('Preferencias guardadas.');
+    } catch (error) {
+      setMessage(error.message || 'No se pudieron guardar las preferencias.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card grid" style={{ gap: 12 }}>
+      <div>
+        <h3 style={{ margin: 0 }}>Mi visualización de proyectos</h3>
+        <div className="small">Esto solo afecta tu vista personal. No cambia la publicación global ni el acceso de otros usuarios.</div>
+      </div>
+
+      {!visibleProjects.length && <div className="small">No hay proyectos publicados para configurar.</div>}
+
+      {!!visibleProjects.length && (
+        <div className="grid" style={{ gap: 8 }}>
+          {visibleProjects.map((project) => {
+            const projectId = String(project?._id || '');
+            return (
+              <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={isVisibleForMe(projectId)}
+                  onChange={() => toggleProject(projectId)}
+                />
+                <span>{getProjectDisplayName(project)}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <button type="button" onClick={savePreferences} disabled={saving}>
+          {saving ? 'Guardando...' : 'Guardar'}
+        </button>
+        {message && <span className="small">{message}</span>}
+      </div>
     </div>
   );
 }
