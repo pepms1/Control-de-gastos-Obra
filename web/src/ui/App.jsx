@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
+import { getSapCategoryLabel, getTransactionTaxBreakdown, isSapSboTransaction } from '../transactions/helpers.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 
@@ -21,38 +22,10 @@ function parseMoneyInput(value) {
   return Number(value.replace(/,/g, '').trim());
 }
 
-function getCategoryHintName(transaction) {
-  return (
-    transaction?.categoryHintName
-    || transaction?.category_hint_name
-    || transaction?.CategoryHintName
-    || ''
-  ).trim();
-}
-
-function getCategoryHintCode(transaction) {
-  return (
-    transaction?.categoryHintCode
-    || transaction?.category_hint_code
-    || transaction?.CategoryHintCode
-    || ''
-  ).trim();
-}
-
 function getCategory2Label(transaction) {
   return (
     transaction?.categoryManualName
     || transaction?.categoryManualCode
-    || ''
-  ).trim();
-}
-
-function getSapCategoryLabel(transaction) {
-  return (
-    transaction?.categoryHintName
-    || transaction?.category_hint_name
-    || transaction?.categoryHintCode
-    || transaction?.category_hint_code
     || ''
   ).trim();
 }
@@ -71,7 +44,7 @@ function getTransactionCategoryLabel(transaction, catMap) {
   const legacyCategory = (transaction?.category_name || transaction?.category || '').trim();
   if (legacyCategory) return legacyCategory;
 
-  const hintName = getCategoryHintName(transaction);
+  const hintName = String(transaction?.categoryName || transaction?.categoryHintName || '').trim();
   if (hintName) return hintName;
 
   return 'Sin categoría';
@@ -102,46 +75,6 @@ function isMongoObjectId(value) {
 
 function getProjectDisplayName(project) {
   return project?.displayName || project?.name || 'Sin nombre';
-}
-
-function isSboFlowTransaction(transaction) {
-  const source = String(transaction?.source || '').trim().toLowerCase();
-  const sourceDb = String(transaction?.sourceDb || '').trim().toUpperCase();
-  const sourceSbo = String(transaction?.sourceSbo || transaction?.sap?.sourceSbo || '').trim();
-  return source === 'sap-sbo' || sourceDb.startsWith('SBO_') || sourceSbo !== '';
-}
-
-function getTransactionTaxBreakdown(transaction) {
-  const pickNumber = (...values) => {
-    for (const value of values) {
-      if (value === null || value === undefined) continue;
-      if (typeof value === 'number' && Number.isFinite(value)) return value;
-      if (typeof value === 'string') {
-        const trimmed = value.trim();
-        if (!trimmed) continue;
-        const parsed = Number(trimmed);
-        if (Number.isFinite(parsed)) return parsed;
-      }
-    }
-    return null;
-  };
-
-  const isSboFlow = isSboFlowTransaction(transaction);
-  const subtotal = isSboFlow
-    ? pickNumber(transaction?.subtotal, transaction?.montoSinIva, transaction?.tax?.subtotal, transaction?.sap?.invoiceSubtotal)
-    : pickNumber(transaction?.subtotal, transaction?.montoSinIva, transaction?.tax?.subtotal);
-  const iva = isSboFlow
-    ? pickNumber(transaction?.iva, transaction?.montoIva, transaction?.tax?.iva, transaction?.sap?.invoiceIva)
-    : pickNumber(transaction?.iva, transaction?.montoIva, transaction?.tax?.iva);
-  const totalFactura = isSboFlow
-    ? pickNumber(transaction?.totalFactura, transaction?.tax?.totalFactura, transaction?.sap?.invoiceTotal)
-    : pickNumber(transaction?.totalFactura, transaction?.tax?.totalFactura);
-
-  return {
-    subtotal,
-    iva,
-    totalFactura,
-  };
 }
 
 /* ================= NAV ================= */
@@ -1929,7 +1862,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
         row.supplierName,
         row.proveedor?.name,
         getTransactionCategoryLabel(row, catMap),
-        getCategoryHintCode(row),
+        row.categoryCode,
       ];
       return searchableFields.some((field) => String(field || '').toLowerCase().includes(query));
     })
@@ -2218,7 +2151,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <tr key={getTransactionStableKey(r)}>
                   <td>{r.date}</td>
                   <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
-                  <td>{isSboFlowTransaction(r) ? <span className="badge">SAP</span> : ''}</td>
+                  <td>{isSapSboTransaction(r) ? <span className="badge">{r.sapBadgeLabel || 'SAP/SBO'}</span> : ''}</td>
                   <td>{r.sourceDb ? <span className="badge">{String(r.sourceDb).toUpperCase()}</span> : 'LEGACY/UNKNOWN'}</td>
                   <td>{r.description || r.concept || ''}</td>
                   <td>
