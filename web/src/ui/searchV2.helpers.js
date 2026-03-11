@@ -29,12 +29,33 @@ export function resolveSupplierIdentity(transaction) {
     || ''
   ).trim();
 
+  const normalizedBusinessPartner = normalizeText(businessPartner);
+  const normalizedCardCode = normalizeText(cardCode);
+
+  if (normalizedBusinessPartner && normalizedCardCode) {
+    return {
+      key: `bpcc:${normalizedBusinessPartner}|${normalizedCardCode}`,
+      supplierId,
+      businessPartner,
+      cardCode,
+      name,
+    };
+  }
+  if (normalizedCardCode) return { key: `card:${normalizedCardCode}`, supplierId, businessPartner, cardCode, name };
+  if (normalizedBusinessPartner) return { key: `bp:${normalizedBusinessPartner}`, supplierId, businessPartner, cardCode, name };
+
   if (supplierId) return { key: `id:${supplierId}`, supplierId, businessPartner, cardCode, name };
-  if (businessPartner && cardCode) return { key: `bpcc:${normalizeText(businessPartner)}|${normalizeText(cardCode)}`, supplierId: '', businessPartner, cardCode, name };
-  if (businessPartner) return { key: `bp:${normalizeText(businessPartner)}`, supplierId: '', businessPartner, cardCode, name };
-  if (cardCode) return { key: `card:${normalizeText(cardCode)}`, supplierId: '', businessPartner, cardCode, name };
   if (name) return { key: `name:${normalizeText(name)}`, supplierId: '', businessPartner, cardCode, name };
   return { key: '', supplierId: '', businessPartner: '', cardCode: '', name: '' };
+}
+
+export function resolveVendorIdentity(vendor) {
+  return resolveSupplierIdentity({
+    supplierId: vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId,
+    supplierName: vendor?.name || vendor?.displayName || vendor?.label,
+    supplierCardCode: vendor?.supplierCardCode || vendor?.cardCode || vendor?.externalIds?.sapCardCode,
+    businessPartner: vendor?.businessPartner || vendor?.externalIds?.sapBusinessPartner,
+  });
 }
 
 export function resolveCategory2(transaction, categoryMap = {}) {
