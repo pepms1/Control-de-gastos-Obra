@@ -6609,6 +6609,16 @@ def _build_trusted_id_supplier_key_map(movements: list[dict]) -> dict[str, str]:
     }
 
 
+def _resolve_supplier_summary_display_name(tx: dict, identity: dict, suppliers_by_id: dict[str, dict]) -> str:
+    supplier_id = normalize_non_empty_string(tx.get("supplierId") or tx.get("supplier_id"))
+    supplier_doc = suppliers_by_id.get(supplier_id or "") if supplier_id else None
+    catalog_name = normalize_non_empty_string((supplier_doc or {}).get("name"))
+    supplier_name = normalize_non_empty_string(identity.get("supplierName"))
+    sap_business_partner = normalize_non_empty_string(identity.get("businessPartner"))
+    sap_card_code = normalize_non_empty_string(identity.get("supplierCardCode"))
+    return catalog_name or supplier_name or sap_business_partner or sap_card_code or ""
+
+
 @app.post("/api/admin/import/sap-latest")
 def admin_import_sap_latest(payload: dict, user: dict = Depends(require_admin)):
     project_id = str((payload or {}).get("projectId") or "").strip()
@@ -6742,6 +6752,17 @@ def summary_expenses_by_supplier(
         )
     )
 
+    supplier_ids = []
+    for tx in movements:
+        supplier_id = normalize_non_empty_string(tx.get("supplierId") or tx.get("supplier_id"))
+        if supplier_id and ObjectId.is_valid(supplier_id):
+            supplier_ids.append(ObjectId(supplier_id))
+
+    suppliers_by_id = {}
+    if supplier_ids:
+        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1}):
+            suppliers_by_id[str(supplier.get("_id"))] = supplier
+
     trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
     supplier_totals = {}
     for tx in movements:
@@ -6758,7 +6779,7 @@ def summary_expenses_by_supplier(
         # through IDs only if that ID maps to exactly one non-name supplier key.
         provider_key = _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key)
 
-        display_name = supplier_name or sap_business_partner or sap_card_code
+        display_name = _resolve_supplier_summary_display_name(tx, identity, suppliers_by_id)
         bucket = supplier_totals.setdefault(
             provider_key,
             {
@@ -6774,7 +6795,7 @@ def summary_expenses_by_supplier(
             },
         )
 
-        stable_name = supplier_name or sap_business_partner or sap_card_code
+        stable_name = _resolve_supplier_summary_display_name(tx, identity, suppliers_by_id)
         if stable_name and (not bucket.get("supplierName") or bucket.get("supplierName") == bucket.get("sapCardCode")):
             bucket["supplierName"] = stable_name
         if not bucket.get("sapBusinessPartner") and sap_business_partner:
