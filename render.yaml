@@ -1,0 +1,28 @@
+services:
+  - type: cron
+    name: control-gastos-obra-sbo-latest-cron
+    runtime: python
+    schedule: "*/30 * * * *"
+    plan: starter
+    rootDir: .
+    buildCommand: "python3 --version"
+    startCommand: "python3 scripts/render_cron_import_sbo_v2.py"
+    envVars:
+      - key: CRON_BASE_URL
+        sync: false
+      - key: CRON_LOGIN_PATH
+        value: /api/auth/login
+      - key: CRON_IMPORT_PATH
+        value: /api/cron/import/sap-movements-by-sbo
+      - key: CRON_USERNAME
+        sync: false
+      - key: CRON_PASSWORD
+        sync: false
+      - key: CRON_SBO_LIST
+        value: SBO_GMDI,SBO_Rafael,SBO_Colima334,SBO_CPSantaFE,SBOCitySur,SBOIndiana,SBO_Mazatlan
+      - key: CRON_MODE
+        value: latest
+      - key: CRON_FORCE
+        value: "0"
+      - key: CRON_TIMEOUT_SEC
+        value: "120"
