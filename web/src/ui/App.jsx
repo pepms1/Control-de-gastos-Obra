@@ -131,6 +131,7 @@ function tokenizeSearchQuery(query) {
 
 function buildTransactionSearchHaystack(transaction, catMap) {
   const category2 = resolveTransactionCategory2(transaction, catMap);
+  const sap = transaction?.sap || {};
   const sapMeta = transaction?.sapMeta || {};
   const resolvedCategory2Name = String(
     transaction?.resolvedCategory2Name
@@ -144,17 +145,49 @@ function buildTransactionSearchHaystack(transaction, catMap) {
   ).trim();
   const fields = [
     transaction?.description,
+    transaction?.concept,
+    transaction?.concepto,
+    transaction?.descripcion,
     transaction?.supplierName,
+    transaction?.proveedor,
+    transaction?.proveedorNombre,
     category2?.name,
     category2?.id,
     resolvedCategory2Name,
     resolvedCategory2Id,
+    transaction?.categoryName,
+    transaction?.categoryCode,
+    transaction?.categoryHintName,
+    transaction?.categoryHintCode,
+    transaction?.categoryEffectiveName,
+    transaction?.categoryEffectiveCode,
+    transaction?.categoryManualName,
+    transaction?.categoryManualCode,
+    transaction?.category_hint_name,
+    transaction?.category_hint_code,
+    transaction?.category,
+    transaction?.category_id,
+    transaction?.categoryId,
     transaction?.projectDisplayName,
+    transaction?.projectName,
+    transaction?.projectSlug,
     transaction?.sourceSbo,
+    transaction?.sourceDb,
+    transaction?.source,
     sapMeta?.businessPartner,
+    sap?.businessPartner,
+    sapMeta?.cardCode,
+    sap?.cardCode,
     sapMeta?.invoiceNum,
+    sap?.invoiceNum,
     sapMeta?.paymentNum,
+    sap?.paymentNum,
     sapMeta?.externalDocNum,
+    sap?.externalDocNum,
+    sap?.paymentDocEntry,
+    sap?.invoiceDocEntry,
+    sapMeta?.sourceSbo,
+    sapMeta?.sourceDb,
   ];
   return normalizeSearchText(fields.filter(Boolean).join(' '));
 }
