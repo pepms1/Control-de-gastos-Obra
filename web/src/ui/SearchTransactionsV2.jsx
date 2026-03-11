@@ -46,7 +46,6 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
       <td>${category2?.name || '—'}</td>
       <td style="text-align:right">$${formatMoney(getAmountWithTax(row))}</td>
       <td>${getTypeLabel(row?.type)}</td>
-      <td>${row?.sourceSbo || '—'}</td>
     </tr>`;
   }).join('');
 
@@ -65,8 +64,8 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
       <div><strong>Total con IVA:</strong> $${formatMoney(totalWithTax)}</div>
     </div>
     <table>
-      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th>Total</th><th>Tipo</th><th>SBO</th></tr></thead>
-      <tbody>${rowsHtml || '<tr><td colspan="7">Sin resultados</td></tr>'}</tbody>
+      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th>Total</th><th>Tipo</th></tr></thead>
+      <tbody>${rowsHtml || '<tr><td colspan="6">Sin resultados</td></tr>'}</tbody>
     </table>
   </body></html>`;
 }
@@ -414,7 +413,6 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
               <th>Categoría 2</th>
               <th>Total</th>
               <th>Tipo</th>
-              <th>SBO</th>
             </tr>
           </thead>
           <tbody>
@@ -429,18 +427,17 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
                   <td>{category2?.name || '—'}</td>
                   <td>{formatCurrency(getAmountWithTax(row))}</td>
                   <td>{getTypeLabel(row?.type)}</td>
-                  <td>{row.sourceSbo || '—'}</td>
                 </tr>
               );
             })}
-            {!visibleRows.length && !loading && <tr><td colSpan={7} className="small">Sin resultados</td></tr>}
+            {!visibleRows.length && !loading && <tr><td colSpan={6} className="small">Sin resultados</td></tr>}
           </tbody>
           <tfoot>
             <tr>
               <td colSpan={3} />
               <td style={{ textAlign: 'right', fontWeight: 700 }}>Totales visibles</td>
               <td style={{ fontWeight: 700 }}>{formatCurrency(totalWithTax)}</td>
-              <td colSpan={2} className="small">Sin IVA: {formatCurrency(totalWithoutTax)}</td>
+              <td className="small">Sin IVA: {formatCurrency(totalWithoutTax)}</td>
             </tr>
           </tfoot>
         </table>
