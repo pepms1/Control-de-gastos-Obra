@@ -253,7 +253,88 @@ def build_supplier_identity_from_transaction(tx: dict) -> dict:
     }
 
 
-def resolve_transaction_category2(tx_doc: dict, supplier_rules_by_key: dict[str, dict] | None = None) -> dict:
+def build_supplier_rule_indexes(supplier_rules: list[dict] | None) -> dict[str, dict]:
+    by_key: dict[str, dict] = {}
+    by_card_code: dict[str, dict] = {}
+    by_business_partner: dict[str, dict] = {}
+    by_supplier_name: dict[str, dict] = {}
+
+    def register_unique(index: dict[str, dict], raw_value: str | None, rule: dict):
+        normalized_value = normalize_text_for_matching(raw_value)
+        if not normalized_value:
+            return
+        existing = index.get(normalized_value)
+        if existing is None:
+            index[normalized_value] = rule
+            return
+
+        same_category = (
+            normalize_non_empty_string(existing.get("category2Id")) == normalize_non_empty_string(rule.get("category2Id"))
+            and normalize_text_for_matching(existing.get("category2Name")) == normalize_text_for_matching(rule.get("category2Name"))
+        )
+        if same_category:
+            return
+
+        index[normalized_value] = {}
+
+    for rule in supplier_rules or []:
+        supplier_key = normalize_non_empty_string((rule or {}).get("supplierKey"))
+        if supplier_key:
+            by_key[supplier_key] = rule
+        register_unique(by_card_code, rule.get("supplierCardCode"), rule)
+        register_unique(by_business_partner, rule.get("businessPartner"), rule)
+        register_unique(by_supplier_name, rule.get("supplierName"), rule)
+
+    return {
+        "by_key": by_key,
+        "by_card_code": by_card_code,
+        "by_business_partner": by_business_partner,
+        "by_supplier_name": by_supplier_name,
+    }
+
+
+def resolve_supplier_category2_rule(
+    tx_doc: dict,
+    supplier_rules_by_key: dict[str, dict] | None = None,
+    supplier_rule_indexes: dict[str, dict] | None = None,
+) -> dict | None:
+    identity = build_supplier_identity_from_transaction(tx_doc)
+    supplier_key = normalize_non_empty_string(identity.get("supplierKey"))
+    if supplier_key and isinstance(supplier_rules_by_key, dict):
+        direct_match = supplier_rules_by_key.get(supplier_key)
+        if direct_match:
+            return direct_match
+
+    indexes = supplier_rule_indexes if isinstance(supplier_rule_indexes, dict) else {}
+
+    card_code_index = indexes.get("by_card_code") if isinstance(indexes.get("by_card_code"), dict) else {}
+    normalized_card_code = normalize_text_for_matching(identity.get("supplierCardCode"))
+    candidate = card_code_index.get(normalized_card_code)
+    if normalized_card_code and candidate and candidate.get("supplierKey"):
+        return candidate
+
+    business_partner_index = indexes.get("by_business_partner") if isinstance(indexes.get("by_business_partner"), dict) else {}
+    normalized_business_partner = normalize_text_for_matching(identity.get("businessPartner"))
+    candidate = business_partner_index.get(normalized_business_partner)
+    if normalized_business_partner and candidate and candidate.get("supplierKey"):
+        return candidate
+
+    supplier_name_index = indexes.get("by_supplier_name") if isinstance(indexes.get("by_supplier_name"), dict) else {}
+    normalized_supplier_name = normalize_text_for_matching(identity.get("supplierName"))
+    candidate = supplier_name_index.get(normalized_supplier_name)
+    if normalized_supplier_name and candidate and candidate.get("supplierKey"):
+        return candidate
+
+    if supplier_key and supplier_rules_by_key is None:
+        return db.supplierCategory2Rules.find_one({"supplierKey": supplier_key, "isActive": {"$ne": False}})
+    return None
+
+
+def resolve_transaction_category2(
+    tx_doc: dict,
+    supplier_rules_by_key: dict[str, dict] | None = None,
+    supplier_rule_indexes: dict[str, dict] | None = None,
+) -> dict:
     category1_id = normalize_non_empty_string(tx_doc.get("categoryEffectiveCode"))
     category1_name = normalize_non_empty_string(tx_doc.get("categoryEffectiveName"))
     normalized_category1_name = normalize_text_for_matching(category1_name)
@@ -265,13 +346,11 @@ def resolve_transaction_category2(tx_doc: dict, supplier_rules_by_key: dict[str,
             "resolvedCategory2Source": "inherited",
         }
 
-    identity = build_supplier_identity_from_transaction(tx_doc)
-    supplier_key = identity.get("supplierKey") or ""
-    rule = None
-    if supplier_key and isinstance(supplier_rules_by_key, dict):
-        rule = supplier_rules_by_key.get(supplier_key)
-    elif supplier_key:
-        rule = db.supplierCategory2Rules.find_one({"supplierKey": supplier_key, "isActive": {"$ne": False}})
+    rule = resolve_supplier_category2_rule(
+        tx_doc,
+        supplier_rules_by_key=supplier_rules_by_key,
+        supplier_rule_indexes=supplier_rule_indexes,
+    )
 
     if rule:
         return {
@@ -305,6 +384,7 @@ def serialize_transaction_with_supplier(
     tx: dict,
     suppliers_by_id: dict[str, dict] | None = None,
     supplier_rules_by_key: dict[str, dict] | None = None,
+    supplier_rule_indexes: dict[str, dict] | None = None,
 ):
     tx_doc = serialize(tx)
     supplier = None
@@ -356,7 +436,13 @@ def serialize_transaction_with_supplier(
     tx_doc["categoryEffectiveName"] = normalize_non_empty_string(
         tx_doc.get("categoryEffectiveName") or effective_fields.get("categoryEffectiveName")
     )
-    tx_doc.update(resolve_transaction_category2(tx_doc, supplier_rules_by_key=supplier_rules_by_key))
+    tx_doc.update(
+        resolve_transaction_category2(
+            tx_doc,
+            supplier_rules_by_key=supplier_rules_by_key,
+            supplier_rule_indexes=supplier_rule_indexes,
+        )
+    )
 
     return tx_doc
 
@@ -8130,18 +8216,30 @@ def list_transactions(
         for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1, "cardCode": 1}):
             suppliers_by_id[str(supplier["_id"])] = supplier
 
-    supplier_rules_by_key = {
-        str(rule.get("supplierKey") or "").strip(): rule
-        for rule in db.supplierCategory2Rules.find(
+    supplier_rules = list(
+        db.supplierCategory2Rules.find(
             {"isActive": {"$ne": False}},
-            {"supplierKey": 1, "category2Id": 1, "category2Name": 1},
+            {
+                "supplierKey": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "supplierName": 1,
+                "category2Id": 1,
+                "category2Name": 1,
+            },
         )
-        if str(rule.get("supplierKey") or "").strip()
-    }
+    )
+    supplier_rule_indexes = build_supplier_rule_indexes(supplier_rules)
+    supplier_rules_by_key = supplier_rule_indexes.get("by_key", {})
 
     items = []
     for tx in txs:
-        tx_doc = serialize_transaction_with_supplier(tx, suppliers_by_id, supplier_rules_by_key)
+        tx_doc = serialize_transaction_with_supplier(
+            tx,
+            suppliers_by_id,
+            supplier_rules_by_key,
+            supplier_rule_indexes=supplier_rule_indexes,
+        )
 
         subtotal, iva, total_factura = resolve_transaction_tax_components(tx_doc)
         amount = parse_optional_decimal(tx_doc.get("amount")) or 0
@@ -8215,14 +8313,21 @@ def spend_by_category(
         )
     )
 
-    supplier_rules_by_key = {
-        str(rule.get("supplierKey") or "").strip(): rule
-        for rule in db.supplierCategory2Rules.find(
+    supplier_rules = list(
+        db.supplierCategory2Rules.find(
             {"isActive": {"$ne": False}},
-            {"supplierKey": 1, "category2Id": 1, "category2Name": 1},
+            {
+                "supplierKey": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "supplierName": 1,
+                "category2Id": 1,
+                "category2Name": 1,
+            },
         )
-        if str(rule.get("supplierKey") or "").strip()
-    }
+    )
+    supplier_rule_indexes = build_supplier_rule_indexes(supplier_rules)
+    supplier_rules_by_key = supplier_rule_indexes.get("by_key", {})
 
     totals_by_category = {}
     for tx in transactions:
@@ -8243,7 +8348,13 @@ def spend_by_category(
         if category_effective_name and not normalize_non_empty_string(tx.get("categoryEffectiveName")):
             tx["categoryEffectiveName"] = category_effective_name
 
-        tx.update(resolve_transaction_category2(tx, supplier_rules_by_key=supplier_rules_by_key))
+        tx.update(
+            resolve_transaction_category2(
+                tx,
+                supplier_rules_by_key=supplier_rules_by_key,
+                supplier_rule_indexes=supplier_rule_indexes,
+            )
+        )
         resolved_category2_id = normalize_non_empty_string(tx.get("resolvedCategory2Id"))
         resolved_category2_name = normalize_non_empty_string(tx.get("resolvedCategory2Name"))
         resolved_category2_source = normalize_non_empty_string(tx.get("resolvedCategory2Source"))
