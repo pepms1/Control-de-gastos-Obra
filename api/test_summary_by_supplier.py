@@ -107,6 +107,53 @@ class SupplierSummaryRegressionTests(unittest.TestCase):
 
         self.assertEqual(len(result), 3)
 
+    def test_summary_by_supplier_prefers_catalog_name_for_display_label(self):
+        supplier_oid = '507f1f77bcf86cd799439011'
+
+        class FakeTransactions:
+            def find(self, _query, _projection):
+                return [
+                    {
+                        '_id': 'tx1',
+                        'supplierId': supplier_oid,
+                        'supplierName': 'Alias poco reconocible',
+                        'sap': {'cardCode': 'C100', 'businessPartner': 'OMAR SALAS ALDANA'},
+                        'amount': 100,
+                    }
+                ]
+
+        class FakeSuppliers:
+            def find(self, _query, _projection):
+                return [{'_id': main.ObjectId(supplier_oid), 'name': 'OMAR SALAS ALDANA'}]
+
+        class EmptyFind:
+            def find(self, *_args, **_kwargs):
+                return []
+
+        fake_db = type(
+            'FakeDb',
+            (),
+            {
+                'transactions': FakeTransactions(),
+                'suppliers': FakeSuppliers(),
+                'vendors': EmptyFind(),
+            },
+        )()
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'resolve_project_id', return_value='project-1'), patch.object(
+            main, 'can_access_project', return_value=True
+        ), patch.object(main, 'build_transactions_query', return_value={}), patch.object(
+            main, 'with_legacy_project_filter', side_effect=lambda q, _project_id: q
+        ):
+            result = main.summary_expenses_by_supplier(
+                projectId='project-1',
+                include_iva=True,
+                user={'id': 'u1', 'role': 'ADMIN'},
+            )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['supplierName'], 'OMAR SALAS ALDANA')
+
 
 class SupplierSummaryFilterParityTests(unittest.TestCase):
     def test_summary_by_supplier_forwards_date_and_source_filters_to_transactions_query(self):
