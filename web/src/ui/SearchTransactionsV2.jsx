@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { matchesSearch, resolveCategory2, resolveSupplierIdentity, getTypeLabel } from './searchV2.helpers.js';
+import { matchesSearch, normalizeText, resolveCategory2, resolveSupplierIdentity, getTypeLabel } from './searchV2.helpers.js';
 
 const moneyFormatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -135,17 +135,82 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
 
   const supplierOptions = useMemo(() => {
     const source = new Map();
+
+    const normalizeVendorIdentity = (vendor) => {
+      const vendorId = String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
+      const cardCode = String(vendor?.supplierCardCode || vendor?.cardCode || vendor?.externalIds?.sapCardCode || '').trim();
+      const businessPartner = String(vendor?.businessPartner || vendor?.externalIds?.sapBusinessPartner || '').trim();
+      const normalizedName = String(vendor?.name || vendor?.displayName || '').trim();
+      const isSapSynthetic = vendorId.toLowerCase().startsWith('sap-sbo:');
+
+      if (isSapSynthetic && businessPartner && cardCode) {
+        return { key: `bpcc:${normalizeText(businessPartner)}|${normalizeText(cardCode)}`, name: normalizedName, businessPartner, cardCode, vendorId };
+      }
+      if (isSapSynthetic && businessPartner) {
+        return { key: `bp:${normalizeText(businessPartner)}`, name: normalizedName, businessPartner, cardCode, vendorId };
+      }
+      if (isSapSynthetic && cardCode) {
+        return { key: `card:${normalizeText(cardCode)}`, name: normalizedName, businessPartner, cardCode, vendorId };
+      }
+
+      if (vendorId) {
+        return { key: `id:${vendorId}`, name: normalizedName, businessPartner, cardCode, vendorId };
+      }
+      if (businessPartner && cardCode) {
+        return { key: `bpcc:${normalizeText(businessPartner)}|${normalizeText(cardCode)}`, name: normalizedName, businessPartner, cardCode, vendorId };
+      }
+      if (businessPartner) {
+        return { key: `bp:${normalizeText(businessPartner)}`, name: normalizedName, businessPartner, cardCode, vendorId };
+      }
+      if (cardCode) {
+        return { key: `card:${normalizeText(cardCode)}`, name: normalizedName, businessPartner, cardCode, vendorId };
+      }
+      if (normalizedName) {
+        return { key: `name:${normalizeText(normalizedName)}`, name: normalizedName, businessPartner, cardCode, vendorId };
+      }
+      return { key: '', name: '', businessPartner: '', cardCode: '', vendorId: '' };
+    };
+
+    const chooseLabel = ({ catalogName, businessPartner, supplierName, cardCode, fallbackKey }) => (
+      String(catalogName || businessPartner || supplierName || cardCode || fallbackKey || 'Sin proveedor').trim()
+    );
+
     vendors.forEach((vendor) => {
-      const id = String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
-      const name = String(vendor?.name || vendor?.displayName || '').trim();
-      if (id && name) source.set(`id:${id}`, { value: `id:${id}`, label: name });
+      const identity = normalizeVendorIdentity(vendor);
+      if (!identity.key) return;
+      source.set(identity.key, {
+        value: identity.key,
+        label: chooseLabel({
+          catalogName: identity.name,
+          businessPartner: identity.businessPartner,
+          supplierName: '',
+          cardCode: identity.cardCode,
+          fallbackKey: identity.vendorId,
+        }),
+      });
     });
+
     rows.forEach((row) => {
       const supplier = resolveSupplierIdentity(row);
       if (!supplier?.key) return;
-      source.set(supplier.key, { value: supplier.key, label: supplier.name || 'Sin proveedor' });
+      const existing = source.get(supplier.key);
+      source.set(supplier.key, {
+        value: supplier.key,
+        label: chooseLabel({
+          catalogName: existing?.label,
+          businessPartner: supplier.businessPartner,
+          supplierName: supplier.name,
+          cardCode: supplier.cardCode,
+          fallbackKey: supplier.key,
+        }),
+      });
     });
-    return Array.from(source.values()).sort((a, b) => a.label.localeCompare(b.label, 'es'));
+
+    return Array.from(source.values()).sort((a, b) => {
+      const byLabel = a.label.localeCompare(b.label, 'es', { sensitivity: 'base' });
+      if (byLabel !== 0) return byLabel;
+      return a.value.localeCompare(b.value, 'es', { sensitivity: 'base' });
+    });
   }, [rows, vendors]);
 
   const category2Options = useMemo(() => {
