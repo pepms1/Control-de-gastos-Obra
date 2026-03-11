@@ -6865,9 +6865,9 @@ def summary_expenses_by_supplier(
         # legacy supplierId defaults do not relabel providers (e.g. default vendor debt).
         if provider_key.startswith(("bpcc:", "cardcode:", "bp:", "name:")):
             resolved_name = (
-                supplier_names_by_card_code.get(card_code)
-                or supplier_name
+                supplier_name
                 or row.get("sapBusinessPartner")
+                or supplier_names_by_card_code.get(card_code)
                 or card_code
                 or "(Sin proveedor)"
             )
