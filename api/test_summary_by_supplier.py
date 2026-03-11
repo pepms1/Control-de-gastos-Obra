@@ -62,6 +62,51 @@ class SupplierSummaryGroupingTests(unittest.TestCase):
 
         self.assertEqual(bucket_key, 'supplier:legacy-2')
 
+    def test_bucket_key_uses_composite_legacy_ids_to_avoid_vendor_collisions(self):
+        tx = {'_id': 'tx-no-sap', 'supplierId': 'legacy-shared', 'vendor_id': 'vendor-a', 'supplierName': ''}
+
+        bucket_key = main._build_supplier_summary_bucket_key(tx, {})
+
+        self.assertEqual(bucket_key, 'supplier:legacy-shared|vendor:vendor-a')
+
+
+class SupplierSummaryRegressionTests(unittest.TestCase):
+    def test_summary_by_supplier_keeps_distinct_vendors_when_legacy_supplier_id_is_shared(self):
+        class FakeTransactions:
+            def find(self, _query, _projection):
+                return [
+                    {'_id': 'tx1', 'supplierId': 'legacy-shared', 'vendor_id': 'vendor-1', 'amount': 100},
+                    {'_id': 'tx2', 'supplierId': 'legacy-shared', 'vendor_id': 'vendor-2', 'amount': 200},
+                    {'_id': 'tx3', 'supplierId': 'legacy-shared', 'vendor_id': 'vendor-3', 'amount': 300},
+                ]
+
+        class EmptyFind:
+            def find(self, *_args, **_kwargs):
+                return []
+
+        fake_db = type(
+            'FakeDb',
+            (),
+            {
+                'transactions': FakeTransactions(),
+                'suppliers': EmptyFind(),
+                'vendors': EmptyFind(),
+            },
+        )()
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'resolve_project_id', return_value='project-1'), patch.object(
+            main, 'can_access_project', return_value=True
+        ), patch.object(main, 'build_transactions_query', return_value={}), patch.object(
+            main, 'with_legacy_project_filter', side_effect=lambda q, _project_id: q
+        ):
+            result = main.summary_expenses_by_supplier(
+                projectId='project-1',
+                include_iva=True,
+                user={'id': 'u1', 'role': 'ADMIN'},
+            )
+
+        self.assertEqual(len(result), 3)
+
 
 class SupplierSummaryFilterParityTests(unittest.TestCase):
     def test_summary_by_supplier_forwards_date_and_source_filters_to_transactions_query(self):
