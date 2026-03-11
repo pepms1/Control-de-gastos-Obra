@@ -69,5 +69,45 @@ class TransactionsSearchCategory2Tests(unittest.TestCase):
         self.assertTrue(any('supplierName' in matcher for matcher in supplier_matchers))
 
 
+    def test_search_query_keeps_text_conditions_when_category_name_matches_exactly(self):
+        class FakeCategories:
+            def find(self, *_args, **_kwargs):
+                return [
+                    {
+                        '_id': '69acf7a4988149905ed1a3f9',
+                        'normalizedName': 'madera para cimbra',
+                    }
+                ]
+
+        class FakeSupplierCategory2Rules:
+            def find(self, _query, _projection):
+                return []
+
+        fake_db = type(
+            'FakeDb',
+            (),
+            {
+                'categories': FakeCategories(),
+                'supplierCategory2Rules': FakeSupplierCategory2Rules(),
+            },
+        )()
+
+        with patch.object(main, 'db', fake_db):
+            query = main.build_transactions_query(search_query='madera para cimbra')
+
+        conditions = query.get('$or')
+        self.assertIsInstance(conditions, list)
+
+        self.assertTrue(
+            any(
+                condition.get('resolvedCategory2Name', {}).get('$regex') == 'madera\\ para\\ cimbra'
+                for condition in conditions
+                if isinstance(condition, dict)
+            )
+        )
+
+        self.assertTrue(any(condition.get('category_id', {}).get('$in') == ['69acf7a4988149905ed1a3f9'] for condition in conditions))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -3497,11 +3497,7 @@ def build_transactions_query(
                 },
             ]
 
-            exact_category_match = any((category.get("normalizedName") or "") == normalized_search for category in matching_categories)
-            if exact_category_match:
-                search_conditions = category_search_conditions
-            else:
-                search_conditions.extend(category_search_conditions)
+            search_conditions.extend(category_search_conditions)
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": search_conditions}]
         else:
