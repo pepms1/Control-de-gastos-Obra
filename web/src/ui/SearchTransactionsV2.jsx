@@ -83,9 +83,17 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
   const [category2Catalog, setCategory2Catalog] = useState([]);
+  const [supplierDebugEnabled, setSupplierDebugEnabled] = useState(false);
 
   useEffect(() => {
     searchInputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const enabledByQuery = window.location?.search?.includes('debugSuppliers=1');
+    const enabledByStorage = window.localStorage?.getItem('searchV2.debugSuppliers') === '1';
+    setSupplierDebugEnabled(Boolean(enabledByQuery || enabledByStorage));
   }, []);
 
   const categoryMap = useMemo(() => {
@@ -135,48 +143,142 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
 
   const supplierOptions = useMemo(() => {
     const source = new Map();
+    const rawEntries = [];
 
     const chooseLabel = ({ catalogName, businessPartner, supplierName, cardCode, fallbackKey }) => (
       String(catalogName || businessPartner || supplierName || cardCode || fallbackKey || 'Sin proveedor').trim()
     );
 
+    const getKeyRank = (key = '') => {
+      if (key.startsWith('bpcc:')) return 5;
+      if (key.startsWith('card:')) return 4;
+      if (key.startsWith('bp:')) return 3;
+      if (key.startsWith('id:')) return 2;
+      if (key.startsWith('name:')) return 1;
+      return 0;
+    };
+
+    const supplierPreferredKey = new Map();
+
+    const registerPreferredKey = ({ supplierId, key }) => {
+      if (!supplierId || !key) return;
+      const current = supplierPreferredKey.get(supplierId);
+      if (!current || getKeyRank(key) > getKeyRank(current)) {
+        supplierPreferredKey.set(supplierId, key);
+      }
+    };
+
+    vendors.forEach((vendor) => {
+      const identity = resolveVendorIdentity(vendor);
+      registerPreferredKey({ supplierId: identity?.supplierId, key: identity?.key });
+    });
+
+    rows.forEach((row) => {
+      const supplier = resolveSupplierIdentity(row);
+      registerPreferredKey({ supplierId: supplier?.supplierId, key: supplier?.key });
+    });
+
+    const getCanonicalKey = (identity) => {
+      const supplierId = String(identity?.supplierId || '').trim();
+      if (supplierId && supplierPreferredKey.has(supplierId)) return supplierPreferredKey.get(supplierId);
+      return identity?.key;
+    };
+
     vendors.forEach((vendor) => {
       const identity = resolveVendorIdentity(vendor);
       if (!identity.key) return;
-      source.set(identity.key, {
-        value: identity.key,
+      const canonicalKey = getCanonicalKey(identity);
+      rawEntries.push({
+        source: 'catalog',
+        rawKey: identity.key,
+        canonicalKey,
+        supplierId: identity.supplierId,
+        supplierName: identity.name,
+        businessPartner: identity.businessPartner,
+        cardCode: identity.cardCode,
+      });
+      source.set(canonicalKey, {
+        value: canonicalKey,
         label: chooseLabel({
           catalogName: identity.name,
           businessPartner: identity.businessPartner,
           supplierName: '',
           cardCode: identity.cardCode,
-          fallbackKey: identity.supplierId || identity.key,
+          fallbackKey: identity.supplierId || canonicalKey,
         }),
+        debug: {
+          source: 'catalog',
+          supplierId: identity.supplierId,
+          supplierName: identity.name,
+          businessPartner: identity.businessPartner,
+          cardCode: identity.cardCode,
+          rawKey: identity.key,
+        },
       });
     });
 
     rows.forEach((row) => {
       const supplier = resolveSupplierIdentity(row);
       if (!supplier?.key) return;
-      const existing = source.get(supplier.key);
-      source.set(supplier.key, {
-        value: supplier.key,
+      const canonicalKey = getCanonicalKey(supplier);
+      rawEntries.push({
+        source: 'rows',
+        rawKey: supplier.key,
+        canonicalKey,
+        supplierId: supplier.supplierId,
+        supplierName: supplier.name,
+        businessPartner: supplier.businessPartner,
+        cardCode: supplier.cardCode,
+      });
+      const existing = source.get(canonicalKey);
+      source.set(canonicalKey, {
+        value: canonicalKey,
         label: chooseLabel({
           catalogName: existing?.label,
           businessPartner: supplier.businessPartner,
           supplierName: supplier.name,
           cardCode: supplier.cardCode,
-          fallbackKey: supplier.key,
+          fallbackKey: canonicalKey,
         }),
+        debug: {
+          source: existing ? 'merged' : 'rows',
+          supplierId: supplier.supplierId,
+          supplierName: supplier.name,
+          businessPartner: supplier.businessPartner,
+          cardCode: supplier.cardCode,
+          rawKey: supplier.key,
+        },
       });
     });
 
-    return Array.from(source.values()).sort((a, b) => {
+    const sortedOptions = Array.from(source.values()).sort((a, b) => {
       const byLabel = a.label.localeCompare(b.label, 'es', { sensitivity: 'base' });
       if (byLabel !== 0) return byLabel;
       return a.value.localeCompare(b.value, 'es', { sensitivity: 'base' });
     });
-  }, [rows, vendors]);
+
+    if (typeof window !== 'undefined') {
+      window.__searchV2SupplierOptions = sortedOptions.map((option) => ({
+        label: option.label,
+        value: option.value,
+        source: option?.debug?.source || '',
+        supplierId: option?.debug?.supplierId || '',
+        supplierName: option?.debug?.supplierName || '',
+        businessPartner: option?.debug?.businessPartner || '',
+        cardCode: option?.debug?.cardCode || '',
+        rawKey: option?.debug?.rawKey || '',
+      }));
+      window.__searchV2SupplierRawEntries = rawEntries;
+      window.__searchV2SupplierPreferredKeyBySupplierId = Object.fromEntries(supplierPreferredKey.entries());
+
+      if (supplierDebugEnabled) {
+        // eslint-disable-next-line no-console
+        console.table(window.__searchV2SupplierOptions);
+      }
+    }
+
+    return sortedOptions;
+  }, [rows, vendors, supplierDebugEnabled]);
 
   const category2Options = useMemo(() => {
     const source = new Map();
