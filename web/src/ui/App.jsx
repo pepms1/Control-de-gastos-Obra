@@ -310,10 +310,11 @@ function Nav({
   const normalizedRole = normalizeRole(role);
   const canSeeSettings = !isViewer(normalizedRole);
   const canSeeTransactionsAdmin = isSuperAdmin(normalizedRole);
+  const showTransactionsAdminNav = false;
   const items = [
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar movimientos', true],
-    ['transactions', 'Movimientos (Admin)', canSeeTransactionsAdmin],
+    ['transactions', 'Editar movimientos', canSeeTransactionsAdmin && showTransactionsAdminNav],
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
@@ -3307,7 +3308,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   return (
     <div className="card">
       <div className="row" style={{ justifyContent: 'space-between' }}>
-        <h2 style={{ margin: 0 }}>Movimientos</h2>
+        <h2 style={{ margin: 0 }}>Editar movimientos</h2>
         <div className="row">
           <input
             type="search"
