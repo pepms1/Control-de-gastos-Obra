@@ -243,6 +243,7 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
 
   function exportPdf() {
     setExporting(true);
+    setError('');
     try {
       const supplierLabel = supplierFilter === 'ALL'
         ? 'Todos'
@@ -262,12 +263,32 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
         totalWithTax,
       });
 
-      const win = window.open('', '_blank', 'noopener,noreferrer');
-      if (!win) return;
+      const win = window.open('about:blank', '_blank');
+      if (!win) {
+        const message = 'No se pudo abrir la ventana de impresión. Habilita pop-ups e inténtalo nuevamente.';
+        setError(message);
+        console.error(message);
+        return;
+      }
+
+      win.document.open('text/html', 'replace');
       win.document.write(html);
       win.document.close();
-      win.focus();
-      win.print();
+
+      const triggerPrint = () => {
+        win.focus();
+        win.print();
+      };
+
+      if (win.document.readyState === 'complete') {
+        setTimeout(triggerPrint, 50);
+      } else {
+        win.addEventListener('load', () => setTimeout(triggerPrint, 50), { once: true });
+      }
+    } catch (err) {
+      const message = 'Ocurrió un error al preparar el PDF para impresión.';
+      setError(message);
+      console.error(message, err);
     } finally {
       setExporting(false);
     }
