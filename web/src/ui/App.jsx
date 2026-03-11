@@ -133,6 +133,7 @@ function buildTransactionSearchHaystack(transaction, catMap) {
   const category2 = resolveTransactionCategory2(transaction, catMap);
   const sap = transaction?.sap || {};
   const sapMeta = transaction?.sapMeta || {};
+  const supplierIdentity = resolveTransactionSupplierIdentity(transaction);
   const resolvedCategory2Name = String(
     transaction?.resolvedCategory2Name
     || transaction?.resolved_category2_name
@@ -149,8 +150,14 @@ function buildTransactionSearchHaystack(transaction, catMap) {
     transaction?.concepto,
     transaction?.descripcion,
     transaction?.supplierName,
+    transaction?.supplierId,
+    transaction?.vendor_id,
     transaction?.proveedor,
     transaction?.proveedorNombre,
+    supplierIdentity?.name,
+    supplierIdentity?.supplierId,
+    supplierIdentity?.cardCode,
+    supplierIdentity?.businessPartner,
     category2?.name,
     category2?.id,
     resolvedCategory2Name,
@@ -190,6 +197,77 @@ function buildTransactionSearchHaystack(transaction, catMap) {
     sapMeta?.sourceDb,
   ];
   return normalizeSearchText(fields.filter(Boolean).join(' '));
+}
+
+function resolveTransactionSupplierIdentity(transaction) {
+  const sap = transaction?.sap || {};
+  const supplierId = String(transaction?.supplierId || transaction?.vendor_id || '').trim();
+  const supplierName = String(
+    transaction?.supplierName
+    || transaction?.proveedorNombre
+    || sap?.businessPartner
+    || '',
+  ).trim();
+  const cardCode = String(transaction?.supplierCardCode || sap?.cardCode || '').trim();
+  const businessPartner = String(sap?.businessPartner || transaction?.businessPartner || '').trim();
+
+  if (supplierId) {
+    return {
+      key: `id:${supplierId}`,
+      supplierId,
+      name: supplierName || supplierId,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  if (businessPartner && cardCode) {
+    return {
+      key: `bpcc:${normalizeSearchText(businessPartner)}|${normalizeSearchText(cardCode)}`,
+      supplierId: '',
+      name: supplierName || businessPartner,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  if (businessPartner) {
+    return {
+      key: `bp:${normalizeSearchText(businessPartner)}`,
+      supplierId: '',
+      name: supplierName || businessPartner,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  if (cardCode) {
+    return {
+      key: `card:${normalizeSearchText(cardCode)}`,
+      supplierId: '',
+      name: supplierName || cardCode,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  if (supplierName) {
+    return {
+      key: `name:${normalizeSearchText(supplierName)}`,
+      supplierId: '',
+      name: supplierName,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  return {
+    key: '',
+    supplierId: '',
+    name: '',
+    cardCode: '',
+    businessPartner: '',
+  };
 }
 
 function matchesTransactionSearch(transaction, query, catMap) {
@@ -3526,7 +3604,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
 
 function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   const getVendorIdentity = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
-  const getVendorSupplierId = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
@@ -3574,13 +3651,9 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   useEffect(() => {
     setLoading(true);
     setError('');
-    const selectedVendor = vendors.find((vendor) => {
-      const vendorId = getVendorIdentity(vendor);
-      return vendorId && vendorId === supplierFilter;
-    }) || null;
-    const supplierIdParam = supplierFilter === 'ALL' || String(supplierFilter || '').startsWith('name:')
-      ? ''
-      : String(getVendorSupplierId(selectedVendor) || supplierFilter || '').trim();
+    const supplierIdParam = String(supplierFilter || '').startsWith('id:')
+      ? String(supplierFilter).slice(3).trim()
+      : '';
 
     api.transactions({
       type: typeFilter === 'ALL' ? '' : typeFilter,
@@ -3602,7 +3675,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         setError(err?.message || 'No se pudo buscar movimientos');
       })
       .finally(() => setLoading(false));
-  }, [page, query, supplierFilter, typeFilter, dateFrom, dateTo, selectedProjectId, vendors]);
+  }, [page, query, supplierFilter, typeFilter, dateFrom, dateTo, selectedProjectId]);
 
   useEffect(() => {
     let isMounted = true;
@@ -3625,10 +3698,8 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
     () => rows
       .filter((row) => {
         if (supplierFilter === 'ALL') return true;
-        if (String(supplierFilter).startsWith('name:')) {
-          return String(row?.supplierName || '').trim() === String(supplierFilter).slice(5);
-        }
-        return String(row?.supplierName || '').trim() === supplierFilter;
+        const supplier = resolveTransactionSupplierIdentity(row);
+        return supplier.key === supplierFilter;
       })
       .filter((row) => {
         if (categoryFilter === 'ALL') return true;
@@ -3660,16 +3731,19 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   const supplierOptions = useMemo(() => {
     const source = new Map();
     vendors.forEach((vendor) => {
-      const value = getVendorIdentity(vendor);
+      const supplierId = getVendorIdentity(vendor);
+      const value = supplierId ? `id:${supplierId}` : '';
       const name = String(vendor?.name || '').trim();
       if (!value || !name || source.has(value)) return;
       const cardCode = String(vendor?.supplierCardCode || vendor?.externalIds?.sapCardCode || '').trim();
       source.set(value, `${name} (${cardCode || 'Sin CardCode'})`);
     });
     rows.forEach((row) => {
-      const name = String(row?.supplierName || '').trim();
-      const value = `name:${name}`;
-      if (name && !source.has(value)) source.set(value, `${name} (sin vínculo catálogo)`);
+      const supplier = resolveTransactionSupplierIdentity(row);
+      if (!supplier.key || source.has(supplier.key)) return;
+      const labelName = supplier.name || 'Proveedor sin nombre';
+      const detail = supplier.cardCode || supplier.businessPartner || 'sin vínculo catálogo';
+      source.set(supplier.key, `${labelName} (${detail})`);
     });
     return Array.from(source.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
   }, [vendors, rows]);
