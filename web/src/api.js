@@ -291,13 +291,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-
-  setSupplierCategory2Rule: (projectId, supplierId, categoryId, applyToExisting = false) =>
-    backendReq(`/api/projects/${projectId}/suppliers/${supplierId}/category2`, {
-      method: 'PUT',
-      body: JSON.stringify({ categoryId, applyToExisting }),
-    }),
-
   projectSupplierCategories: (projectId) => backendReq(`/api/projects/${projectId}/supplier-categories`),
 
   deleteTransaction: (id) =>
