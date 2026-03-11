@@ -211,12 +211,17 @@ TRABAJOS_ESPECIALES_UNCLASSIFIED_NAME = "Trabajos Especiales sin clasificar"
 
 def build_supplier_key(supplier_card_code: str | None = None, business_partner: str | None = None, supplier_name: str | None = None) -> str | None:
     normalized_card_code = normalize_non_empty_string(supplier_card_code)
-    if normalized_card_code:
-        return f"cardcode:{normalize_text_for_matching(normalized_card_code)}"
-
     normalized_business_partner = normalize_non_empty_string(business_partner)
+    if normalized_business_partner and normalized_card_code:
+        normalized_bp = normalize_text_for_matching(normalized_business_partner)
+        normalized_cc = normalize_text_for_matching(normalized_card_code)
+        return f"bpcc:{normalized_bp}|{normalized_cc}"
+
     if normalized_business_partner:
         return f"bp:{normalize_text_for_matching(normalized_business_partner)}"
+
+    if normalized_card_code:
+        return f"cardcode:{normalize_text_for_matching(normalized_card_code)}"
 
     normalized_supplier_name = normalize_non_empty_string(supplier_name)
     if normalized_supplier_name:
@@ -6858,7 +6863,7 @@ def summary_expenses_by_supplier(
 
         # For canonical keys (cardcode/bp/name), prefer identity-based naming so
         # legacy supplierId defaults do not relabel providers (e.g. default vendor debt).
-        if provider_key.startswith(("cardcode:", "bp:", "name:")):
+        if provider_key.startswith(("bpcc:", "cardcode:", "bp:", "name:")):
             resolved_name = (
                 supplier_names_by_card_code.get(card_code)
                 or supplier_name

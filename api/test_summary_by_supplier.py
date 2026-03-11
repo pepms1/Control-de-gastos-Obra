@@ -34,7 +34,7 @@ class SupplierSummaryGroupingTests(unittest.TestCase):
 
         trusted = main._build_trusted_id_supplier_key_map(movements)
 
-        self.assertEqual(trusted.get('legacy-1'), 'cardcode:c100')
+        self.assertEqual(trusted.get('legacy-1'), 'bpcc:omar salas aldana|c100')
         self.assertNotIn('legacy-2', trusted)
 
     def test_trusted_id_map_ignores_ambiguous_legacy_id(self):
@@ -48,12 +48,12 @@ class SupplierSummaryGroupingTests(unittest.TestCase):
         self.assertEqual(trusted, {})
 
     def test_bucket_key_uses_trusted_bridge_for_missing_canonical_data(self):
-        trusted = {'legacy-1': 'cardcode:c100'}
+        trusted = {'legacy-1': 'bpcc:omar salas aldana|c100'}
         tx = {'_id': 'tx-no-sap', 'supplierId': 'legacy-1', 'supplierName': ''}
 
         bucket_key = main._build_supplier_summary_bucket_key(tx, trusted)
 
-        self.assertEqual(bucket_key, 'cardcode:c100')
+        self.assertEqual(bucket_key, 'bpcc:omar salas aldana|c100')
 
     def test_bucket_key_falls_back_to_supplier_id_when_no_bridge(self):
         tx = {'_id': 'tx-no-sap', 'supplierId': 'legacy-2', 'supplierName': ''}
@@ -68,6 +68,39 @@ class SupplierSummaryGroupingTests(unittest.TestCase):
         bucket_key = main._build_supplier_summary_bucket_key(tx, {})
 
         self.assertEqual(bucket_key, 'supplier:legacy-shared|vendor:vendor-a')
+
+
+class SupplierIdentityKeyTests(unittest.TestCase):
+    def test_build_supplier_key_uses_business_partner_and_cardcode_composite_when_both_exist(self):
+        key = main.build_supplier_key('P00071', 'OMAR SALAS ALDANA', None)
+
+        self.assertEqual(key, 'bpcc:omar salas aldana|p00071')
+
+    def test_build_supplier_key_avoids_collision_same_cardcode_different_business_partner(self):
+        omar_key = main.build_supplier_key('P00071', 'OMAR SALAS ALDANA', 'OMAR SALAS ALDANA')
+        camargo_key = main.build_supplier_key('P00071', 'MATERIALES CAMARGO, S.A. DE C.V.', 'MATERIALES CAMARGO, S.A. DE C.V.')
+
+        self.assertNotEqual(omar_key, camargo_key)
+        self.assertEqual(omar_key, 'bpcc:omar salas aldana|p00071')
+        self.assertEqual(camargo_key, 'bpcc:materiales camargo, s.a. de c.v.|p00071')
+
+    def test_summary_bucket_key_keeps_distinct_suppliers_same_cardcode(self):
+        tx_omar = {
+            '_id': 'tx1',
+            'sap': {'cardCode': 'P00071', 'businessPartner': 'OMAR SALAS ALDANA'},
+            'supplierName': 'OMAR SALAS ALDANA',
+        }
+        tx_camargo = {
+            '_id': 'tx2',
+            'sap': {'cardCode': 'P00071', 'businessPartner': 'MATERIALES CAMARGO, S.A. DE C.V.'},
+            'supplierName': 'MATERIALES CAMARGO, S.A. DE C.V.',
+        }
+
+        key_omar = main._build_supplier_summary_bucket_key(tx_omar, {})
+        key_camargo = main._build_supplier_summary_bucket_key(tx_camargo, {})
+
+        self.assertNotEqual(key_omar, key_camargo)
+
 
 
 class SupplierSummaryRegressionTests(unittest.TestCase):
