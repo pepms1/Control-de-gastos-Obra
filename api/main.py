@@ -207,6 +207,8 @@ def normalize_text_for_matching(value: str | None) -> str:
 TRABAJOS_ESPECIALES_PREFIX = "trabajos especiales"
 TRABAJOS_ESPECIALES_UNCLASSIFIED_ID = "trabajos_especiales_unclassified"
 TRABAJOS_ESPECIALES_UNCLASSIFIED_NAME = "Trabajos Especiales sin clasificar"
+UNRESOLVED_CATEGORY2_ID = "sin_categoria_2"
+UNRESOLVED_CATEGORY2_NAME = "Sin categoría 2"
 
 
 def build_supplier_key(supplier_card_code: str | None = None, business_partner: str | None = None, supplier_name: str | None = None) -> str | None:
@@ -8224,7 +8226,6 @@ def spend_by_category(
 
     totals_by_category = {}
     for tx in transactions:
-        tx.update(resolve_transaction_category2(tx, supplier_rules_by_key=supplier_rules_by_key))
         category_manual_code = normalize_non_empty_string(tx.get("categoryManualCode"))
         category_manual_name = normalize_non_empty_string(tx.get("categoryManualName"))
         category_hint_code = normalize_non_empty_string(tx.get("categoryHintCode"))
@@ -8237,23 +8238,40 @@ def spend_by_category(
         )
         category_effective_code = normalize_non_empty_string(tx.get("categoryEffectiveCode")) or effective.get("categoryEffectiveCode")
         category_effective_name = normalize_non_empty_string(tx.get("categoryEffectiveName")) or effective.get("categoryEffectiveName")
+        if category_effective_code and not normalize_non_empty_string(tx.get("categoryEffectiveCode")):
+            tx["categoryEffectiveCode"] = category_effective_code
+        if category_effective_name and not normalize_non_empty_string(tx.get("categoryEffectiveName")):
+            tx["categoryEffectiveName"] = category_effective_name
+
+        tx.update(resolve_transaction_category2(tx, supplier_rules_by_key=supplier_rules_by_key))
         resolved_category2_id = normalize_non_empty_string(tx.get("resolvedCategory2Id"))
         resolved_category2_name = normalize_non_empty_string(tx.get("resolvedCategory2Name"))
-        legacy_category_id = normalize_non_empty_string(tx.get("category_id") or tx.get("categoryId"))
-        category_key = resolved_category2_id or resolved_category2_name or category_effective_code or category_effective_name or legacy_category_id
-        category_display_name = resolved_category2_name or category_effective_name
+        resolved_category2_source = normalize_non_empty_string(tx.get("resolvedCategory2Source"))
+        category_key = resolved_category2_id or resolved_category2_name or UNRESOLVED_CATEGORY2_ID
+        category_display_name = resolved_category2_name or UNRESOLVED_CATEGORY2_NAME
 
         amount_value = float(tx.get("amount") or 0)
         movement_amount = amount_value if include_iva else compute_monto_sin_iva(tx)
         if category_key not in totals_by_category:
-            totals_by_category[category_key] = {"amount": 0.0, "display_name": category_display_name}
+            totals_by_category[category_key] = {
+                "amount": 0.0,
+                "display_name": category_display_name,
+                "resolved_category2_source": resolved_category2_source,
+            }
 
         totals_by_category[category_key]["amount"] = round(totals_by_category[category_key]["amount"] + movement_amount, 2)
         if not totals_by_category[category_key].get("display_name") and category_display_name:
             totals_by_category[category_key]["display_name"] = category_display_name
+        if not totals_by_category[category_key].get("resolved_category2_source") and resolved_category2_source:
+            totals_by_category[category_key]["resolved_category2_source"] = resolved_category2_source
 
     rows = [
-        {"_id": category_id, "amount": values.get("amount", 0.0), "display_name": values.get("display_name")}
+        {
+            "_id": category_id,
+            "amount": values.get("amount", 0.0),
+            "display_name": values.get("display_name"),
+            "resolved_category2_source": values.get("resolved_category2_source"),
+        }
         for category_id, values in totals_by_category.items()
     ]
     rows.sort(key=lambda row: row["amount"], reverse=True)
@@ -8301,6 +8319,7 @@ def spend_by_category(
                 "category_name": r.get("display_name") or cats.get(cid, "(Sin categoría)"),
                 "amount": round(amt, 2),
                 "percent": round((amt / total * 100.0), 2) if total > 0 else 0.0,
+                "resolvedCategory2Source": r.get("resolved_category2_source"),
             }
         )
     return {"total_expenses": round(total, 2), "rows": out}
