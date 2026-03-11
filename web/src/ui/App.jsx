@@ -132,13 +132,23 @@ function tokenizeSearchQuery(query) {
 function buildTransactionSearchHaystack(transaction, catMap) {
   const category2 = resolveTransactionCategory2(transaction, catMap);
   const sapMeta = transaction?.sapMeta || {};
+  const resolvedCategory2Name = String(
+    transaction?.resolvedCategory2Name
+    || transaction?.resolved_category2_name
+    || '',
+  ).trim();
+  const resolvedCategory2Id = String(
+    transaction?.resolvedCategory2Id
+    || transaction?.resolved_category2_id
+    || '',
+  ).trim();
   const fields = [
     transaction?.description,
     transaction?.supplierName,
     category2?.name,
     category2?.id,
-    transaction?.resolvedCategory2Name,
-    transaction?.resolvedCategory2Id,
+    resolvedCategory2Name,
+    resolvedCategory2Id,
     transaction?.projectDisplayName,
     transaction?.sourceSbo,
     sapMeta?.businessPartner,
@@ -3589,7 +3599,16 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       })
       .filter((row) => {
         if (categoryFilter === 'ALL') return true;
-        return String(resolveTransactionCategory2(row, catMap).id || '').trim() === categoryFilter;
+        const resolvedCategory2Id = String(row?.resolvedCategory2Id || row?.resolved_category2_id || '').trim();
+        const resolvedCategory2Name = String(row?.resolvedCategory2Name || row?.resolved_category2_name || '').trim();
+        const category2 = resolveTransactionCategory2(row, catMap);
+        const normalizedFilter = String(categoryFilter || '').trim();
+        return (
+          resolvedCategory2Id === normalizedFilter
+          || category2.id === normalizedFilter
+          || resolvedCategory2Name === normalizedFilter
+          || category2.name === normalizedFilter
+        );
       })
       .filter((row) => {
         if (sourceSboFilter === 'ALL') return true;
@@ -3629,20 +3648,21 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       if (!key) return;
       source.set(key, category?.displayLabel || category?.name || key);
     });
-    cats.forEach((category) => {
-      const key = String(category?.code || category?.id || '').trim();
-      if (!key || source.has(key)) return;
-      source.set(key, category?.displayLabel || category?.name || key);
-    });
     rows.forEach((row) => {
+      const resolvedCategory2Id = String(row?.resolvedCategory2Id || row?.resolved_category2_id || '').trim();
+      const resolvedCategory2Name = String(row?.resolvedCategory2Name || row?.resolved_category2_name || '').trim();
       const category2 = resolveTransactionCategory2(row, catMap);
-      const key = String(category2.id || '').trim();
+      const key = String(resolvedCategory2Id || category2.id || '').trim();
+      const label = String(resolvedCategory2Name || category2.name || key).trim();
       if (!key || source.has(key)) return;
-      source.set(key, category2.name || key);
+      source.set(key, label || key);
+      if (!resolvedCategory2Id && resolvedCategory2Name && !source.has(resolvedCategory2Name)) {
+        source.set(resolvedCategory2Name, resolvedCategory2Name);
+      }
     });
     source.set(CATEGORY2_UNCLASSIFIED_ID, CATEGORY2_UNCLASSIFIED_NAME);
     return Array.from(source.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
-  }, [cats, rows, category2Catalog, catMap]);
+  }, [rows, category2Catalog, catMap]);
 
   const sourceSboOptions = useMemo(() => {
     const source = new Set();
