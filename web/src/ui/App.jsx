@@ -270,6 +270,19 @@ function resolveTransactionSupplierIdentity(transaction) {
   };
 }
 
+function decodeSupplierFilterSearchTerm(filterValue) {
+  const raw = String(filterValue || '').trim();
+  if (!raw || raw === 'ALL' || raw.startsWith('id:')) return '';
+  const normalized = raw
+    .replace(/^bpcc:/, '')
+    .replace(/^bp:/, '')
+    .replace(/^card:/, '')
+    .replace(/^name:/, '')
+    .replace('|', ' ')
+    .trim();
+  return normalized;
+}
+
 function matchesTransactionSearch(transaction, query, catMap) {
   const tokens = tokenizeSearchQuery(query);
   if (!tokens.length) return true;
@@ -3655,13 +3668,16 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
     const supplierIdParam = String(supplierFilter || '').startsWith('id:')
       ? String(supplierFilter).slice(3).trim()
       : '';
+    const supplierTextParam = decodeSupplierFilterSearchTerm(supplierFilter);
+    const queryParam = String(query || '').trim() || supplierTextParam;
 
     api.transactions({
       type: typeFilter === 'ALL' ? '' : typeFilter,
+      category_id: categoryFilter === 'ALL' ? '' : categoryFilter,
       page: String(page),
       limit: String(limit),
       supplierId: supplierIdParam,
-      q: '',
+      q: queryParam,
       from: dateFrom,
       to: dateTo,
       projectId: String(selectedProjectId || ''),
@@ -3676,7 +3692,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         setError(err?.message || 'No se pudo buscar movimientos');
       })
       .finally(() => setLoading(false));
-  }, [page, query, supplierFilter, typeFilter, dateFrom, dateTo, selectedProjectId]);
+  }, [page, query, supplierFilter, categoryFilter, typeFilter, dateFrom, dateTo, selectedProjectId]);
 
   useEffect(() => {
     let isMounted = true;
@@ -3724,6 +3740,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         return matchesDateRange(row?.date, dateFrom, dateTo);
       })
       .filter((row) => {
+        if (!query) return true;
         return matchesTransactionSearch(row, query, catMap);
       }),
     [rows, supplierFilter, categoryFilter, sourceSboFilter, dateFrom, dateTo, query, catMap],
