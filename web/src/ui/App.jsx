@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
 import { isSapSboTransaction } from '../transactions/helpers.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
+import { SearchTransactionsV2 } from './SearchTransactionsV2.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 import { isAdmin as isAdminRole, isSuperAdmin, isViewer, normalizeRole } from './roles.js';
 
@@ -326,7 +327,7 @@ function Nav({
   const showTransactionsAdminNav = false;
   const items = [
     ['dashboard', 'Dashboard', true],
-    ['search', 'Buscar movimientos', true],
+    ['search', 'Buscar V2', true],
     ['transactions', 'Editar movimientos', canSeeTransactionsAdmin && showTransactionsAdminNav],
     ['settings', 'Ajustes', canSeeSettings],
   ];
@@ -645,10 +646,9 @@ export default function App() {
         )}
 
         {tab === 'search' && (
-          <SearchTransactions
+          <SearchTransactionsV2
             cats={cats}
             vendors={vendors}
-            projects={personalizedProjects}
             selectedProjectId={selectedProjectId}
           />
         )}
