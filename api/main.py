@@ -8307,6 +8307,10 @@ def spend_by_category(
                 "resolvedCategory2Id": 1,
                 "resolvedCategory2Name": 1,
                 "resolvedCategory2Source": 1,
+                "supplierName": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "sap": 1,
                 "amount": 1,
                 "tax": 1,
             },
@@ -8348,16 +8352,21 @@ def spend_by_category(
         if category_effective_name and not normalize_non_empty_string(tx.get("categoryEffectiveName")):
             tx["categoryEffectiveName"] = category_effective_name
 
-        tx.update(
-            resolve_transaction_category2(
-                tx,
-                supplier_rules_by_key=supplier_rules_by_key,
-                supplier_rule_indexes=supplier_rule_indexes,
-            )
-        )
         resolved_category2_id = normalize_non_empty_string(tx.get("resolvedCategory2Id"))
         resolved_category2_name = normalize_non_empty_string(tx.get("resolvedCategory2Name"))
         resolved_category2_source = normalize_non_empty_string(tx.get("resolvedCategory2Source"))
+
+        if not resolved_category2_id and not resolved_category2_name:
+            tx.update(
+                resolve_transaction_category2(
+                    tx,
+                    supplier_rules_by_key=supplier_rules_by_key,
+                    supplier_rule_indexes=supplier_rule_indexes,
+                )
+            )
+            resolved_category2_id = normalize_non_empty_string(tx.get("resolvedCategory2Id"))
+            resolved_category2_name = normalize_non_empty_string(tx.get("resolvedCategory2Name"))
+            resolved_category2_source = normalize_non_empty_string(tx.get("resolvedCategory2Source"))
         category_key = resolved_category2_id or resolved_category2_name or UNRESOLVED_CATEGORY2_ID
         category_display_name = resolved_category2_name or UNRESOLVED_CATEGORY2_NAME
 
