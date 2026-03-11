@@ -137,3 +137,98 @@ class SapManualImportGuardrailTests(unittest.TestCase):
 
         self.assertFalse(result.get('shouldBlock'))
         self.assertTrue(result.get('detected', {}).get('insufficientEvidence'))
+
+
+class SapMovementsBySboIdempotencyTests(unittest.TestCase):
+    class _FakeImportRuns:
+        def __init__(self, docs):
+            self.docs = docs
+            self._next_id = 100
+
+        def _matches(self, doc, query):
+            return all(doc.get(k) == v for k, v in query.items())
+
+        def find_one(self, query):
+            for doc in self.docs:
+                if self._matches(doc, query):
+                    return doc
+            return None
+
+        def update_one(self, query, update):
+            doc = self.find_one(query)
+            if not doc:
+                return None
+            doc.update(update.get('$set', {}))
+            return None
+
+        def insert_one(self, doc):
+            new_doc = dict(doc)
+            new_doc['_id'] = f"run-{self._next_id}"
+            self._next_id += 1
+            self.docs.append(new_doc)
+
+            class _Res:
+                inserted_id = new_doc['_id']
+
+            return _Res()
+
+    class _FakeProjects:
+        def find(self, *_args, **_kwargs):
+            return []
+
+    class _FakeDb:
+        def __init__(self, import_runs):
+            self.importRuns = import_runs
+            self.projects = SapMovementsBySboIdempotencyTests._FakeProjects()
+            self.unmatched_projects = type('X', (), {'update_one': lambda *args, **kwargs: None})()
+            self.vendors = type('X', (), {'bulk_write': lambda *args, **kwargs: None})()
+            self.transactions = type('X', (), {'update_one': lambda *args, **kwargs: None})()
+
+    def test_latest_uses_sha_and_not_only_import_key_for_already_imported(self):
+        old_hash = 'a' * 64
+        import_runs = self._FakeImportRuns(
+            [
+                {
+                    '_id': 'run-1',
+                    'source': 'sap-movements-by-sbo',
+                    'sourceSbo': 'SBO_TEST',
+                    'mode': 'latest',
+                    'importKey': 'sap-movements-by-sbo:SBO_TEST:latest:exports-v2/SBO_TEST/latest_movements.csv',
+                    'sha256': old_hash,
+                    'status': 'ok',
+                }
+            ]
+        )
+        fake_db = self._FakeDb(import_runs)
+
+        with patch.object(main, 'db', fake_db), patch.object(
+            main, 'downloadFromS3Object', return_value=b'movement_type,source_type\n'
+        ):
+            result = main.import_sap_movements_by_sbo(sbo='SBO_TEST', mode='latest', force=0)
+
+        self.assertNotIn('already_imported', result)
+        self.assertEqual(result.get('status'), 'ok')
+
+    def test_latest_returns_already_imported_when_sha_matches(self):
+        content = b'movement_type,source_type\n'
+        same_hash = main.sha256(content).hexdigest()
+        import_runs = self._FakeImportRuns(
+            [
+                {
+                    '_id': 'run-2',
+                    'source': 'sap-movements-by-sbo',
+                    'sourceSbo': 'SBO_TEST',
+                    'mode': 'latest',
+                    'importKey': 'sap-movements-by-sbo:SBO_TEST:latest:exports-v2/SBO_TEST/latest_movements.csv',
+                    'sha256': same_hash,
+                    'status': 'ok',
+                }
+            ]
+        )
+        fake_db = self._FakeDb(import_runs)
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'downloadFromS3Object', return_value=content):
+            result = main.import_sap_movements_by_sbo(sbo='SBO_TEST', mode='latest', force=0)
+
+        self.assertTrue(result.get('already_imported'))
+        self.assertEqual(result.get('importRunId'), 'run-2')
