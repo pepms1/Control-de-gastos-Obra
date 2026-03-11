@@ -3358,6 +3358,95 @@ def build_transactions_query(
             q["date"]["$lte"] = date_to
 
     cleaned_search = (search_query or "").strip()
+
+    def _build_trabajos_especiales_search_condition(raw_search: str) -> dict | None:
+        escaped = re.escape(raw_search)
+        matching_rules = list(
+            db.supplierCategory2Rules.find(
+                {
+                    "isActive": {"$ne": False},
+                    "category2Name": {"$regex": escaped, "$options": "i"},
+                },
+                {
+                    "supplierKey": 1,
+                    "supplierCardCode": 1,
+                    "businessPartner": 1,
+                    "supplierName": 1,
+                },
+            )
+        )
+        if not matching_rules:
+            return None
+
+        supplier_conditions: list[dict] = []
+        seen_supplier_conditions: set[str] = set()
+
+        def register_supplier_condition(condition: dict):
+            signature = str(condition)
+            if signature in seen_supplier_conditions:
+                return
+            seen_supplier_conditions.add(signature)
+            supplier_conditions.append(condition)
+
+        for rule in matching_rules:
+            raw_supplier_key = normalize_non_empty_string(rule.get("supplierKey"))
+            if raw_supplier_key.startswith("cardcode:"):
+                supplier_key_card_code = raw_supplier_key.split(":", 1)[1].strip()
+                if supplier_key_card_code:
+                    register_supplier_condition(
+                        {"sap.cardCode": {"$regex": f"^{re.escape(supplier_key_card_code)}$", "$options": "i"}}
+                    )
+
+            supplier_card_code = normalize_non_empty_string(rule.get("supplierCardCode"))
+            business_partner = normalize_non_empty_string(rule.get("businessPartner"))
+            supplier_name = normalize_non_empty_string(rule.get("supplierName"))
+
+            if supplier_card_code:
+                escaped_card_code = re.escape(supplier_card_code)
+                register_supplier_condition(
+                    {"sap.cardCode": {"$regex": f"^{escaped_card_code}$", "$options": "i"}}
+                )
+                register_supplier_condition(
+                    {"supplierCardCode": {"$regex": f"^{escaped_card_code}$", "$options": "i"}}
+                )
+
+            if business_partner:
+                escaped_business_partner = re.escape(business_partner)
+                register_supplier_condition(
+                    {"sap.businessPartner": {"$regex": f"^{escaped_business_partner}$", "$options": "i"}}
+                )
+                register_supplier_condition(
+                    {"businessPartner": {"$regex": f"^{escaped_business_partner}$", "$options": "i"}}
+                )
+
+            if supplier_name:
+                escaped_supplier_name = re.escape(supplier_name)
+                register_supplier_condition(
+                    {"supplierName": {"$regex": f"^{escaped_supplier_name}$", "$options": "i"}}
+                )
+                register_supplier_condition(
+                    {"proveedorNombre": {"$regex": f"^{escaped_supplier_name}$", "$options": "i"}}
+                )
+
+        if not supplier_conditions:
+            return None
+
+        trabajos_prefix_regex = f"^{re.escape(TRABAJOS_ESPECIALES_PREFIX)}"
+        trabajos_especiales_condition = {
+            "$or": [
+                {"categoryEffectiveName": {"$regex": trabajos_prefix_regex, "$options": "i"}},
+                {"categoryManualName": {"$regex": trabajos_prefix_regex, "$options": "i"}},
+                {"categoryHintName": {"$regex": trabajos_prefix_regex, "$options": "i"}},
+            ]
+        }
+
+        return {
+            "$and": [
+                trabajos_especiales_condition,
+                {"$or": supplier_conditions},
+            ]
+        }
+
     if cleaned_search:
         escaped_search = re.escape(cleaned_search)
         search_conditions = [
@@ -3376,6 +3465,10 @@ def build_transactions_query(
             {"categoryHintName": {"$regex": escaped_search, "$options": "i"}},
             {"categoryHintCode": {"$regex": escaped_search, "$options": "i"}},
         ]
+
+        trabajos_especiales_search_condition = _build_trabajos_especiales_search_condition(cleaned_search)
+        if trabajos_especiales_search_condition:
+            search_conditions.append(trabajos_especiales_search_condition)
 
         normalized_search = normalize_category_name(cleaned_search)
         category_name_filters = [
