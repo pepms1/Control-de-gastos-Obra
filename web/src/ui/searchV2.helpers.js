@@ -31,10 +31,12 @@ export function resolveSupplierIdentity(transaction) {
 
   const normalizedBusinessPartner = normalizeText(businessPartner);
   const normalizedCardCode = normalizeText(cardCode);
+  const normalizedName = normalizeText(name);
+  const normalizedIdentityName = normalizedBusinessPartner || normalizedName;
 
-  if (normalizedBusinessPartner && normalizedCardCode) {
+  if (normalizedIdentityName && normalizedCardCode) {
     return {
-      key: `bpcc:${normalizedBusinessPartner}|${normalizedCardCode}`,
+      key: `bpcc:${normalizedIdentityName}|${normalizedCardCode}`,
       supplierId,
       businessPartner,
       cardCode,
@@ -50,11 +52,17 @@ export function resolveSupplierIdentity(transaction) {
 }
 
 export function resolveVendorIdentity(vendor) {
+  const supplierId = vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId;
+  const source = String(vendor?.source || '').trim().toLowerCase();
+  const isSyntheticSapCatalog = source === 'sap-sbo' || String(supplierId || '').trim().toLowerCase().startsWith('sap-sbo:');
+  const supplierName = vendor?.name || vendor?.displayName || vendor?.label;
+  const businessPartner = vendor?.businessPartner || vendor?.externalIds?.sapBusinessPartner;
+
   return resolveSupplierIdentity({
-    supplierId: vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId,
-    supplierName: vendor?.name || vendor?.displayName || vendor?.label,
+    supplierId,
+    supplierName,
     supplierCardCode: vendor?.supplierCardCode || vendor?.cardCode || vendor?.externalIds?.sapCardCode,
-    businessPartner: vendor?.businessPartner || vendor?.externalIds?.sapBusinessPartner,
+    businessPartner: businessPartner || (isSyntheticSapCatalog ? supplierName : ''),
   });
 }
 
