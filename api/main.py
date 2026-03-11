@@ -6576,10 +6576,14 @@ def _build_supplier_summary_bucket_key(tx: dict, trusted_id_to_supplier_key: dic
         if candidate_id and trusted_id_to_supplier_key.get(candidate_id):
             return str(trusted_id_to_supplier_key.get(candidate_id))
 
-    if supplier_id:
-        return f"supplier:{supplier_id}"
+    # When canonical supplier identity is unavailable, avoid collapsing distinct
+    # vendors that share a legacy supplierId by keeping both IDs in the bucket key.
+    if supplier_id and vendor_id:
+        return f"supplier:{supplier_id}|vendor:{vendor_id}"
     if vendor_id:
         return f"vendor:{vendor_id}"
+    if supplier_id:
+        return f"supplier:{supplier_id}"
     return f"tx:{str(tx.get('_id') or '').strip()}"
 
 
