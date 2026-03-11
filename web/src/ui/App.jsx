@@ -130,13 +130,15 @@ function tokenizeSearchQuery(query) {
 }
 
 function buildTransactionSearchHaystack(transaction, catMap) {
+  const category2 = resolveTransactionCategory2(transaction, catMap);
   const sapMeta = transaction?.sapMeta || {};
   const fields = [
     transaction?.description,
     transaction?.supplierName,
+    category2?.name,
+    category2?.id,
     transaction?.resolvedCategory2Name,
-    transaction?.categoryName,
-    getTransactionCategoryLabel(transaction, catMap),
+    transaction?.resolvedCategory2Id,
     transaction?.projectDisplayName,
     transaction?.sourceSbo,
     sapMeta?.businessPartner,
@@ -3542,7 +3544,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       page: String(page),
       limit: String(limit),
       supplierId: supplierIdParam,
-      q: query.trim(),
+      q: '',
       from: dateFrom,
       to: dateTo,
       projectId: String(selectedProjectId || ''),
