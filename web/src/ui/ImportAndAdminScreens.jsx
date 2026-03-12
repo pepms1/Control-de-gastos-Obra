@@ -358,7 +358,7 @@ export function SuspiciousProjectResolutionScreen() {
       const selectedProjectName = row?.currentAssignedProjectName || '';
       const reason = reasonById[row.id] || '';
 
-      await api.resolveSuspiciousProjectResolution(transactionId, {
+      const response = await api.resolveSuspiciousProjectResolution(transactionId, {
         resolveTo: resolution,
         resolve_to: resolution,
         resolution,
@@ -379,7 +379,12 @@ export function SuspiciousProjectResolutionScreen() {
         manual_resolved_project_name: selectedProjectName,
       });
 
-      if (status === 'pending' || status === 'all') {
+      const persistedResolvedProjectId = String(response?.manualResolvedProjectId || '').trim();
+      if (!persistedResolvedProjectId) {
+        throw new Error('El backend devolvió una resolución incompleta: falta manualResolvedProjectId.');
+      }
+
+      if (status === 'pending') {
         setRows((prev) => prev.filter((candidate) => candidate.id !== row.id));
       } else {
         await load();

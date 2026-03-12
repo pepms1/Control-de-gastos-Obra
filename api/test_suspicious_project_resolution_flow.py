@@ -17,6 +17,7 @@ import main  # noqa: E402
 class FakeTransactions:
     def __init__(self, docs):
         self.docs = {str(doc['_id']): doc for doc in docs}
+        self.last_update = None
 
     def find_one(self, query, projection=None):
         target_id = str(query.get('_id')) if query.get('_id') is not None else None
@@ -28,11 +29,30 @@ class FakeTransactions:
             return None
         return doc
 
+    def find(self, query, projection=None):
+        out = []
+        for doc in self.docs.values():
+            if query.get('source') and doc.get('source') != query.get('source'):
+                continue
+            sap_doc = doc.get('sap') if isinstance(doc.get('sap'), dict) else {}
+            if query.get('sap.isProjectResolutionSuspicious') is True and not sap_doc.get('isProjectResolutionSuspicious'):
+                continue
+            manual_id = str(sap_doc.get('manualResolvedProjectId') or '').strip()
+            has_partial = bool(str(sap_doc.get('manualResolvedProjectName') or '').strip() or str(sap_doc.get('manualResolvedAt') or '').strip())
+            if '$expr' in query and '$eq' in query['$expr']:
+                if manual_id:
+                    continue
+            if '$or' in query and not has_partial:
+                continue
+            out.append(doc)
+        return out
+
     def update_one(self, query, update):
         target_id = str(query.get('_id')) if query.get('_id') is not None else None
         doc = self.docs.get(target_id)
         if not doc:
             return None
+        self.last_update = {'query': query, 'update': update}
         sets = update.get('$set', {})
         for key, value in sets.items():
             if '.' in key:
@@ -41,6 +61,16 @@ class FakeTransactions:
                 root[second] = value
             else:
                 doc[key] = value
+
+        unsets = update.get('$unset', {})
+        for key in unsets.keys():
+            if '.' in key:
+                first, second = key.split('.', 1)
+                root = doc.get(first)
+                if isinstance(root, dict):
+                    root.pop(second, None)
+            else:
+                doc.pop(key, None)
         return None
 
 
@@ -53,6 +83,9 @@ class FakeProjects:
         if target_id is None:
             return None
         return self.docs.get(str(target_id))
+
+    def find(self, query=None, projection=None):
+        return list(self.docs.values())
 
 
 class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
@@ -72,19 +105,31 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
             },
         }
 
-    def _fake_db(self, tx_doc=None, project_doc=None):
+    def _fake_db(self, tx_doc=None, projects=None):
         tx = tx_doc or self.base_tx
-        project = project_doc or {
-            '_id': self.project_id,
-            'name': 'Proyecto Custom',
-            'sap': {'projectCode': 'CUS-CODE'},
-        }
+        project_docs = projects or [
+            {
+                '_id': self.project_id,
+                'name': 'Proyecto Custom',
+                'sap': {'projectCode': 'CUS-CODE'},
+            },
+            {
+                '_id': ObjectId(),
+                'name': 'Proyecto Documento',
+                'sap': {'projectCode': 'DOC-CODE'},
+            },
+            {
+                '_id': ObjectId(),
+                'name': 'Proyecto Pago',
+                'sap': {'projectCode': 'PAY-CODE'},
+            },
+        ]
         return type(
             'FakeDb',
             (),
             {
                 'transactions': FakeTransactions([tx]),
-                'projects': FakeProjects([project]),
+                'projects': FakeProjects(project_docs),
             },
         )()
 
@@ -103,6 +148,7 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
             )
 
         self.assertTrue(out_document['ok'])
+        self.assertTrue(out_document['manualResolvedProjectId'])
         self.assertEqual(out_document['manualResolvedProjectCode'], 'DOC-CODE')
         self.assertEqual(out_payment['manualResolvedProjectCode'], 'PAY-CODE')
 
@@ -159,9 +205,22 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
                 )
 
         self.assertEqual(exc.exception.status_code, 400)
-        self.assertIn('Could not derive resolved project', str(exc.exception.detail))
+        self.assertIn('Could not derive resolved project id', str(exc.exception.detail))
 
-    def test_pending_and_resolved_filter_supports_objectid_or_string(self):
+    def test_reject_partial_manual_resolution_payload_and_persist_nothing(self):
+        fake_db = self._fake_db()
+        with patch.object(main, 'db', fake_db):
+            with self.assertRaises(HTTPException) as exc:
+                main.resolve_admin_suspicious_project_resolution(
+                    str(self.tx_id),
+                    {'resolve_to': 'custom', 'project_name': 'Proyecto Inexistente'},
+                    user={'username': 'admin'},
+                )
+
+        self.assertEqual(exc.exception.status_code, 400)
+        self.assertIsNone(fake_db.transactions.last_update)
+
+    def test_pending_and_resolved_filter_supports_manual_project_id_only(self):
         pending_query = main.build_suspicious_project_resolutions_query(status='pending')
         resolved_query = main.build_suspicious_project_resolutions_query(status='resolved')
 
@@ -169,6 +228,51 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
         resolved_expr = resolved_query['$expr']['$gt']
         self.assertEqual(pending_expr[1], 0)
         self.assertEqual(resolved_expr[1], 0)
+
+    def test_repair_backfills_unique_mapping_and_clears_unmapped_partial_fields(self):
+        tx_fix_id = ObjectId()
+        tx_clear_id = ObjectId()
+        tx_fix = {
+            '_id': tx_fix_id,
+            'source': 'sap-sbo',
+            'sap': {
+                'isProjectResolutionSuspicious': True,
+                'manualResolvedProjectId': None,
+                'manualResolvedProjectCode': 'DOC-CODE',
+                'manualResolvedProjectName': 'Proyecto Documento',
+                'manualResolvedAt': '2025-01-01T00:00:00+00:00',
+            },
+        }
+        tx_clear = {
+            '_id': tx_clear_id,
+            'source': 'sap-sbo',
+            'sap': {
+                'isProjectResolutionSuspicious': True,
+                'manualResolvedProjectId': '',
+                'manualResolvedProjectName': 'Proyecto Ambiguo',
+                'manualResolvedAt': '2025-01-01T00:00:00+00:00',
+                'manualResolvedBy': 'admin',
+                'manualResolutionReason': 'legacy',
+            },
+        }
+
+        ambiguous_name = 'Proyecto Ambiguo'
+        project_docs = [
+            {'_id': ObjectId(), 'name': 'Proyecto Documento', 'sap': {'projectCode': 'DOC-CODE'}},
+            {'_id': ObjectId(), 'name': ambiguous_name, 'sap': {'projectCode': 'AMB-1'}},
+            {'_id': ObjectId(), 'name': ambiguous_name, 'sap': {'projectCode': 'AMB-2'}},
+        ]
+        fake_db = type('FakeDb', (), {'transactions': FakeTransactions([tx_fix, tx_clear]), 'projects': FakeProjects(project_docs)})()
+
+        with patch.object(main, 'db', fake_db):
+            result = main.repair_partial_suspicious_project_resolutions()
+
+        self.assertEqual(result['scanned'], 2)
+        self.assertEqual(result['fixed'], 1)
+        self.assertEqual(result['cleared'], 1)
+        self.assertTrue(str(fake_db.transactions.docs[str(tx_fix_id)]['sap'].get('manualResolvedProjectId')).strip())
+        self.assertIsNone(fake_db.transactions.docs[str(tx_clear_id)]['sap'].get('manualResolvedProjectId'))
+        self.assertIsNone(fake_db.transactions.docs[str(tx_clear_id)]['sap'].get('manualResolvedProjectName'))
 
 
 if __name__ == '__main__':
