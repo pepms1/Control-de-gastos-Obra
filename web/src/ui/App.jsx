@@ -321,15 +321,22 @@ function Nav({
   selectedProjectId,
   onProjectChange,
 }) {
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const normalizedRole = normalizeRole(role);
   const canSeeSettings = !isViewer(normalizedRole);
   const canSeeTransactionsAdmin = isSuperAdmin(normalizedRole);
   const showTransactionsAdminNav = false;
   const items = [
     ['dashboard', 'Dashboard', true],
-    ['search', 'Buscar V2', true],
+    ['search', 'Buscar', true],
     ['transactions', 'Editar movimientos', canSeeTransactionsAdmin && showTransactionsAdminNav],
     ['settings', 'Ajustes', canSeeSettings],
+  ];
+  const mobileBottomItems = [
+    ['dashboard', 'Dashboard', true],
+    ['search', 'Buscar', true],
+    ['settings', 'Importar', canSeeSettings],
+    ['more', 'Más', true],
   ];
 
   const linkStyle = (active) => ({
@@ -345,63 +352,101 @@ function Nav({
   });
 
   return (
-    <div className="nav">
-      <div className="nav-header">
-        <img
-          src="/LOGO%20GRUPO%20MDI.jpg"
-          alt="Logo Grupo MDI"
-          className="nav-logo"
-          onError={(event) => {
-            event.currentTarget.onerror = null;
-            event.currentTarget.src = '/logo-grupo-mdi.svg';
-          }}
-        />
-        <div className="nav-title-wrap">
-          <div className="nav-title">CONTROL DE GASTOS 2.0</div>
-          <div className="nav-subtitle">Grupo MDI</div>
+    <>
+      <div className="nav">
+        <div className="nav-header">
+          <img
+            src="/LOGO%20GRUPO%20MDI.jpg"
+            alt="Logo Grupo MDI"
+            className="nav-logo"
+            onError={(event) => {
+              event.currentTarget.onerror = null;
+              event.currentTarget.src = '/logo-grupo-mdi.svg';
+            }}
+          />
+          <div className="nav-title-wrap">
+            <div className="nav-title">Control de Gastos V2</div>
+            <div className="nav-subtitle">Grupo MDI</div>
+          </div>
+
+          <button className="secondary nav-profile-trigger" type="button" onClick={() => setProfileMenuOpen((prev) => !prev)}>
+            ☰
+          </button>
+        </div>
+
+        <div className="nav-items">
+          <div className="small nav-project-label">Proyecto activo</div>
+          <select value={selectedProjectId} onChange={(e) => onProjectChange(e.target.value)} disabled={!projects.length}>
+            {!projects.length && <option value="">Sin proyectos</option>}
+            {projects.map((project) => (
+              <option key={project._id} value={project._id}>
+                {getProjectDisplayName(project)}
+              </option>
+            ))}
+          </select>
+
+          <div className="nav-links-desktop">
+            {items
+              .filter(([, , show]) => show)
+              .map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  className={tab === k ? 'active' : ''}
+                  onClick={() => setTab(k)}
+                  style={linkStyle(tab === k)}
+                >
+                  {label}
+                </button>
+              ))}
+          </div>
+        </div>
+
+        <div className={`nav-user-actions ${profileMenuOpen ? 'open' : ''}`}>
+          <button className="secondary theme-toggle" type="button" onClick={onToggleTheme}>
+            {isDarkMode ? '☀️ Modo día' : '🌙 Modo noche'}
+          </button>
+
+          <div className="small nav-user">
+            {displayName || username} ({role})
+          </div>
+
+          {canSeeSettings && (
+            <button className="secondary" type="button" onClick={() => { setTab('settings'); setProfileMenuOpen(false); }}>
+              Ajustes
+            </button>
+          )}
+
+          <button className="secondary" type="button" onClick={onLogout}>
+            Salir
+          </button>
         </div>
       </div>
 
-      <div className="nav-items">
-        <div className="small" style={{ marginBottom: 6 }}>Proyecto</div>
-        <select value={selectedProjectId} onChange={(e) => onProjectChange(e.target.value)} disabled={!projects.length}>
-          {!projects.length && <option value="">Sin proyectos</option>}
-          {projects.map((project) => (
-            <option key={project._id} value={project._id}>
-              {getProjectDisplayName(project)}
-            </option>
-          ))}
-        </select>
-
-        {items
-          .filter(([, , show]) => show)
-          .map(([k, label]) => (
+      <div className="mobile-bottom-nav">
+        {mobileBottomItems.filter(([, , show]) => show).map(([key, label]) => {
+          const isMore = key === 'more';
+          const active = isMore ? profileMenuOpen : tab === key;
+          return (
             <button
-              key={k}
+              key={key}
               type="button"
-              className={tab === k ? 'active' : ''}
-              onClick={() => setTab(k)}
-              style={linkStyle(tab === k)}
+              className={active ? 'active' : ''}
+              onClick={() => {
+                if (isMore) {
+                  setProfileMenuOpen((prev) => !prev);
+                  return;
+                }
+                setProfileMenuOpen(false);
+                setTab(key);
+              }}
             >
               {label}
             </button>
-          ))}
+          );
+        })}
       </div>
-
-      <div className="nav-user-actions">
-        <button className="secondary theme-toggle" type="button" onClick={onToggleTheme}>
-          {isDarkMode ? '☀️ Modo día' : '🌙 Modo noche'}
-        </button>
-
-        <div className="small nav-user">
-          {displayName || username} ({role})
-        </div>
-
-        <button className="secondary" type="button" onClick={onLogout}>
-          Salir
-        </button>
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -621,7 +666,7 @@ export default function App() {
         onProjectChange={handleProjectChange}
       />
 
-      <div className="container grid" style={{ gap: 14 }}>
+      <div className="container app-content grid" style={{ gap: 14 }}>
         {toast && <div className="card">{toast}</div>}
 
         {tab === 'dashboard' && (
@@ -2070,21 +2115,21 @@ function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selec
   const isIncome = dashboardType === 'income';
 
   return (
-    <div className="grid" style={{ gap: 14 }}>
-      <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+    <div className="grid" style={{ gap: 10 }}>
+      <div className="dashboard-primary-switch">
         <button
           type="button"
           className={isIncome ? 'secondary' : ''}
           onClick={() => onDashboardTypeChange('expenses')}
         >
-          Dashboard egresos
+          Egresos
         </button>
         <button
           type="button"
           className={isIncome ? '' : 'secondary'}
           onClick={() => onDashboardTypeChange('income')}
         >
-          Dashboard ingresos
+          Ingresos
         </button>
       </div>
 
@@ -2108,6 +2153,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
   const [supplierSortMode, setSupplierSortMode] = useState('alpha');
   const [projectBalance, setProjectBalance] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [recentTransactions, setRecentTransactions] = useState([]);
 
   useEffect(() => {
     let ok = true;
@@ -2139,7 +2185,18 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       const incomeTotal = incomeTotalResult.status === 'fulfilled' ? Number(incomeTotalResult.value) || 0 : 0;
       setProjectBalance(Number((incomeTotal - expensesTotal).toFixed(2)));
 
-      setLoading(false);
+      api.transactions({ type: 'EXPENSE', page: '1', limit: '5' })
+        .then((response) => {
+          if (!ok) return;
+          setRecentTransactions(Array.isArray(response?.items) ? response.items : []);
+        })
+        .catch(() => {
+          if (!ok) return;
+          setRecentTransactions([]);
+        })
+        .finally(() => {
+          if (ok) setLoading(false);
+        });
     });
 
     return () => {
@@ -2194,24 +2251,24 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
 
   const dashboardTotals = [
     {
-      label: showCategoryIva ? 'Total egresos con IVA' : 'Total egresos sin IVA',
+      label: 'Total mes',
       value: formatCurrency(stats?.total_expenses || 0),
-      helper: 'Modelo V2 normalizado',
+      helper: showCategoryIva ? 'Egresos con IVA' : 'Egresos sin IVA',
     },
     {
-      label: 'Categorías 2 con movimiento',
+      label: 'Movimientos',
       value: String(categoryRows.length),
-      helper: 'Con al menos un movimiento',
+      helper: 'Categorías activas',
     },
     {
-      label: 'Proveedores con gasto',
+      label: 'Proveedores',
       value: String(supplierSummary.length),
       helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
     },
     {
-      label: 'Balance total del proyecto',
-      value: formatCurrency(projectBalance),
-      helper: 'Ingresos menos egresos',
+      label: 'Última importación SAP',
+      value: recentTransactions[0]?.date ? String(recentTransactions[0].date).slice(0, 10) : 'Sin datos',
+      helper: recentTransactions[0]?.sourceSbo ? `SBO ${recentTransactions[0].sourceSbo}` : 'Pendiente',
     },
   ];
 
@@ -2220,11 +2277,11 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       <div className="dashboard-header">
         <div>
           <h2 style={{ margin: 0 }}>Dashboard de egresos</h2>
-          <div className="small" style={{ marginTop: 4 }}>{subtitle}</div>
+          <div className="small" style={{ marginTop: 2 }}>{subtitle}</div>
         </div>
       </div>
 
-      <div className="dashboard-tabs row" style={{ gap: 8 }}>
+      <div className="dashboard-tabs">
         <button className={viewMode === 'summary' ? '' : 'secondary'} onClick={() => setViewMode('summary')}>
           Resumen
         </button>
@@ -2236,7 +2293,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
         </button>
       </div>
 
-      <div className="dashboard-controls row">
+      <div className="dashboard-controls">
         {viewMode === 'supplier' ? (
           <>
             <label className="small dashboard-checkbox">
@@ -2359,6 +2416,21 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
                         </div>
                       );
                     })}
+                  </div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Actividad reciente</h3>
+                  <div className="dashboard-recent-list">
+                    {recentTransactions.length ? recentTransactions.slice(0, 4).map((tx) => (
+                      <div key={tx.id || tx._id || `${tx.date}-${tx.description}`} className="dashboard-recent-item">
+                        <div>
+                          <strong>{tx.description || tx.concepto || 'Movimiento sin descripción'}</strong>
+                          <div className="small">{String(tx.date || '').slice(0, 10)} · {tx.supplierName || tx.sapMeta?.businessPartner || 'Sin proveedor'}</div>
+                        </div>
+                        <strong>{formatCurrency(showCategoryIva ? tx.amount : tx.subtotal)}</strong>
+                      </div>
+                    )) : <div className="small">No hay movimientos recientes para mostrar.</div>}
                   </div>
                 </section>
 
@@ -2607,22 +2679,22 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
 
   const dashboardTotals = [
     {
-      label: showCategoryIva ? 'Total ingresos con IVA' : 'Total ingresos sin IVA',
+      label: 'Total mes',
       value: formatCurrency(stats?.total_expenses || 0),
-      helper: 'Movimientos tipo ingreso',
+      helper: showCategoryIva ? 'Ingresos con IVA' : 'Ingresos sin IVA',
     },
     {
-      label: 'Categorías 2 con movimiento',
+      label: 'Movimientos',
       value: String(categoryRows.length),
-      helper: 'Con al menos un movimiento',
+      helper: 'Categorías activas',
     },
     {
-      label: 'Proveedores con ingreso',
+      label: 'Proveedores',
       value: String(supplierSummary.length),
       helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
     },
     {
-      label: 'Balance total del proyecto',
+      label: 'Balance proyecto',
       value: formatCurrency(projectBalance),
       helper: 'Ingresos menos egresos',
     },
@@ -2637,7 +2709,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
         </div>
       </div>
 
-      <div className="dashboard-tabs row" style={{ gap: 8 }}>
+      <div className="dashboard-tabs">
         <button className={viewMode === 'summary' ? '' : 'secondary'} onClick={() => setViewMode('summary')}>
           Resumen
         </button>
@@ -2649,7 +2721,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
         </button>
       </div>
 
-      <div className="dashboard-controls row">
+      <div className="dashboard-controls">
         {viewMode === 'supplier' ? (
           <>
             <label className="small dashboard-checkbox">
