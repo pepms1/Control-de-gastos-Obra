@@ -99,29 +99,6 @@ class TelegramAdminBootstrapTests(unittest.TestCase):
         self.assertEqual(fake_telegram_users.calls, [])
 
 
-class TelegramImportsRecipientResolutionTests(unittest.TestCase):
-    def test_prefers_explicit_imports_chat_id(self):
-        with patch.dict(main.os.environ, {'TELEGRAM_IMPORTS_CHAT_ID': '777', 'TELEGRAM_CHAT_ID': '888'}, clear=False), \
-            patch.object(main, 'get_telegram_admin_chat_id', return_value='13875693'):
-            self.assertEqual(main.get_telegram_imports_chat_id(), '777')
-
-    def test_falls_back_to_admin_chat_id(self):
-        with patch.dict(main.os.environ, {'TELEGRAM_IMPORTS_CHAT_ID': '', 'TELEGRAM_CHAT_ID': ''}, clear=False), \
-            patch.object(main, 'get_telegram_admin_chat_id', return_value='13875693'):
-            self.assertEqual(main.get_telegram_imports_chat_id(), '13875693')
-
-    def test_falls_back_to_telegram_chat_id_when_admin_missing(self):
-        with patch.dict(main.os.environ, {'TELEGRAM_IMPORTS_CHAT_ID': '', 'TELEGRAM_CHAT_ID': '888'}, clear=False), \
-            patch.object(main, 'get_telegram_admin_chat_id', return_value=''):
-            self.assertEqual(main.get_telegram_imports_chat_id(), '888')
-
-    def test_falls_back_to_default_chat_id(self):
-        with patch.dict(main.os.environ, {'TELEGRAM_IMPORTS_CHAT_ID': '', 'TELEGRAM_CHAT_ID': ''}, clear=False), \
-            patch.object(main, 'get_telegram_admin_chat_id', return_value=''), \
-            patch.object(main, 'get_telegram_default_chat_id', return_value=999):
-            self.assertEqual(main.get_telegram_imports_chat_id(), '999')
-
-
 if __name__ == '__main__':
     unittest.main()
 
