@@ -985,13 +985,30 @@ def send_telegram_to_chat(text: str, chat_id: int | str | None = None) -> bool:
         return False
 
 
+def get_telegram_imports_chat_id() -> str:
+    imports_chat_id = (os.getenv("TELEGRAM_IMPORTS_CHAT_ID") or "").strip()
+    if imports_chat_id:
+        return imports_chat_id
+
+    admin_chat_id = _telegram_normalize_chat_id(get_telegram_admin_chat_id())
+    if admin_chat_id:
+        return admin_chat_id
+
+    fallback_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    if fallback_chat_id:
+        return fallback_chat_id
+
+    default_chat_id = get_telegram_default_chat_id()
+    return str(default_chat_id).strip() if default_chat_id is not None else ""
+
+
 def send_telegram_import_message(text: str) -> bool:
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-    imports_chat_id = (os.getenv("TELEGRAM_IMPORTS_CHAT_ID") or "").strip()
+    imports_chat_id = get_telegram_imports_chat_id()
 
     if not token or not imports_chat_id:
         logger.warning(
-            "Telegram imports notification skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_IMPORTS_CHAT_ID is not configured"
+            "Telegram imports notification skipped: TELEGRAM_BOT_TOKEN or chat id is not configured"
         )
         return False
 
