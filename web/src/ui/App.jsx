@@ -336,7 +336,6 @@ function Nav({
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar', true],
     ['settings', 'Ajustes', canSeeSettings],
-    ['more', 'Más', true],
   ];
 
   const linkStyle = (active) => ({
@@ -424,27 +423,19 @@ function Nav({
       </div>
 
       <div className="mobile-bottom-nav">
-        {mobileBottomItems.filter(([, , show]) => show).map(([key, label]) => {
-          const isMore = key === 'more';
-          const active = isMore ? profileMenuOpen : tab === key;
-          return (
-            <button
-              key={key}
-              type="button"
-              className={active ? 'active' : ''}
-              onClick={() => {
-                if (isMore) {
-                  setProfileMenuOpen((prev) => !prev);
-                  return;
-                }
-                setProfileMenuOpen(false);
-                setTab(key);
-              }}
-            >
-              {label}
-            </button>
-          );
-        })}
+        {mobileBottomItems.filter(([, , show]) => show).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            className={tab === key ? 'active' : ''}
+            onClick={() => {
+              setProfileMenuOpen(false);
+              setTab(key);
+            }}
+          >
+            {label}
+          </button>
+        ))}
       </div>
     </>
   );
