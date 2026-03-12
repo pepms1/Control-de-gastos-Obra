@@ -4686,11 +4686,23 @@ def build_suspicious_project_resolutions_query(
         "sap.movementType": "egreso",
     }
 
+    manual_resolved_len_expr = {
+        "$strLenCP": {
+            "$trim": {
+                "input": {
+                    "$toString": {
+                        "$ifNull": ["$sap.manualResolvedProjectId", ""]
+                    }
+                }
+            }
+        }
+    }
+
     normalized_status = (status or "pending").strip().lower()
     if normalized_status == "pending":
-        query["sap.manualResolvedProjectId"] = {"$in": [None, ""]}
+        query["$expr"] = {"$eq": [manual_resolved_len_expr, 0]}
     elif normalized_status == "resolved":
-        query["sap.manualResolvedProjectId"] = {"$nin": [None, ""]}
+        query["$expr"] = {"$gt": [manual_resolved_len_expr, 0]}
 
     normalized_source_sbo = normalize_non_empty_string(source_sbo)
     if normalized_source_sbo:
@@ -4729,6 +4741,50 @@ def build_suspicious_project_resolutions_query(
         ]
 
     return query
+
+
+def normalize_suspicious_resolution_payload(payload: dict | None) -> dict:
+    incoming = payload if isinstance(payload, dict) else {}
+    aliases = {
+        "projectId": "project_id",
+        "projectCode": "project_code",
+        "projectName": "project_name",
+        "resolutionReason": "resolution_reason",
+        "resolveTo": "resolve_to",
+        "manualResolvedProjectId": "manual_resolved_project_id",
+        "manualResolvedProjectCode": "manual_resolved_project_code",
+        "manualResolvedProjectName": "manual_resolved_project_name",
+    }
+    normalized = dict(incoming)
+    for camel_key, snake_key in aliases.items():
+        if normalized.get(snake_key) in (None, "") and normalized.get(camel_key) not in (None, ""):
+            normalized[snake_key] = normalized.get(camel_key)
+    if normalized.get("resolve_to") in (None, "") and normalized.get("resolution") not in (None, ""):
+        normalized["resolve_to"] = normalized.get("resolution")
+    if normalized.get("resolution_reason") in (None, ""):
+        for fallback_key in ("reason", "note"):
+            if normalized.get(fallback_key) not in (None, ""):
+                normalized["resolution_reason"] = normalized.get(fallback_key)
+                break
+    return normalized
+
+
+def resolve_project_metadata_from_id(project_id: str | None) -> tuple[str | None, str | None, str | None]:
+    normalized_id = normalize_non_empty_string(project_id)
+    if not normalized_id:
+        return None, None, None
+
+    project_code = None
+    project_name = None
+    if ObjectId.is_valid(normalized_id):
+        project_doc = db.projects.find_one({"_id": ObjectId(normalized_id)}) or {}
+        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+        project_code = normalize_non_empty_string(
+            project_doc.get("code") or project_doc.get("projectCode") or sap_doc.get("projectCode") or sap_doc.get("sapName")
+        )
+        project_name = normalize_non_empty_string(project_doc.get("name") or sap_doc.get("projectName") or project_doc.get("projectName"))
+
+    return normalized_id, project_code, project_name
 
 
 def serialize_suspicious_project_resolution_row(tx: dict) -> dict:
@@ -4814,10 +4870,21 @@ def get_admin_suspicious_project_resolution_detail(transaction_id: str, _: dict 
 
 @app.post("/api/admin/suspicious-project-resolutions/{transaction_id}/resolve")
 def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: dict, user: dict = Depends(require_admin)):
-    resolution = str(payload.get("resolution") or "").strip().lower()
-    reason = normalize_non_empty_string(payload.get("reason") or payload.get("note"))
+    normalized_transaction_id = str(transaction_id or "").strip()
+    if not normalized_transaction_id or not ObjectId.is_valid(normalized_transaction_id):
+        raise HTTPException(status_code=400, detail="transactionId is required and must be a valid ObjectId")
 
-    tx = db.transactions.find_one({"_id": oid(transaction_id), "source": "sap-sbo"})
+    normalized_payload = normalize_suspicious_resolution_payload(payload)
+    logger.info(
+        "resolve suspicious-project transactionId=%s payload=%s",
+        normalized_transaction_id,
+        _serialize_any(normalized_payload),
+    )
+
+    resolve_to = str(normalized_payload.get("resolve_to") or "").strip().lower()
+    reason = normalize_non_empty_string(normalized_payload.get("resolution_reason"))
+
+    tx = db.transactions.find_one({"_id": ObjectId(normalized_transaction_id), "source": "sap-sbo"})
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
@@ -4827,29 +4894,43 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
     payment_code = normalize_non_empty_string(sap_doc.get("paymentProjectCode"))
     payment_name = normalize_non_empty_string(sap_doc.get("paymentProjectName"))
 
-    selected_project_code = normalize_non_empty_string(payload.get("projectCode"))
-    selected_project_name = normalize_non_empty_string(payload.get("projectName"))
-    selected_project_id = normalize_non_empty_string(payload.get("projectId"))
+    selected_project_id = normalize_non_empty_string(
+        normalized_payload.get("manual_resolved_project_id") or normalized_payload.get("project_id")
+    )
+    selected_project_code = normalize_non_empty_string(
+        normalized_payload.get("manual_resolved_project_code") or normalized_payload.get("project_code")
+    )
+    selected_project_name = normalize_non_empty_string(
+        normalized_payload.get("manual_resolved_project_name") or normalized_payload.get("project_name")
+    )
 
-    if resolution == "document":
+    if resolve_to == "document":
         selected_project_code = document_code
         selected_project_name = document_name
-    elif resolution == "payment":
+    elif resolve_to == "payment":
         selected_project_code = payment_code
         selected_project_name = payment_name
-    elif resolution in {"custom", "other"}:
+    elif resolve_to in {"custom", "other", "manual", ""}:
         pass
     else:
-        raise HTTPException(status_code=400, detail="resolution must be document, payment or custom")
+        raise HTTPException(status_code=400, detail="resolve_to must be document, payment or custom")
+
+    if selected_project_id and (not selected_project_code or not selected_project_name):
+        _, project_code_from_id, project_name_from_id = resolve_project_metadata_from_id(selected_project_id)
+        selected_project_code = selected_project_code or project_code_from_id
+        selected_project_name = selected_project_name or project_name_from_id
 
     if not (selected_project_code or selected_project_name or selected_project_id):
-        raise HTTPException(status_code=400, detail="Resolved project is required")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not derive resolved project. Provide project_id/project_code/project_name or use resolve_to=document|payment with available SAP projects.",
+        )
 
     now_iso = datetime.now(timezone.utc).isoformat()
     resolved_by = normalize_non_empty_string(user.get("displayName") or user.get("username") or user.get("id"))
 
     db.transactions.update_one(
-        {"_id": oid(transaction_id)},
+        {"_id": ObjectId(normalized_transaction_id)},
         {
             "$set": {
                 "sap.manualResolvedProjectId": selected_project_id,
@@ -4863,8 +4944,23 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
         },
     )
 
-    updated = db.transactions.find_one({"_id": oid(transaction_id)})
-    return serialize_suspicious_project_resolution_row(updated)
+    updated = db.transactions.find_one({"_id": ObjectId(normalized_transaction_id)})
+    updated_sap = updated.get("sap") if isinstance(updated.get("sap"), dict) else {}
+    persisted_project_id = normalize_non_empty_string(updated_sap.get("manualResolvedProjectId"))
+    persisted_project_code = normalize_non_empty_string(updated_sap.get("manualResolvedProjectCode"))
+    persisted_project_name = normalize_non_empty_string(updated_sap.get("manualResolvedProjectName"))
+    if not (persisted_project_id or persisted_project_code or persisted_project_name):
+        raise HTTPException(status_code=500, detail="Manual resolution was not persisted")
+
+    return {
+        "ok": True,
+        "transactionId": normalized_transaction_id,
+        "manualResolvedProjectId": updated_sap.get("manualResolvedProjectId"),
+        "manualResolvedProjectCode": updated_sap.get("manualResolvedProjectCode"),
+        "manualResolvedProjectName": updated_sap.get("manualResolvedProjectName"),
+        "isProjectResolutionSuspicious": bool(updated_sap.get("isProjectResolutionSuspicious")),
+        "resolvedAt": updated_sap.get("manualResolvedAt"),
+    }
 
 
 @app.post("/api/admin/suspicious-project-resolutions/bulk-resolve-document")
