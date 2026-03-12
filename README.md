@@ -43,3 +43,25 @@ Comando sugerido para Render Cron:
 - `python3 scripts/render_cron_import_sbo_v2.py`
 
 Opcional: puedes usar `render.yaml` incluido como base para crear el servicio `type: cron`.
+
+
+## Telegram + imports SAP (V2)
+
+- Backend centraliza notificaciones Telegram para `POST /api/cron/import/sap-movements-by-sbo`.
+- Destinatarios: `telegram_users` con `status=approved`/`approved=true`; fallback a `TELEGRAM_CHAT_ID` y `TELEGRAM_DEFAULT_CHAT_ID`.
+- Si Telegram falla, el import SAP **no** se cae (best-effort; solo log).
+- Webhook disponible en `POST /api/telegram/webhook`.
+- Test manual admin: `POST /api/admin/telegram/test?message=<texto>`.
+
+Etiquetado de origen (`X-Trigger-Source`):
+- Frontend V2 envía `X-Trigger-Source: frontend`.
+- Cron `scripts/render_cron_import_sbo_v2.py` envía `X-Trigger-Source: cron`.
+- Si no se envía header, backend usa `api`.
+
+Pruebas rápidas:
+1. Test manual Telegram:
+   - `POST /api/admin/telegram/test?message=hola`
+2. Import SAP desde frontend:
+   - Usar botón **Import SAP** (ya manda `X-Trigger-Source: frontend`).
+3. Import SAP desde cron:
+   - `python3 scripts/render_cron_import_sbo_v2.py` (manda `X-Trigger-Source: cron`).

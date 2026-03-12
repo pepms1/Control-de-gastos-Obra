@@ -332,6 +332,7 @@ export const api = {
     if (force) qs.set('force', '1');
     return backendReq(`/api/cron/import/sap-movements-by-sbo?${qs}`, {
       method: 'POST',
+      headers: { 'X-Trigger-Source': 'frontend' },
     }).then((response) => normalizeSapMovementsBySboResponse(response));
   },
 

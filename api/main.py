@@ -961,6 +961,49 @@ def send_telegram_to_chat(text: str, chat_id: int | str | None = None) -> bool:
         return False
 
 
+def get_telegram_notification_chat_ids() -> list[str]:
+    chat_ids: set[str] = set()
+
+    try:
+        approved_users = db.telegram_users.find(
+            {"$or": [{"status": "approved"}, {"approved": True}]},
+            {"chat_id": 1},
+        )
+        for user_doc in approved_users:
+            normalized = _telegram_normalize_chat_id(user_doc.get("chat_id"))
+            if normalized:
+                chat_ids.add(normalized)
+    except Exception:
+        logger.exception("Failed to resolve telegram_users recipients; falling back to env/default chat ids")
+
+    env_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    if env_chat_id:
+        chat_ids.add(env_chat_id)
+
+    default_chat_id = get_telegram_default_chat_id()
+    if default_chat_id is not None:
+        chat_ids.add(str(default_chat_id))
+
+    return sorted(chat_ids)
+
+
+def send_telegram_broadcast(text: str) -> dict:
+    recipients = get_telegram_notification_chat_ids()
+    if not recipients:
+        logger.info("Telegram broadcast skipped: no recipients configured")
+        return {"total": 0, "sent": 0, "failed": 0}
+
+    sent = 0
+    failed = 0
+    for chat_id in recipients:
+        if tg_send(chat_id=chat_id, text=text):
+            sent += 1
+        else:
+            failed += 1
+
+    return {"total": len(recipients), "sent": sent, "failed": failed}
+
+
 def tg_answer_callback_query(callback_query_id: str, text: str | None = None) -> bool:
     token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     if not token or not callback_query_id:
@@ -2294,6 +2337,137 @@ def _summarize_error(exc: Exception) -> str:
     else:
         message = str(exc)
     return (message or exc.__class__.__name__).replace("\n", " ").strip()[:300]
+
+
+def _normalize_trigger_source(trigger_source: str | None) -> str:
+    normalized = str(trigger_source or "").strip().lower()
+    if normalized in {"cron", "frontend", "api"}:
+        return normalized
+    return "api"
+
+
+def _summarize_actor(actor: str | None) -> str:
+    normalized = str(actor or "").strip()
+    return normalized or "system"
+
+
+def _build_sap_movements_success_message(
+    *,
+    sbo: str,
+    mode: str,
+    trigger_source: str,
+    actor: str,
+    result: dict,
+) -> str:
+    lines = [
+        "✅ SAP import",
+        f"SBO: {sbo}",
+        f"Modo: {mode}",
+        f"Origen: {trigger_source}",
+        f"Actor: {actor}",
+        f"Rows total: {int(result.get('rowsTotal') or 0)}",
+        f"Rows ok: {int(result.get('rowsOk') or 0)}",
+        f"Imported: {int(result.get('imported') or 0)}",
+        f"Updated: {int(result.get('updated') or 0)}",
+        f"Unmatched: {int(result.get('unmatched') or 0)}",
+        f"ImportRunId: {result.get('importRunId') or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def _build_sap_movements_already_imported_message(
+    *,
+    sbo: str,
+    mode: str,
+    trigger_source: str,
+    actor: str,
+    import_run_id: str | None,
+) -> str:
+    lines = [
+        "ℹ️ SAP import",
+        f"SBO: {sbo}",
+        f"Modo: {mode}",
+        f"Origen: {trigger_source}",
+        f"Actor: {actor}",
+        "Resultado: already imported",
+        f"ImportRunId: {import_run_id or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def _build_sap_movements_error_message(*, sbo: str, mode: str, trigger_source: str, actor: str, error: str) -> str:
+    lines = [
+        "❌ SAP import",
+        f"SBO: {sbo}",
+        f"Modo: {mode}",
+        f"Origen: {trigger_source}",
+        f"Actor: {actor}",
+        f"Error: {error}",
+    ]
+    return "\n".join(lines)
+
+
+def notify_sap_movements_by_sbo_result(
+    *,
+    sbo: str,
+    mode: str,
+    trigger_source: str,
+    actor: str,
+    result: dict,
+) -> None:
+    normalized_source = _normalize_trigger_source(trigger_source)
+    normalized_actor = _summarize_actor(actor)
+
+    if result.get("already_imported"):
+        message = _build_sap_movements_already_imported_message(
+            sbo=sbo,
+            mode=mode,
+            trigger_source=normalized_source,
+            actor=normalized_actor,
+            import_run_id=str(result.get("importRunId") or "") or None,
+        )
+    else:
+        message = _build_sap_movements_success_message(
+            sbo=sbo,
+            mode=mode,
+            trigger_source=normalized_source,
+            actor=normalized_actor,
+            result=result,
+        )
+
+    delivery = send_telegram_broadcast(message)
+    logger.info(
+        "Telegram SAP movements notification delivered source=%s actor=%s sent=%s/%s failed=%s",
+        normalized_source,
+        normalized_actor,
+        delivery.get("sent"),
+        delivery.get("total"),
+        delivery.get("failed"),
+    )
+
+
+def notify_sap_movements_by_sbo_error(
+    *,
+    sbo: str,
+    mode: str,
+    trigger_source: str,
+    actor: str,
+    exc: Exception,
+) -> None:
+    message = _build_sap_movements_error_message(
+        sbo=sbo,
+        mode=mode,
+        trigger_source=_normalize_trigger_source(trigger_source),
+        actor=_summarize_actor(actor),
+        error=_summarize_error(exc),
+    )
+    delivery = send_telegram_broadcast(message)
+    logger.info(
+        "Telegram SAP movements error notification delivered sent=%s/%s failed=%s",
+        delivery.get("sent"),
+        delivery.get("total"),
+        delivery.get("failed"),
+    )
 
 
 def notify_sap_latest_import_success(project: str, result: dict):
@@ -5175,7 +5349,13 @@ def resolve_projects_by_sap_names() -> dict[str, str]:
     return project_map
 
 
-def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
+def import_sap_movements_by_sbo(
+    sbo: str,
+    mode: str,
+    force: int = 0,
+    trigger_source: str = "api",
+    actor: str | None = None,
+) -> dict:
     source_sbo = str(sbo or "").strip()
     if not source_sbo:
         raise HTTPException(status_code=400, detail="sbo is required")
@@ -5194,6 +5374,8 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
 
     import_key = f"sap-movements-by-sbo:{source_sbo}:{normalized_mode}:{s3_key}"
     now = datetime.now(timezone.utc).isoformat()
+    normalized_trigger_source = _normalize_trigger_source(trigger_source)
+    actor_label = _summarize_actor(actor)
 
     run_scope_filter = {
         "source": "sap-movements-by-sbo",
@@ -5224,6 +5406,8 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
         "mode": normalized_mode,
         "bucket": bucket,
         "s3Key": s3_key,
+        "triggerSource": normalized_trigger_source,
+        "triggerActor": actor_label,
     }
 
     if existing_run:
@@ -5441,9 +5625,11 @@ def import_sap_movements_by_sbo(sbo: str, mode: str, force: int = 0) -> dict:
     )
 
     logger.info(
-        "sap-movements-by-sbo completed sbo=%s mode=%s imported=%s updated=%s unmatched=%s rows_error=%s",
+        "sap-movements-by-sbo completed sbo=%s mode=%s source=%s actor=%s imported=%s updated=%s unmatched=%s rows_error=%s",
         source_sbo,
         normalized_mode,
+        normalized_trigger_source,
+        actor_label,
         rows_imported,
         rows_updated,
         rows_unmatched,
@@ -6679,9 +6865,42 @@ def cron_import_sap_movements_by_sbo(
     sbo: str,
     mode: str = "latest",
     force: int = 0,
-    _: dict = Depends(require_admin),
+    x_trigger_source: str | None = Header(default=None, alias="X-Trigger-Source"),
+    user: dict = Depends(require_admin),
 ):
-    return import_sap_movements_by_sbo(sbo=sbo, mode=mode, force=force)
+    trigger_source = _normalize_trigger_source(x_trigger_source)
+    actor = str(user.get("displayName") or user.get("username") or "system").strip() or "system"
+    try:
+        result = import_sap_movements_by_sbo(
+            sbo=sbo,
+            mode=mode,
+            force=force,
+            trigger_source=trigger_source,
+            actor=actor,
+        )
+        try:
+            notify_sap_movements_by_sbo_result(
+                sbo=sbo,
+                mode=mode,
+                trigger_source=trigger_source,
+                actor=actor,
+                result=result,
+            )
+        except Exception:
+            logger.exception("SAP movements Telegram success notification failed sbo=%s mode=%s", sbo, mode)
+        return result
+    except Exception as exc:
+        try:
+            notify_sap_movements_by_sbo_error(
+                sbo=sbo,
+                mode=mode,
+                trigger_source=trigger_source,
+                actor=actor,
+                exc=exc,
+            )
+        except Exception:
+            logger.exception("SAP movements Telegram error notification failed sbo=%s mode=%s", sbo, mode)
+        raise
 
 
 def handle_sap_latest_import(
@@ -7512,10 +7731,16 @@ def admin_cleanup_sap_iva_duplicates(
 
 
 @app.post("/api/admin/telegram/test")
-def admin_test_telegram(user: dict = Depends(require_admin)):
-    sent = send_telegram("✅ test telegram desde backend")
-    logger.info("Admin telegram test requested by %s sent=%s", user.get("username"), sent)
-    return {"sent": sent}
+def admin_test_telegram(message: str = "✅ test telegram desde backend", user: dict = Depends(require_admin)):
+    delivery = send_telegram_broadcast(message)
+    logger.info(
+        "Admin telegram test requested by %s sent=%s/%s failed=%s",
+        user.get("username"),
+        delivery.get("sent"),
+        delivery.get("total"),
+        delivery.get("failed"),
+    )
+    return {"ok": delivery.get("failed", 0) == 0, **delivery}
 
 
 # ---------- seed categories ----------

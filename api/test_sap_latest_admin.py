@@ -232,3 +232,84 @@ class SapMovementsBySboIdempotencyTests(unittest.TestCase):
 
         self.assertTrue(result.get('already_imported'))
         self.assertEqual(result.get('importRunId'), 'run-2')
+
+
+class SapMovementsTelegramNotificationTests(unittest.TestCase):
+    def test_success_message_format_contains_required_fields(self):
+        message = main._build_sap_movements_success_message(
+            sbo='SBO_GMDI',
+            mode='latest',
+            trigger_source='cron',
+            actor='scheduler',
+            result={
+                'rowsTotal': 12,
+                'rowsOk': 11,
+                'imported': 7,
+                'updated': 4,
+                'unmatched': 1,
+                'importRunId': 'run-123',
+            },
+        )
+
+        self.assertIn('✅ SAP import', message)
+        self.assertIn('SBO: SBO_GMDI', message)
+        self.assertIn('Modo: latest', message)
+        self.assertIn('Origen: cron', message)
+        self.assertIn('Actor: scheduler', message)
+        self.assertIn('Rows total: 12', message)
+        self.assertIn('Rows ok: 11', message)
+        self.assertIn('Imported: 7', message)
+        self.assertIn('Updated: 4', message)
+        self.assertIn('Unmatched: 1', message)
+        self.assertIn('ImportRunId: run-123', message)
+
+    def test_cron_endpoint_notifies_result_with_trigger_source(self):
+        with patch.object(main, 'import_sap_movements_by_sbo', return_value={'already_imported': True, 'importRunId': 'run-9'}) as import_mock, patch.object(
+            main, 'notify_sap_movements_by_sbo_result'
+        ) as notify_mock:
+            result = main.cron_import_sap_movements_by_sbo(
+                sbo='SBO_TEST',
+                mode='latest',
+                force=0,
+                x_trigger_source='frontend',
+                user={'username': 'admin-user'},
+            )
+
+        self.assertTrue(result.get('already_imported'))
+        import_mock.assert_called_once()
+        notify_mock.assert_called_once_with(
+            sbo='SBO_TEST',
+            mode='latest',
+            trigger_source='frontend',
+            actor='admin-user',
+            result={'already_imported': True, 'importRunId': 'run-9'},
+        )
+
+    def test_cron_endpoint_notifies_error_and_reraises(self):
+        error = RuntimeError('sap failed')
+        with patch.object(main, 'import_sap_movements_by_sbo', side_effect=error), patch.object(
+            main, 'notify_sap_movements_by_sbo_error'
+        ) as notify_error_mock:
+            with self.assertRaises(RuntimeError):
+                main.cron_import_sap_movements_by_sbo(
+                    sbo='SBO_TEST',
+                    mode='latest',
+                    force=0,
+                    x_trigger_source='cron',
+                    user={'displayName': 'Render Cron'},
+                )
+
+        notify_error_mock.assert_called_once()
+        kwargs = notify_error_mock.call_args.kwargs
+        self.assertEqual(kwargs.get('trigger_source'), 'cron')
+        self.assertEqual(kwargs.get('actor'), 'Render Cron')
+
+
+class TelegramAdminTestEndpointTests(unittest.TestCase):
+    def test_admin_test_endpoint_broadcasts(self):
+        with patch.object(main, 'send_telegram_broadcast', return_value={'total': 2, 'sent': 2, 'failed': 0}) as broadcast_mock:
+            result = main.admin_test_telegram(message='hola', user={'username': 'root'})
+
+        broadcast_mock.assert_called_once_with('hola')
+        self.assertTrue(result.get('ok'))
+        self.assertEqual(result.get('sent'), 2)
