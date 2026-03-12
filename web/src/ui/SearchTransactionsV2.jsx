@@ -43,10 +43,8 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
       <td>${supplier?.name || '—'}</td>
       <td>${row?.description || '—'}</td>
       <td>${category2?.name || '—'}</td>
-      <td style="text-align:right">
-        <div><strong>Sin IVA:</strong> ${formatCurrencyWithFallback(getAmountWithoutTax(row))}</div>
-        <div><strong>Con IVA:</strong> ${formatCurrencyWithFallback(getAmountWithTax(row))}</div>
-      </td>
+      <td style="text-align:right">${formatCurrencyWithFallback(getAmountWithoutTax(row))}</td>
+      <td style="text-align:right">${formatCurrencyWithFallback(getAmountWithTax(row))}</td>
       <td>${getTypeLabel(row?.type)}</td>
     </tr>`;
   }).join('');
@@ -66,8 +64,8 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
       <div><strong>Total con IVA:</strong> $${formatMoney(totalWithTax)}</div>
     </div>
     <table>
-      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th>Montos</th><th>Tipo</th></tr></thead>
-      <tbody>${rowsHtml || '<tr><td colspan="6">Sin resultados</td></tr>'}</tbody>
+      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th>Sin IVA</th><th>Con IVA</th><th>Tipo</th></tr></thead>
+      <tbody>${rowsHtml || '<tr><td colspan="7">Sin resultados</td></tr>'}</tbody>
     </table>
   </body></html>`;
 }
@@ -419,7 +417,8 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
               <th>Proveedor</th>
               <th>Descripción</th>
               <th>Categoría 2</th>
-              <th>Montos</th>
+              <th>Sin IVA</th>
+              <th>Con IVA</th>
               <th>Tipo</th>
             </tr>
           </thead>
@@ -433,22 +432,21 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
                   <td>{supplier?.name || '—'}</td>
                   <td>{row.description || '—'}</td>
                   <td>{category2?.name || '—'}</td>
-                  <td style={{ whiteSpace: 'nowrap', minWidth: 160 }}>
-                    <div className="small"><strong>Sin IVA:</strong> {formatCurrencyWithFallback(getAmountWithoutTax(row))}</div>
-                    <div className="small" style={{ marginTop: 2 }}><strong>Con IVA:</strong> {formatCurrencyWithFallback(getAmountWithTax(row))}</div>
-                  </td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{formatCurrencyWithFallback(getAmountWithoutTax(row))}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{formatCurrencyWithFallback(getAmountWithTax(row))}</td>
                   <td>{getTypeLabel(row?.type)}</td>
                 </tr>
               );
             })}
-            {!visibleRows.length && !loading && <tr><td colSpan={6} className="small">Sin resultados</td></tr>}
+            {!visibleRows.length && !loading && <tr><td colSpan={7} className="small">Sin resultados</td></tr>}
           </tbody>
           <tfoot>
             <tr>
               <td colSpan={3} />
               <td style={{ textAlign: 'right', fontWeight: 700 }}>Totales visibles</td>
+              <td style={{ fontWeight: 700 }}>{formatCurrency(totalWithoutTax)}</td>
               <td style={{ fontWeight: 700 }}>{formatCurrency(totalWithTax)}</td>
-              <td className="small">Sin IVA: {formatCurrency(totalWithoutTax)}</td>
+              <td />
             </tr>
           </tfoot>
         </table>
