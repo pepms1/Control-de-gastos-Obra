@@ -557,9 +557,11 @@ export default function App() {
     }
 
     const currentProjectId = localStorage.getItem(SELECTED_PROJECT_KEY) || '';
+    const preferredProjectId = String(session?.uiPrefs?.defaultProjectId || '').trim();
     const exists = selectableList.some((project) => project._id === currentProjectId);
+    const preferredExists = selectableList.some((project) => String(project?._id || '') === preferredProjectId);
     const fallbackProjectId = selectableList[0]?._id || '';
-    const nextProjectId = exists ? currentProjectId : fallbackProjectId;
+    const nextProjectId = exists ? currentProjectId : (preferredExists ? preferredProjectId : fallbackProjectId);
 
     setSelectedProjectId(nextProjectId);
     if (nextProjectId) localStorage.setItem(SELECTED_PROJECT_KEY, nextProjectId);
@@ -711,6 +713,7 @@ export default function App() {
             selectedProjectId={selectedProjectId}
             onProjectCreated={loadProjects}
             onSessionUpdated={setSession}
+            onSelectedProjectSaved={setSelectedProjectId}
             onCatalogChanged={async () => {
               await refreshCatalog();
               setToast('Catálogo actualizado');
@@ -722,7 +725,7 @@ export default function App() {
   );
 }
 
-function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects, session, canUseAdminPreferences, selectedProjectId, onCatalogChanged, onProjectCreated, onSessionUpdated }) {
+function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects, session, canUseAdminPreferences, selectedProjectId, onCatalogChanged, onProjectCreated, onSessionUpdated, onSelectedProjectSaved }) {
   const [section, setSection] = useState('catalog');
 
   return (
@@ -805,7 +808,9 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
         <MyProjectVisibilitySection
           allProjects={allProjects}
           session={session}
+          selectedProjectId={selectedProjectId}
           onSessionUpdated={onSessionUpdated}
+          onSelectedProjectSaved={onSelectedProjectSaved}
         />
       )}
 
@@ -845,7 +850,7 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
 }
 
 
-function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) {
+function MyProjectVisibilitySection({ allProjects, session, selectedProjectId, onSessionUpdated, onSelectedProjectSaved }) {
   const initialHiddenProjectIds = useMemo(
     () => (Array.isArray(session?.uiPrefs?.hiddenProjectIds)
       ? session.uiPrefs.hiddenProjectIds.map(String)
@@ -855,6 +860,8 @@ function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) 
   const [hiddenProjectIds, setHiddenProjectIds] = useState(() => (
     initialHiddenProjectIds
   ));
+  const initialDefaultProjectId = useMemo(() => String(session?.uiPrefs?.defaultProjectId || '').trim(), [session?.uiPrefs?.defaultProjectId]);
+  const [defaultProjectId, setDefaultProjectId] = useState(() => initialDefaultProjectId);
   const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -868,12 +875,30 @@ function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) 
     setHiddenProjectIds(initialHiddenProjectIds);
   }, [initialHiddenProjectIds]);
 
+  useEffect(() => {
+    setDefaultProjectId(initialDefaultProjectId);
+  }, [initialDefaultProjectId]);
+
   const visibleProjectIds = useMemo(
     () => visibleProjects.map((project) => String(project?._id || '')).filter(Boolean),
     [visibleProjects],
   );
 
   const visibleProjectIdSet = useMemo(() => new Set(visibleProjectIds), [visibleProjectIds]);
+
+  const selectableDefaultProjectIds = useMemo(
+    () => visibleProjects
+      .filter((project) => isVisibleForMe(project?._id))
+      .map((project) => String(project?._id || ''))
+      .filter(Boolean),
+    [visibleProjects, hiddenProjectIds],
+  );
+
+  useEffect(() => {
+    if (!defaultProjectId) return;
+    if (selectableDefaultProjectIds.includes(defaultProjectId)) return;
+    setDefaultProjectId('');
+  }, [defaultProjectId, selectableDefaultProjectIds]);
 
   const projectCounts = useMemo(() => {
     const hiddenInVisibleCount = visibleProjectIds.filter((projectId) => hiddenProjectIds.includes(projectId)).length;
@@ -925,6 +950,7 @@ function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) 
 
   function resetMyView() {
     setHiddenProjectIds(initialHiddenProjectIds);
+    setDefaultProjectId(initialDefaultProjectId);
     setMessage('Preferencias restablecidas sin guardar.');
   }
 
@@ -932,12 +958,28 @@ function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) 
     setSaving(true);
     setMessage('');
     try {
-      const response = await api.updateMyPreferences({ uiPrefs: { hiddenProjectIds } });
-      const nextUiPrefs = response?.uiPrefs || { hiddenProjectIds: [] };
+      const response = await api.updateMyPreferences({ uiPrefs: { hiddenProjectIds, defaultProjectId } });
+      const nextUiPrefs = response?.uiPrefs || { hiddenProjectIds: [], defaultProjectId: '' };
       const nextSession = { ...getSession(), ...session, uiPrefs: nextUiPrefs };
       saveSession(nextSession);
       onSessionUpdated(nextSession);
-      setMessage('Preferencias guardadas.');
+
+      const savedDefaultProjectId = String(nextUiPrefs?.defaultProjectId || '').trim();
+      setDefaultProjectId(savedDefaultProjectId);
+      if (savedDefaultProjectId) {
+        localStorage.setItem(SELECTED_PROJECT_KEY, savedDefaultProjectId);
+      } else {
+        localStorage.removeItem(SELECTED_PROJECT_KEY);
+      }
+      if (typeof onSelectedProjectSaved === 'function') {
+        onSelectedProjectSaved(savedDefaultProjectId);
+      }
+
+      if (savedDefaultProjectId && String(savedDefaultProjectId) !== String(selectedProjectId || '')) {
+        setMessage('Preferencias guardadas. Proyecto por defecto actualizado.');
+      } else {
+        setMessage('Preferencias guardadas.');
+      }
     } catch (error) {
       setMessage(error.message || 'No se pudieron guardar las preferencias.');
     } finally {
@@ -964,6 +1006,26 @@ function MyProjectVisibilitySection({ allProjects, session, onSessionUpdated }) 
             <button type="button" className="secondary" onClick={hideAllProjects}>Ocultar todos</button>
             <button type="button" className="secondary" onClick={resetMyView}>Restablecer mi vista</button>
           </div>
+
+          <label className="small" style={{ display: 'grid', gap: 6 }}>
+            Proyecto por defecto al entrar
+            <select
+              value={defaultProjectId}
+              onChange={(e) => { setDefaultProjectId(e.target.value); setMessage(''); }}
+            >
+              <option value="">Sin proyecto por defecto</option>
+              {visibleProjects
+                .filter((project) => selectableDefaultProjectIds.includes(String(project?._id || '')))
+                .map((project) => {
+                  const projectId = String(project?._id || '');
+                  return (
+                    <option key={`default-${projectId}`} value={projectId}>
+                      {getProjectDisplayName(project)}
+                    </option>
+                  );
+                })}
+            </select>
+          </label>
 
           <input
             type="search"
