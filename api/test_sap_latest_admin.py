@@ -62,6 +62,66 @@ class SapLatestAdminEndpointTests(unittest.TestCase):
         core_mock.assert_called_once()
 
 
+class TelegramAdminBootstrapTests(unittest.TestCase):
+    class _FakeTelegramUsers:
+        def __init__(self):
+            self.calls = []
+
+        def update_one(self, query, update, upsert=False):
+            self.calls.append({'query': query, 'update': update, 'upsert': upsert})
+            return None
+
+    def test_ensure_telegram_admin_user_upserts_approved_admin_chat(self):
+        fake_telegram_users = self._FakeTelegramUsers()
+        fake_db = type('FakeDb', (), {'telegram_users': fake_telegram_users})()
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'get_telegram_admin_chat_id', return_value='13875693'):
+            main.ensure_telegram_admin_user()
+
+        self.assertEqual(len(fake_telegram_users.calls), 1)
+        call = fake_telegram_users.calls[0]
+        self.assertEqual(call['query'], {'chat_id': '13875693'})
+        self.assertTrue(call['upsert'])
+        update_set = call['update']['$set']
+        self.assertEqual(update_set['status'], 'approved')
+        self.assertTrue(update_set['approved'])
+        self.assertEqual(update_set['chat_id'], '13875693')
+        self.assertTrue(update_set['is_admin'])
+        self.assertEqual(call['update']['$setOnInsert'], {'requested_at': update_set['updated_at']})
+
+    def test_ensure_telegram_admin_user_skips_when_chat_id_missing(self):
+        fake_telegram_users = self._FakeTelegramUsers()
+        fake_db = type('FakeDb', (), {'telegram_users': fake_telegram_users})()
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'get_telegram_admin_chat_id', return_value=''):
+            main.ensure_telegram_admin_user()
+
+        self.assertEqual(fake_telegram_users.calls, [])
+
+
+class TelegramImportsRecipientResolutionTests(unittest.TestCase):
+    def test_prefers_explicit_imports_chat_id(self):
+        with patch.dict(main.os.environ, {'TELEGRAM_IMPORTS_CHAT_ID': '777', 'TELEGRAM_CHAT_ID': '888'}, clear=False), \
+            patch.object(main, 'get_telegram_admin_chat_id', return_value='13875693'):
+            self.assertEqual(main.get_telegram_imports_chat_id(), '777')
+
+    def test_falls_back_to_admin_chat_id(self):
+        with patch.dict(main.os.environ, {'TELEGRAM_IMPORTS_CHAT_ID': '', 'TELEGRAM_CHAT_ID': ''}, clear=False), \
+            patch.object(main, 'get_telegram_admin_chat_id', return_value='13875693'):
+            self.assertEqual(main.get_telegram_imports_chat_id(), '13875693')
+
+    def test_falls_back_to_telegram_chat_id_when_admin_missing(self):
+        with patch.dict(main.os.environ, {'TELEGRAM_IMPORTS_CHAT_ID': '', 'TELEGRAM_CHAT_ID': '888'}, clear=False), \
+            patch.object(main, 'get_telegram_admin_chat_id', return_value=''):
+            self.assertEqual(main.get_telegram_imports_chat_id(), '888')
+
+    def test_falls_back_to_default_chat_id(self):
+        with patch.dict(main.os.environ, {'TELEGRAM_IMPORTS_CHAT_ID': '', 'TELEGRAM_CHAT_ID': ''}, clear=False), \
+            patch.object(main, 'get_telegram_admin_chat_id', return_value=''), \
+            patch.object(main, 'get_telegram_default_chat_id', return_value=999):
+            self.assertEqual(main.get_telegram_imports_chat_id(), '999')
+
+
 if __name__ == '__main__':
     unittest.main()
 
