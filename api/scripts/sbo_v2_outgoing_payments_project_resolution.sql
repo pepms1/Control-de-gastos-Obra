@@ -1,6 +1,6 @@
 -- Outgoing payments V2 project resolution
 -- Keeps document-level project logic and adds payment-level project from OVPM.TransId -> JDT1.Project.
--- Final raw project should map to resolved_project_* for egresos.
+-- Final raw/effective project now always uses document project for egresos.
 
 WITH payment_project_ranked AS (
   SELECT
@@ -34,27 +34,12 @@ SELECT
   base.document_project_name,
   pp.payment_project_code,
   pp.payment_project_name,
-  CASE
-    WHEN NULLIF(LTRIM(RTRIM(pp.payment_project_code)), '') IS NOT NULL THEN pp.payment_project_code
-    ELSE base.document_project_code
-  END AS resolved_project_code,
-  CASE
-    WHEN NULLIF(LTRIM(RTRIM(pp.payment_project_code)), '') IS NOT NULL THEN pp.payment_project_name
-    ELSE base.document_project_name
-  END AS resolved_project_name,
-  CASE
-    WHEN NULLIF(LTRIM(RTRIM(pp.payment_project_code)), '') IS NOT NULL THEN 'payment_jdt1'
-    ELSE 'document'
-  END AS project_resolution_source,
-  -- For outgoing payments only: raw project is resolved project.
-  CASE
-    WHEN NULLIF(LTRIM(RTRIM(pp.payment_project_code)), '') IS NOT NULL THEN pp.payment_project_code
-    ELSE base.document_project_code
-  END AS raw_project_code,
-  CASE
-    WHEN NULLIF(LTRIM(RTRIM(pp.payment_project_code)), '') IS NOT NULL THEN pp.payment_project_name
-    ELSE base.document_project_name
-  END AS raw_project_name
+  base.document_project_code AS resolved_project_code,
+  base.document_project_name AS resolved_project_name,
+  'document' AS project_resolution_source,
+  -- For outgoing payments only: raw/effective project always comes from document project.
+  base.document_project_code AS raw_project_code,
+  base.document_project_name AS raw_project_name
 FROM (
   -- Existing V2 outgoing payment query should expose:
   -- * payment_docentry

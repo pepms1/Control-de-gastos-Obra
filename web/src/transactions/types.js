@@ -26,6 +26,14 @@
  * @property {string|null} paymentProjectCode
  * @property {string|null} paymentProjectName
  * @property {string|null} projectResolutionSource
+ * @property {boolean} isProjectResolutionSuspicious
+ * @property {string[]} projectResolutionSuspicionReasons
+ * @property {string|null} manualResolvedProjectId
+ * @property {string|null} manualResolvedProjectCode
+ * @property {string|null} manualResolvedProjectName
+ * @property {string|null} manualResolvedBy
+ * @property {string|null} manualResolvedAt
+ * @property {string|null} manualResolutionReason
  * @property {string|null} normalizedProjectName
  * @property {string|null} sourceDb
  * @property {string|null} sourceSbo

@@ -388,6 +388,26 @@ export const api = {
       method: 'POST',
     }),
 
+  listSuspiciousProjectResolutions: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/admin/suspicious-project-resolutions${qs ? `?${qs}` : ''}`);
+  },
+
+  getSuspiciousProjectResolution: (transactionId) =>
+    backendReq(`/api/admin/suspicious-project-resolutions/${transactionId}`),
+
+  resolveSuspiciousProjectResolution: (transactionId, payload) =>
+    backendReq(`/api/admin/suspicious-project-resolutions/${transactionId}/resolve`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  bulkResolveSuspiciousProjectResolutionToDocument: (transactionIds = [], reason = '') =>
+    backendReq('/api/admin/suspicious-project-resolutions/bulk-resolve-document', {
+      method: 'POST',
+      body: JSON.stringify({ transactionIds, reason }),
+    }),
+
   adminProjects: () => backendReq('/api/admin/projects'),
 
   adminUsers: () => backendReq('/api/admin/users'),

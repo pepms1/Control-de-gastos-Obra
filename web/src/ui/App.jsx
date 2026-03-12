@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
 import { isSapSboTransaction } from '../transactions/helpers.js';
-import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
+import { ImportSapScreen, SuspiciousProjectResolutionScreen } from './ImportAndAdminScreens.jsx';
 import { SearchTransactionsV2 } from './SearchTransactionsV2.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 import { isAdmin as isAdminRole, isSuperAdmin, isViewer, normalizeRole } from './roles.js';
@@ -784,6 +784,15 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
             Proyectos unmatched
           </button>
         )}
+        {isSuperAdmin && (
+          <button
+            type="button"
+            className={section === 'suspicious-project-resolutions' ? '' : 'secondary'}
+            onClick={() => setSection('suspicious-project-resolutions')}
+          >
+            Resolución de sospechosos
+          </button>
+        )}
         <button
           type="button"
           className={section === 'raw-data' ? '' : 'secondary'}
@@ -829,6 +838,8 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
         ))}
 
       {section === 'projects-unmatched' && isSuperAdmin && <AdminProjectsFromUnmatchedSection onProjectCreated={onProjectCreated} />}
+
+      {section === 'suspicious-project-resolutions' && isSuperAdmin && <SuspiciousProjectResolutionScreen />}
 
       {section === 'projects-visibility' && isSuperAdmin && <AdminProjectVisibilitySection onProjectUpdated={onProjectCreated} />}
 
