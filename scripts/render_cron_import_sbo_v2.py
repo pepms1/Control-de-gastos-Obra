@@ -130,6 +130,7 @@ def import_sbo(config: CronConfig, token: str, sbo: str) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "X-Trigger-Source": "cron",
         },
     )
 
