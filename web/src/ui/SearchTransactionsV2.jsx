@@ -76,7 +76,7 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
   const [showFilters, setShowFilters] = useState(false);
   const [supplierFilter, setSupplierFilter] = useState('ALL');
   const [category2Filter, setCategory2Filter] = useState('ALL');
-  const [typeFilter, setTypeFilter] = useState('ALL');
+  const [typeFilter, setTypeFilter] = useState('EXPENSE');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
