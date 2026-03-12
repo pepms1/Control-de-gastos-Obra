@@ -335,7 +335,7 @@ function Nav({
   const mobileBottomItems = [
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar', true],
-    ['settings', 'Importar', canSeeSettings],
+    ['settings', 'Ajustes', canSeeSettings],
     ['more', 'Más', true],
   ];
 
