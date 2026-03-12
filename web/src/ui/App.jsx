@@ -1519,10 +1519,11 @@ function AdminProjectsFromUnmatchedSection({ onProjectCreated }) {
 }
 
 function SapLatestImportSection({ projects, selectedProjectId }) {
+  const ALL_SBO_OPTION = 'TODAS';
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
-  const [sbo, setSbo] = useState('SBO_Rafael');
+  const [sbo, setSbo] = useState(ALL_SBO_OPTION);
   const [mode, setMode] = useState('latest');
   const [forceReimport, setForceReimport] = useState(false);
   const selectedProject =
@@ -1553,8 +1554,37 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
 
     setImporting(true);
     try {
-      const response = await api.importSapMovementsBySbo({ sbo, mode, force: forceReimport });
-      setResult(response);
+      const targetSboList = sbo === ALL_SBO_OPTION ? sboOptions : [sbo];
+      const runs = [];
+
+      for (const targetSbo of targetSboList) {
+        try {
+          const response = await api.importSapMovementsBySbo({ sbo: targetSbo, mode, force: forceReimport });
+          runs.push({ sbo: targetSbo, ok: true, response });
+        } catch (runError) {
+          const errorStatus = runError?.status ? `HTTP ${runError.status}` : 'HTTP desconocido';
+          const errorBody = runError?.body ? JSON.stringify(runError.body) : (runError?.message || 'Sin body');
+          runs.push({
+            sbo: targetSbo,
+            ok: false,
+            error: `No se pudo ejecutar el import SAP ${mode}. ${errorStatus}. Body: ${errorBody}`,
+          });
+        }
+      }
+
+      const failedRuns = runs.filter((run) => !run.ok);
+      if (failedRuns.length > 0) {
+        setError(
+          `El import terminó con errores en ${failedRuns.length} SBO: ${failedRuns.map((run) => run.sbo).join(', ')}.`
+        );
+      }
+
+      setResult({
+        mode,
+        forceReimport,
+        selectedSbo: sbo,
+        runs,
+      });
     } catch (e) {
       const errorStatus = e?.status ? `HTTP ${e.status}` : 'HTTP desconocido';
       const errorBody = e?.body ? JSON.stringify(e.body) : (e?.message || 'Sin body');
@@ -1582,6 +1612,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
         <label style={{ display: 'grid', gap: 6 }}>
           <span>SBO</span>
           <select value={sbo} onChange={(e) => setSbo(e.target.value)} disabled={importing}>
+            <option value={ALL_SBO_OPTION}>{ALL_SBO_OPTION}</option>
             {sboOptions.map((option) => (
               <option key={option} value={option}>
                 {option}
@@ -1609,7 +1640,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
 
       <div>
         <button type="button" onClick={onImportNow} disabled={importing || !selectedProjectId}>
-          {importing ? 'Importando...' : 'Importar latest ahora'}
+          {importing ? 'Importando...' : `Importar ${mode} ahora`}
         </button>
       </div>
 
@@ -1618,19 +1649,25 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
       {result && (
         <div className="card" style={{ margin: 0 }}>
           <h4 style={{ margin: 0, marginBottom: 8 }}>Resultado</h4>
-          <div className="small">status: {withFallback(result?.status)}</div>
-          <div className="small">rowsTotal: {withFallback(result?.rowsTotal, '0')}</div>
-          <div className="small">rowsOk: {withFallback(result?.rowsOk, '0')}</div>
-          <div className="small">imported: {withFallback(result?.imported, '0')}</div>
-          <div className="small">updated: {withFallback(result?.updated, '0')}</div>
-          <div className="small">unmatched: {withFallback(result?.unmatched, '0')}</div>
-          <div className="small">importRunId: {withFallback(result?.importRunId)}</div>
-          <div className="small">already_imported: {withFallback(result?.already_imported)}</div>
-          {result?.already_imported === true && (
-            <div className="small" style={{ marginTop: 8 }}>
-              Este archivo ya había sido importado. importRunId: {withFallback(result?.importRunId)}
-            </div>
-          )}
+          <div className="small">SBO seleccionado: {withFallback(result?.selectedSbo)}</div>
+          <div className="small">Modo: {withFallback(result?.mode)}</div>
+          <div className="small">Forzar reimportación: {result?.forceReimport ? 'Sí' : 'No'}</div>
+          <div className="small">SBO procesados: {withFallback(result?.runs?.length, '0')}</div>
+
+          <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+            {(result?.runs || []).map((run) => (
+              <div key={run.sbo} className="small" style={{ border: '1px solid #e5e7eb', borderRadius: 6, padding: 8 }}>
+                <strong>{run.sbo}</strong>: {run.ok ? 'OK' : 'Error'}
+                {run.ok ? (
+                  <div style={{ marginTop: 4 }}>
+                    status: {withFallback(run?.response?.status)} · rowsTotal: {withFallback(run?.response?.rowsTotal, '0')} · rowsOk: {withFallback(run?.response?.rowsOk, '0')} · imported: {withFallback(run?.response?.imported, '0')} · updated: {withFallback(run?.response?.updated, '0')} · unmatched: {withFallback(run?.response?.unmatched, '0')} · importRunId: {withFallback(run?.response?.importRunId)}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 4, color: '#b00020' }}>{run.error}</div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
