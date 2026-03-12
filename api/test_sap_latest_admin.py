@@ -350,3 +350,37 @@ class TelegramAdminTestEndpointTests(unittest.TestCase):
         broadcast_mock.assert_called_once_with('hola')
         self.assertTrue(result.get('ok'))
         self.assertEqual(result.get('sent'), 2)
+
+
+class SapSboV2ProjectResolutionTests(unittest.TestCase):
+    def test_egreso_uses_document_project_as_raw(self):
+        row = {
+            'document_project_code': 'PBPC',
+            'document_project_name': 'PB Y PC INTERIORES',
+            'payment_project_code': 'CALD',
+            'payment_project_name': 'CALDERON DE LA BARCA',
+            'raw_project_code': 'CALD',
+            'raw_project_name': 'CALDERON DE LA BARCA',
+            'project_resolution_source': 'payment_jdt1',
+        }
+        fields = main.resolve_sbo_project_fields_from_row(row, 'egreso')
+        self.assertEqual(fields['raw_project_code'], 'PBPC')
+        self.assertEqual(fields['raw_project_name'], 'PB Y PC INTERIORES')
+        self.assertEqual(fields['project_resolution_source'], 'document')
+
+    def test_egreso_diff_document_payment_is_suspicious(self):
+        suspicion = main.build_project_resolution_suspicion_fields(
+            'egreso',
+            {
+                'document_project_code': 'PBPC',
+                'document_project_name': 'PB Y PC INTERIORES',
+                'payment_project_code': 'ROKA',
+                'payment_project_name': 'CALDERON DE LA BARCA',
+            },
+        )
+        self.assertTrue(suspicion['isProjectResolutionSuspicious'])
+        self.assertEqual(
+            suspicion['projectResolutionSuspicionReasons'],
+            ['document_project_differs_from_payment_project'],
+        )
+

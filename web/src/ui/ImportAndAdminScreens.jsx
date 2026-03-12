@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { api, SELECTED_PROJECT_KEY } from '../api.js';
 
 function valueToArray(value) {
@@ -311,9 +311,115 @@ function SupplierCategoriesScreen() {
   );
 }
 
+
+export function SuspiciousProjectResolutionScreen() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [status, setStatus] = useState('pending');
+  const [q, setQ] = useState('');
+  const [reasonById, setReasonById] = useState({});
+
+  async function load() {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await api.listSuspiciousProjectResolutions({ status, q });
+      setRows(Array.isArray(response?.items) ? response.items : []);
+    } catch (err) {
+      setError(err.message || 'No se pudo cargar la resolución de sospechosos.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, [status]);
+
+  const visibleRows = useMemo(() => rows, [rows]);
+
+  async function resolveRow(row, resolution) {
+    try {
+      await api.resolveSuspiciousProjectResolution(row.id, {
+        resolution,
+        reason: reasonById[row.id] || '',
+      });
+      await load();
+    } catch (err) {
+      setError(err.message || 'No se pudo resolver la fila.');
+    }
+  }
+
+  return (
+    <div className="container grid">
+      <div className="card">
+        <h2 style={{ marginTop: 0 }}>Resolución de sospechosos</h2>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <select value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="pending">Pendientes</option>
+            <option value="resolved">Resueltos</option>
+            <option value="all">Todos</option>
+          </select>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="paymentNum / invoiceNum / supplier"
+          />
+          <button type="button" onClick={load} disabled={loading}>{loading ? 'Cargando...' : 'Buscar'}</button>
+        </div>
+        {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
+        <table>
+          <thead>
+            <tr>
+              <th>date</th><th>sourceSbo/sourceDb</th><th>supplier</th><th>paymentNum</th><th>invoiceNum</th><th>amount</th>
+              <th>Proyecto doc</th><th>Proyecto pago</th><th>source</th><th>razón</th><th>asignado</th><th>status</th><th>acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.map((row) => (
+              <tr key={row.id}>
+                <td>{row.date || ''}</td>
+                <td>{row.sourceSbo || ''} / {row.sourceDb || ''}</td>
+                <td>{row.supplier || ''}</td>
+                <td>{row.paymentNum || ''}</td>
+                <td>{row.invoiceNum || ''}</td>
+                <td>{row.amount ?? ''}</td>
+                <td>{row.documentProjectName || ''}</td>
+                <td>{row.paymentProjectName || ''}</td>
+                <td>{row.projectResolutionSource || ''}</td>
+                <td>{Array.isArray(row.suspicionReasons) ? row.suspicionReasons.join(', ') : ''}</td>
+                <td>{row.currentAssignedProjectName || row.currentAssignedProjectCode || ''}</td>
+                <td>{row.status || ''}</td>
+                <td>
+                  <div style={{ display: 'grid', gap: 4 }}>
+                    <input
+                      value={reasonById[row.id] || ''}
+                      onChange={(e) => setReasonById((prev) => ({ ...prev, [row.id]: e.target.value }))}
+                      placeholder="nota"
+                    />
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => resolveRow(row, 'document')}>Asignar doc</button>
+                      <button type="button" onClick={() => resolveRow(row, 'payment')}>Asignar pago</button>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {visibleRows.length === 0 && (
+              <tr><td colSpan={13} className="small">No hay registros para los filtros actuales.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function renderRoute(pathname) {
   if (pathname === '/imports/sap') return <ImportSapScreen />;
   if (pathname === '/admin/suppliers/unclassified') return <UnclassifiedSuppliersScreen />;
   if (pathname === '/admin/categories') return <SupplierCategoriesScreen />;
+  if (pathname === '/admin/suspicious-project-resolutions') return <SuspiciousProjectResolutionScreen />;
   return null;
 }

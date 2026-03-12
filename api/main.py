@@ -380,6 +380,37 @@ def normalize_project_prefix(raw_prefix: str | None, slug: str) -> str:
     return prefix
 
 
+def resolve_effective_sap_project_fields(tx_doc: dict) -> dict:
+    sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+
+    manual_project_id = normalize_non_empty_string(
+        sap_doc.get("manualResolvedProjectId") or tx_doc.get("manualResolvedProjectId")
+    )
+    manual_project_code = normalize_non_empty_string(
+        sap_doc.get("manualResolvedProjectCode") or tx_doc.get("manualResolvedProjectCode")
+    )
+    manual_project_name = normalize_non_empty_string(
+        sap_doc.get("manualResolvedProjectName") or tx_doc.get("manualResolvedProjectName")
+    )
+    raw_project_code = normalize_non_empty_string(sap_doc.get("rawProjectCode"))
+    raw_project_name = normalize_non_empty_string(sap_doc.get("rawProjectName"))
+
+    if manual_project_id or manual_project_code or manual_project_name:
+        return {
+            "effectiveProjectId": manual_project_id,
+            "effectiveProjectCode": manual_project_code or raw_project_code,
+            "effectiveProjectName": manual_project_name or raw_project_name,
+            "effectiveProjectSource": "manual",
+        }
+
+    return {
+        "effectiveProjectId": normalize_non_empty_string(tx_doc.get("projectId")),
+        "effectiveProjectCode": raw_project_code,
+        "effectiveProjectName": raw_project_name,
+        "effectiveProjectSource": "automatic",
+    }
+
+
 def serialize_transaction_with_supplier(
     tx: dict,
     suppliers_by_id: dict[str, dict] | None = None,
@@ -443,6 +474,9 @@ def serialize_transaction_with_supplier(
             supplier_rule_indexes=supplier_rule_indexes,
         )
     )
+
+    effective_project_fields = resolve_effective_sap_project_fields(tx_doc)
+    tx_doc.update(effective_project_fields)
 
     return tx_doc
 
@@ -2653,6 +2687,10 @@ def ensure_indexes():
         backfill_sap_transactions_metadata()
     except Exception:
         logger.exception("SAP metadata backfill failed during startup; continuing without blocking server startup")
+    try:
+        backfill_sbo_project_resolution_suspicious_flags()
+    except Exception:
+        logger.exception("SBO suspicious project-resolution backfill failed during startup; continuing without blocking server startup")
     dedupe_sap_transactions_for_unique_index()
     db.transactions.create_index(
         [
@@ -2675,6 +2713,10 @@ def ensure_indexes():
         name="transactions_project_source_db_category_idx",
     )
     db.transactions.create_index([("sap.projectId", 1)], name="transactions_sap_project_id_idx")
+    db.transactions.create_index(
+        [("sap.isProjectResolutionSuspicious", 1), ("sap.manualResolvedProjectId", 1), ("date", -1)],
+        name="transactions_sap_project_resolution_suspicious_idx",
+    )
     db.vendors.create_index(
         [("projectId", 1), ("supplierCardCode", 1)],
         unique=True,
@@ -2731,6 +2773,74 @@ def infer_sap_source_db_for_backfill(tx: dict) -> str:
         return "IVA" if Decimal(str(iva_value)) > 0 else "EFECTIVO"
     except (InvalidOperation, ValueError, TypeError):
         return "EFECTIVO"
+
+
+def backfill_sbo_project_resolution_suspicious_flags():
+    query = {
+        "source": "sap-sbo",
+        "sap": {"$exists": True},
+        "sap.movementType": "egreso",
+        "sap.documentProjectCode": {"$exists": True},
+        "sap.paymentProjectCode": {"$exists": True},
+    }
+    ops = []
+    projection = {
+        "sap.documentProjectCode": 1,
+        "sap.documentProjectName": 1,
+        "sap.paymentProjectCode": 1,
+        "sap.paymentProjectName": 1,
+        "sap.isProjectResolutionSuspicious": 1,
+        "sap.projectResolutionSuspicionReasons": 1,
+        "sap.suggestedProjectCode": 1,
+        "sap.suggestedProjectName": 1,
+        "sap.conflictingPaymentProjectCode": 1,
+        "sap.conflictingPaymentProjectName": 1,
+        "sap.rawProjectCode": 1,
+        "sap.rawProjectName": 1,
+        "sap.projectResolutionSource": 1,
+    }
+
+    scanned = 0
+    for tx in db.transactions.find(query, projection):
+        scanned += 1
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        project_fields = {
+            "document_project_code": normalize_non_empty_string(sap_doc.get("documentProjectCode")),
+            "document_project_name": normalize_non_empty_string(sap_doc.get("documentProjectName")),
+            "payment_project_code": normalize_non_empty_string(sap_doc.get("paymentProjectCode")),
+            "payment_project_name": normalize_non_empty_string(sap_doc.get("paymentProjectName")),
+        }
+        suspicious = build_project_resolution_suspicion_fields("egreso", project_fields)
+
+        desired_set = {
+            "sap.isProjectResolutionSuspicious": suspicious["isProjectResolutionSuspicious"],
+            "sap.projectResolutionSuspicionReasons": suspicious["projectResolutionSuspicionReasons"],
+            "sap.suggestedProjectCode": suspicious["suggestedProjectCode"],
+            "sap.suggestedProjectName": suspicious["suggestedProjectName"],
+            "sap.conflictingPaymentProjectCode": suspicious["conflictingPaymentProjectCode"],
+            "sap.conflictingPaymentProjectName": suspicious["conflictingPaymentProjectName"],
+            "sap.rawProjectCode": project_fields.get("document_project_code") or normalize_non_empty_string(sap_doc.get("rawProjectCode")),
+            "sap.rawProjectName": project_fields.get("document_project_name") or normalize_non_empty_string(sap_doc.get("rawProjectName")),
+            "sap.projectResolutionSource": "document",
+        }
+
+        requires = False
+        for k,v in desired_set.items():
+            parts=k.split('.')[1:]
+            cur=sap_doc
+            for part in parts:
+                cur=cur.get(part) if isinstance(cur,dict) else None
+            if cur!=v:
+                requires=True
+                break
+        if not requires:
+            continue
+        ops.append(UpdateOne({"_id": tx["_id"]}, {"$set": desired_set}))
+
+    if ops:
+        result = db.transactions.bulk_write(ops, ordered=False)
+        return {"scanned": scanned, "updated": (result.modified_count or 0)}
+    return {"scanned": scanned, "updated": 0}
 
 
 def backfill_sap_transactions_metadata():
@@ -4560,6 +4670,240 @@ def raw_data_update_row(collection: str, row_id: str, payload: dict, _: dict = D
     return serialize_raw_doc(updated)
 
 
+def build_suspicious_project_resolutions_query(
+    source_sbo: str | None = None,
+    supplier: str | None = None,
+    document_project: str | None = None,
+    payment_project: str | None = None,
+    status: str | None = None,
+    text: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict:
+    query: dict = {
+        "source": "sap-sbo",
+        "sap.isProjectResolutionSuspicious": True,
+        "sap.movementType": "egreso",
+    }
+
+    normalized_status = (status or "pending").strip().lower()
+    if normalized_status == "pending":
+        query["sap.manualResolvedProjectId"] = {"$in": [None, ""]}
+    elif normalized_status == "resolved":
+        query["sap.manualResolvedProjectId"] = {"$nin": [None, ""]}
+
+    normalized_source_sbo = normalize_non_empty_string(source_sbo)
+    if normalized_source_sbo:
+        query["sourceSbo"] = normalized_source_sbo
+
+    normalized_supplier = normalize_non_empty_string(supplier)
+    if normalized_supplier:
+        query["supplierName"] = {"$regex": re.escape(normalized_supplier), "$options": "i"}
+
+    normalized_document_project = normalize_non_empty_string(document_project)
+    if normalized_document_project:
+        query["sap.documentProjectName"] = {"$regex": re.escape(normalized_document_project), "$options": "i"}
+
+    normalized_payment_project = normalize_non_empty_string(payment_project)
+    if normalized_payment_project:
+        query["sap.paymentProjectName"] = {"$regex": re.escape(normalized_payment_project), "$options": "i"}
+
+    parsed_from = parse_excel_date(date_from) if date_from else None
+    parsed_to = parse_excel_date(date_to) if date_to else None
+    if parsed_from or parsed_to:
+        date_query = {}
+        if parsed_from:
+            date_query["$gte"] = parsed_from
+        if parsed_to:
+            date_query["$lte"] = parsed_to
+        query["date"] = date_query
+
+    normalized_text = normalize_non_empty_string(text)
+    if normalized_text:
+        escaped = re.escape(normalized_text)
+        query["$or"] = [
+            {"sap.paymentNum": {"$regex": escaped, "$options": "i"}},
+            {"sap.invoiceNum": {"$regex": escaped, "$options": "i"}},
+            {"supplierName": {"$regex": escaped, "$options": "i"}},
+            {"sap.businessPartner": {"$regex": escaped, "$options": "i"}},
+        ]
+
+    return query
+
+
+def serialize_suspicious_project_resolution_row(tx: dict) -> dict:
+    tx_doc = serialize_transaction_with_supplier(tx)
+    sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+    return {
+        "id": tx_doc.get("id"),
+        "date": tx_doc.get("date"),
+        "sourceSbo": tx_doc.get("sourceSbo") or sap_doc.get("sourceSbo"),
+        "sourceDb": tx_doc.get("sourceDb") or sap_doc.get("sourceDb"),
+        "supplier": tx_doc.get("supplierName") or sap_doc.get("businessPartner"),
+        "paymentNum": sap_doc.get("paymentNum"),
+        "invoiceNum": sap_doc.get("invoiceNum"),
+        "amount": tx_doc.get("amount"),
+        "invoiceTotal": sap_doc.get("invoiceTotal"),
+        "documentProjectCode": sap_doc.get("documentProjectCode"),
+        "documentProjectName": sap_doc.get("documentProjectName"),
+        "paymentProjectCode": sap_doc.get("paymentProjectCode"),
+        "paymentProjectName": sap_doc.get("paymentProjectName"),
+        "projectResolutionSource": sap_doc.get("projectResolutionSource"),
+        "suspicionReasons": sap_doc.get("projectResolutionSuspicionReasons") or [],
+        "isProjectResolutionSuspicious": bool(sap_doc.get("isProjectResolutionSuspicious")),
+        "currentAssignedProjectId": tx_doc.get("effectiveProjectId"),
+        "currentAssignedProjectCode": tx_doc.get("effectiveProjectCode"),
+        "currentAssignedProjectName": tx_doc.get("effectiveProjectName"),
+        "status": "resolved" if normalize_non_empty_string(sap_doc.get("manualResolvedProjectId")) else "pending",
+        "manualResolvedProjectId": sap_doc.get("manualResolvedProjectId"),
+        "manualResolvedProjectCode": sap_doc.get("manualResolvedProjectCode"),
+        "manualResolvedProjectName": sap_doc.get("manualResolvedProjectName"),
+        "manualResolvedBy": sap_doc.get("manualResolvedBy"),
+        "manualResolvedAt": sap_doc.get("manualResolvedAt"),
+        "manualResolutionReason": sap_doc.get("manualResolutionReason"),
+        "sap": sap_doc,
+    }
+
+
+@app.get("/api/admin/suspicious-project-resolutions")
+def list_admin_suspicious_project_resolutions(
+    sourceSbo: str | None = None,
+    supplier: str | None = None,
+    documentProject: str | None = None,
+    paymentProject: str | None = None,
+    status: str | None = "pending",
+    q: str | None = None,
+    dateFrom: str | None = None,
+    dateTo: str | None = None,
+    page: int = 1,
+    limit: int = 50,
+    _: dict = Depends(require_admin),
+):
+    normalized_limit = min(max(limit, 1), 500)
+    normalized_page = max(page, 1)
+    skip = (normalized_page - 1) * normalized_limit
+
+    query = build_suspicious_project_resolutions_query(
+        source_sbo=sourceSbo,
+        supplier=supplier,
+        document_project=documentProject,
+        payment_project=paymentProject,
+        status=status,
+        text=q,
+        date_from=dateFrom,
+        date_to=dateTo,
+    )
+
+    total_count = db.transactions.count_documents(query)
+    rows = list(db.transactions.find(query).sort([("date", -1), ("_id", -1)]).skip(skip).limit(normalized_limit))
+    return {
+        "items": [serialize_suspicious_project_resolution_row(row) for row in rows],
+        "page": normalized_page,
+        "limit": normalized_limit,
+        "totalCount": total_count,
+    }
+
+
+@app.get("/api/admin/suspicious-project-resolutions/{transaction_id}")
+def get_admin_suspicious_project_resolution_detail(transaction_id: str, _: dict = Depends(require_admin)):
+    tx = db.transactions.find_one({"_id": oid(transaction_id), "source": "sap-sbo"})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return serialize_suspicious_project_resolution_row(tx)
+
+
+@app.post("/api/admin/suspicious-project-resolutions/{transaction_id}/resolve")
+def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: dict, user: dict = Depends(require_admin)):
+    resolution = str(payload.get("resolution") or "").strip().lower()
+    reason = normalize_non_empty_string(payload.get("reason") or payload.get("note"))
+
+    tx = db.transactions.find_one({"_id": oid(transaction_id), "source": "sap-sbo"})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+    document_code = normalize_non_empty_string(sap_doc.get("documentProjectCode"))
+    document_name = normalize_non_empty_string(sap_doc.get("documentProjectName"))
+    payment_code = normalize_non_empty_string(sap_doc.get("paymentProjectCode"))
+    payment_name = normalize_non_empty_string(sap_doc.get("paymentProjectName"))
+
+    selected_project_code = normalize_non_empty_string(payload.get("projectCode"))
+    selected_project_name = normalize_non_empty_string(payload.get("projectName"))
+    selected_project_id = normalize_non_empty_string(payload.get("projectId"))
+
+    if resolution == "document":
+        selected_project_code = document_code
+        selected_project_name = document_name
+    elif resolution == "payment":
+        selected_project_code = payment_code
+        selected_project_name = payment_name
+    elif resolution in {"custom", "other"}:
+        pass
+    else:
+        raise HTTPException(status_code=400, detail="resolution must be document, payment or custom")
+
+    if not (selected_project_code or selected_project_name or selected_project_id):
+        raise HTTPException(status_code=400, detail="Resolved project is required")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    resolved_by = normalize_non_empty_string(user.get("displayName") or user.get("username") or user.get("id"))
+
+    db.transactions.update_one(
+        {"_id": oid(transaction_id)},
+        {
+            "$set": {
+                "sap.manualResolvedProjectId": selected_project_id,
+                "sap.manualResolvedProjectCode": selected_project_code,
+                "sap.manualResolvedProjectName": selected_project_name,
+                "sap.manualResolvedBy": resolved_by,
+                "sap.manualResolvedAt": now_iso,
+                "sap.manualResolutionReason": reason,
+                "updated_at": now_iso,
+            }
+        },
+    )
+
+    updated = db.transactions.find_one({"_id": oid(transaction_id)})
+    return serialize_suspicious_project_resolution_row(updated)
+
+
+@app.post("/api/admin/suspicious-project-resolutions/bulk-resolve-document")
+def bulk_resolve_admin_suspicious_project_resolution_to_document(payload: dict, user: dict = Depends(require_admin)):
+    transaction_ids = payload.get("transactionIds") if isinstance(payload.get("transactionIds"), list) else []
+    reason = normalize_non_empty_string(payload.get("reason") or "bulk_resolve_to_document")
+    if not transaction_ids:
+        raise HTTPException(status_code=400, detail="transactionIds is required")
+
+    resolved_by = normalize_non_empty_string(user.get("displayName") or user.get("username") or user.get("id"))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updated_count = 0
+
+    for raw_id in transaction_ids:
+        tx_id = str(raw_id or "").strip()
+        if not ObjectId.is_valid(tx_id):
+            continue
+        tx = db.transactions.find_one({"_id": ObjectId(tx_id), "source": "sap-sbo"}, {"sap.documentProjectCode": 1, "sap.documentProjectName": 1})
+        if not tx:
+            continue
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        db.transactions.update_one(
+            {"_id": ObjectId(tx_id)},
+            {
+                "$set": {
+                    "sap.manualResolvedProjectCode": normalize_non_empty_string(sap_doc.get("documentProjectCode")),
+                    "sap.manualResolvedProjectName": normalize_non_empty_string(sap_doc.get("documentProjectName")),
+                    "sap.manualResolvedBy": resolved_by,
+                    "sap.manualResolvedAt": now_iso,
+                    "sap.manualResolutionReason": reason,
+                    "updated_at": now_iso,
+                }
+            },
+        )
+        updated_count += 1
+
+    return {"ok": True, "updated": updated_count}
+
+
 @app.get("/api/supplier-categories")
 def list_supplier_categories(_: dict = Depends(require_authenticated)):
     return [serialize(c) for c in db.supplierCategoryCatalog.find({}).sort("name", 1)]
@@ -5398,11 +5742,13 @@ def resolve_sbo_project_fields_from_row(row: dict, movement_type: str) -> dict:
     raw_project_code = pick_first_non_empty_value(row, "raw_project_code", "rawProjectCode")
     raw_project_name = pick_first_non_empty_value(row, "raw_project_name", "rawProjectName")
 
-    # V2 outgoing payments resolve project from JDT1 when available. Keep backward
-    # compatibility with old files where only raw_project_* exists.
+    # Business decision (SBO V2): outgoing payments now always resolve the automatic
+    # project from document-level project. payment_project_* is kept only for
+    # diagnostics/suspicious workflow.
     if movement_type == "egreso":
-        effective_raw_project_code = resolved_project_code or raw_project_code or document_project_code
-        effective_raw_project_name = resolved_project_name or raw_project_name or document_project_name
+        effective_raw_project_code = document_project_code or raw_project_code or resolved_project_code
+        effective_raw_project_name = document_project_name or raw_project_name or resolved_project_name
+        project_resolution_source = "document" if document_project_code or document_project_name else "document"
     else:
         effective_raw_project_code = raw_project_code or resolved_project_code
         effective_raw_project_name = raw_project_name or resolved_project_name
@@ -5417,6 +5763,30 @@ def resolve_sbo_project_fields_from_row(row: dict, movement_type: str) -> dict:
         "resolved_project_code": resolved_project_code,
         "resolved_project_name": resolved_project_name,
         "project_resolution_source": project_resolution_source,
+    }
+
+
+def build_project_resolution_suspicion_fields(movement_type: str, project_fields: dict) -> dict:
+    is_outgoing = str(movement_type or "").strip().lower() == "egreso"
+    document_project_code = normalize_non_empty_string(project_fields.get("document_project_code"))
+    document_project_name = normalize_non_empty_string(project_fields.get("document_project_name"))
+    payment_project_code = normalize_non_empty_string(project_fields.get("payment_project_code"))
+    payment_project_name = normalize_non_empty_string(project_fields.get("payment_project_name"))
+
+    suspicious = bool(
+        is_outgoing
+        and document_project_code
+        and payment_project_code
+        and document_project_code != payment_project_code
+    )
+
+    return {
+        "isProjectResolutionSuspicious": suspicious,
+        "projectResolutionSuspicionReasons": ["document_project_differs_from_payment_project"] if suspicious else [],
+        "suggestedProjectCode": document_project_code,
+        "suggestedProjectName": document_project_name,
+        "conflictingPaymentProjectCode": payment_project_code,
+        "conflictingPaymentProjectName": payment_project_name,
     }
 
 
@@ -5584,6 +5954,7 @@ def import_sap_movements_by_sbo(
             invoice_iva = parse_optional_decimal(row.get("invoice_iva"))
             invoice_total = parse_optional_decimal(row.get("invoice_total"))
             tx_type = "INCOME" if movement_type == "ingreso" else "EXPENSE" if movement_type == "egreso" else "EXPENSE"
+            suspicion_fields = build_project_resolution_suspicion_fields(movement_type, project_fields)
 
             tx_doc = {
                 "projectId": project_id,
@@ -5640,6 +6011,12 @@ def import_sap_movements_by_sbo(
                     "sourceDb": source_db,
                     "sourceSbo": source_sbo,
                     "sourceSboMode": normalized_mode,
+                    "isProjectResolutionSuspicious": suspicion_fields["isProjectResolutionSuspicious"],
+                    "projectResolutionSuspicionReasons": suspicion_fields["projectResolutionSuspicionReasons"],
+                    "suggestedProjectCode": suspicion_fields["suggestedProjectCode"],
+                    "suggestedProjectName": suspicion_fields["suggestedProjectName"],
+                    "conflictingPaymentProjectCode": suspicion_fields["conflictingPaymentProjectCode"],
+                    "conflictingPaymentProjectName": suspicion_fields["conflictingPaymentProjectName"],
                 },
                 "updated_at": now,
             }
@@ -5684,6 +6061,30 @@ def import_sap_movements_by_sbo(
                             upsert=True,
                         )
                     )
+
+            existing_tx = db.transactions.find_one(
+                {"dedupeKey": dedupe_key},
+                {
+                    "sap.manualResolvedProjectId": 1,
+                    "sap.manualResolvedProjectCode": 1,
+                    "sap.manualResolvedProjectName": 1,
+                    "sap.manualResolvedBy": 1,
+                    "sap.manualResolvedAt": 1,
+                    "sap.manualResolutionReason": 1,
+                },
+            )
+            existing_sap = existing_tx.get("sap") if isinstance((existing_tx or {}).get("sap"), dict) else {}
+            for manual_key in [
+                "manualResolvedProjectId",
+                "manualResolvedProjectCode",
+                "manualResolvedProjectName",
+                "manualResolvedBy",
+                "manualResolvedAt",
+                "manualResolutionReason",
+            ]:
+                manual_value = normalize_non_empty_string(existing_sap.get(manual_key))
+                if manual_value:
+                    tx_doc["sap"][manual_key] = manual_value
 
             update_doc = {"$set": tx_doc, "$setOnInsert": {"created_at": now}}
             update_result = db.transactions.update_one({"dedupeKey": dedupe_key}, update_doc, upsert=True)

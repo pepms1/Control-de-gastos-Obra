@@ -109,13 +109,17 @@ const sboProjectResolutionFields = normalizeTransaction({
   source: 'sap-sbo',
   movement_type: 'egreso',
   sap: {
-    rawProjectCode: 'CALD',
-    rawProjectName: 'CALDERON DE LA BARCA',
+    rawProjectCode: 'PBPC',
+    rawProjectName: 'PB Y PC INTERIORES',
     documentProjectCode: 'PBPC',
     documentProjectName: 'PB Y PC INTERIORES',
     paymentProjectCode: 'CALD',
     paymentProjectName: 'CALDERON DE LA BARCA',
-    projectResolutionSource: 'payment_jdt1',
+    projectResolutionSource: 'document',
+    isProjectResolutionSuspicious: true,
+    projectResolutionSuspicionReasons: ['document_project_differs_from_payment_project'],
+    manualResolvedProjectCode: 'CALD',
+    manualResolvedProjectName: 'CALDERON DE LA BARCA',
   },
 });
 
@@ -123,7 +127,10 @@ assert.equal(sboProjectResolutionFields.sapMeta.documentProjectCode, 'PBPC');
 assert.equal(sboProjectResolutionFields.sapMeta.documentProjectName, 'PB Y PC INTERIORES');
 assert.equal(sboProjectResolutionFields.sapMeta.paymentProjectCode, 'CALD');
 assert.equal(sboProjectResolutionFields.sapMeta.paymentProjectName, 'CALDERON DE LA BARCA');
-assert.equal(sboProjectResolutionFields.sapMeta.rawProjectName, 'CALDERON DE LA BARCA');
-assert.equal(sboProjectResolutionFields.sapMeta.projectResolutionSource, 'payment_jdt1');
+assert.equal(sboProjectResolutionFields.sapMeta.rawProjectName, 'PB Y PC INTERIORES');
+assert.equal(sboProjectResolutionFields.sapMeta.projectResolutionSource, 'document');
+assert.equal(sboProjectResolutionFields.sapMeta.isProjectResolutionSuspicious, true);
+assert.deepEqual(sboProjectResolutionFields.sapMeta.projectResolutionSuspicionReasons, ['document_project_differs_from_payment_project']);
+assert.equal(sboProjectResolutionFields.projectDisplayName, 'CALDERON DE LA BARCA');
 
 console.log('ok');

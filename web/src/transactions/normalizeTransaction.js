@@ -45,6 +45,16 @@ function buildSapMeta(sap) {
     paymentProjectCode: toNullableString(sap.paymentProjectCode),
     paymentProjectName: toNullableString(sap.paymentProjectName),
     projectResolutionSource: toNullableString(sap.projectResolutionSource),
+    isProjectResolutionSuspicious: Boolean(sap.isProjectResolutionSuspicious),
+    projectResolutionSuspicionReasons: Array.isArray(sap.projectResolutionSuspicionReasons)
+      ? sap.projectResolutionSuspicionReasons.map(toNullableString).filter(Boolean)
+      : [],
+    manualResolvedProjectId: toNullableString(sap.manualResolvedProjectId),
+    manualResolvedProjectCode: toNullableString(sap.manualResolvedProjectCode),
+    manualResolvedProjectName: toNullableString(sap.manualResolvedProjectName),
+    manualResolvedBy: toNullableString(sap.manualResolvedBy),
+    manualResolvedAt: toNullableString(sap.manualResolvedAt),
+    manualResolutionReason: toNullableString(sap.manualResolutionReason),
     normalizedProjectName: toNullableString(sap.normalizedProjectName),
     sourceDb: toNullableString(sap.sourceDb),
     sourceSbo: toNullableString(sap.sourceSbo),
@@ -83,8 +93,9 @@ export function normalizeTransaction(transaction) {
     projectId: toNullableString(transaction.projectId),
     projectDisplayName: toNullableString(transaction.projectDisplayName)
       || toNullableString(transaction.projectName)
-      || sapMeta?.normalizedProjectName
+      || sapMeta?.manualResolvedProjectName
       || sapMeta?.rawProjectName
+      || sapMeta?.normalizedProjectName
       || 'Sin proyecto',
     date: toNullableString(transaction.date)
       || toNullableString(transaction.fecha)
