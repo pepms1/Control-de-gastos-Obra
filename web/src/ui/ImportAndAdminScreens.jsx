@@ -319,6 +319,11 @@ export function SuspiciousProjectResolutionScreen() {
   const [status, setStatus] = useState('pending');
   const [q, setQ] = useState('');
   const [reasonById, setReasonById] = useState({});
+  const [toast, setToast] = useState('');
+
+  function getErrorMessage(err, fallback) {
+    return err?.body?.detail?.message || err?.body?.detail || err?.message || fallback;
+  }
 
   async function load() {
     setLoading(true);
@@ -340,14 +345,48 @@ export function SuspiciousProjectResolutionScreen() {
   const visibleRows = useMemo(() => rows, [rows]);
 
   async function resolveRow(row, resolution) {
+    const transactionId = String(row?.id || '').trim();
+    if (!transactionId) {
+      setError('La fila no tiene transaction id válido.');
+      return;
+    }
+
+    setToast('');
     try {
-      await api.resolveSuspiciousProjectResolution(row.id, {
+      const selectedProjectId = row?.currentAssignedProjectId || '';
+      const selectedProjectCode = row?.currentAssignedProjectCode || '';
+      const selectedProjectName = row?.currentAssignedProjectName || '';
+      const reason = reasonById[row.id] || '';
+
+      await api.resolveSuspiciousProjectResolution(transactionId, {
+        resolveTo: resolution,
+        resolve_to: resolution,
         resolution,
-        reason: reasonById[row.id] || '',
+        resolutionReason: reason,
+        resolution_reason: reason,
+        reason,
+        projectId: selectedProjectId,
+        project_id: selectedProjectId,
+        projectCode: selectedProjectCode,
+        project_code: selectedProjectCode,
+        projectName: selectedProjectName,
+        project_name: selectedProjectName,
+        manualResolvedProjectId: selectedProjectId,
+        manual_resolved_project_id: selectedProjectId,
+        manualResolvedProjectCode: selectedProjectCode,
+        manual_resolved_project_code: selectedProjectCode,
+        manualResolvedProjectName: selectedProjectName,
+        manual_resolved_project_name: selectedProjectName,
       });
-      await load();
+
+      if (status === 'pending' || status === 'all') {
+        setRows((prev) => prev.filter((candidate) => candidate.id !== row.id));
+      } else {
+        await load();
+      }
+      setToast('Resolución guardada correctamente.');
     } catch (err) {
-      setError(err.message || 'No se pudo resolver la fila.');
+      setError(getErrorMessage(err, 'No se pudo resolver la fila.'));
     }
   }
 
@@ -369,6 +408,7 @@ export function SuspiciousProjectResolutionScreen() {
           <button type="button" onClick={load} disabled={loading}>{loading ? 'Cargando...' : 'Buscar'}</button>
         </div>
         {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
+        {toast && <p style={{ color: '#166534' }}>{toast}</p>}
         <table>
           <thead>
             <tr>
