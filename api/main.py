@@ -395,7 +395,7 @@ def resolve_effective_sap_project_fields(tx_doc: dict) -> dict:
     raw_project_code = normalize_non_empty_string(sap_doc.get("rawProjectCode"))
     raw_project_name = normalize_non_empty_string(sap_doc.get("rawProjectName"))
 
-    if manual_project_id or manual_project_code or manual_project_name:
+    if manual_project_id:
         return {
             "effectiveProjectId": manual_project_id,
             "effectiveProjectCode": manual_project_code or raw_project_code,
@@ -2691,6 +2691,10 @@ def ensure_indexes():
         backfill_sbo_project_resolution_suspicious_flags()
     except Exception:
         logger.exception("SBO suspicious project-resolution backfill failed during startup; continuing without blocking server startup")
+    try:
+        repair_partial_suspicious_project_resolutions()
+    except Exception:
+        logger.exception("SBO suspicious project-resolution repair failed during startup; continuing without blocking server startup")
     dedupe_sap_transactions_for_unique_index()
     db.transactions.create_index(
         [
@@ -2842,6 +2846,77 @@ def backfill_sbo_project_resolution_suspicious_flags():
         return {"scanned": scanned, "updated": (result.modified_count or 0)}
     return {"scanned": scanned, "updated": 0}
 
+
+
+
+def repair_partial_suspicious_project_resolutions():
+    query = {
+        "source": "sap-sbo",
+        "sap.isProjectResolutionSuspicious": True,
+        "$expr": {
+            "$eq": [
+                {
+                    "$strLenCP": {
+                        "$trim": {
+                            "input": {"$toString": {"$ifNull": ["$sap.manualResolvedProjectId", ""]}}
+                        }
+                    }
+                },
+                0,
+            ]
+        },
+        "$or": [
+            {"sap.manualResolvedProjectName": {"$exists": True, "$ne": None}},
+            {"sap.manualResolvedAt": {"$exists": True, "$ne": None}},
+        ],
+    }
+    projection = {
+        "sap.manualResolvedProjectCode": 1,
+        "sap.manualResolvedProjectName": 1,
+        "sap.manualResolvedBy": 1,
+        "sap.manualResolvedAt": 1,
+        "sap.manualResolutionReason": 1,
+    }
+    scanned = 0
+    fixed = 0
+    cleared = 0
+    for tx in db.transactions.find(query, projection):
+        scanned += 1
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        project_id, project_code, project_name = resolve_project_metadata_from_code_or_name(
+            project_code=normalize_non_empty_string(sap_doc.get("manualResolvedProjectCode")),
+            project_name=normalize_non_empty_string(sap_doc.get("manualResolvedProjectName")),
+        )
+        if project_id:
+            db.transactions.update_one(
+                {"_id": tx.get("_id")},
+                {
+                    "$set": {
+                        "sap.manualResolvedProjectId": project_id,
+                        "sap.manualResolvedProjectCode": project_code,
+                        "sap.manualResolvedProjectName": project_name,
+                    }
+                },
+            )
+            fixed += 1
+            continue
+
+        db.transactions.update_one(
+            {"_id": tx.get("_id")},
+            {
+                "$unset": {
+                    "sap.manualResolvedProjectId": "",
+                    "sap.manualResolvedProjectCode": "",
+                    "sap.manualResolvedProjectName": "",
+                    "sap.manualResolvedBy": "",
+                    "sap.manualResolvedAt": "",
+                    "sap.manualResolutionReason": "",
+                }
+            },
+        )
+        cleared += 1
+
+    return {"scanned": scanned, "fixed": fixed, "cleared": cleared}
 
 def backfill_sap_transactions_metadata():
     query = {
@@ -4680,13 +4755,14 @@ def build_suspicious_project_resolutions_query(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> dict:
+    
     query: dict = {
         "source": "sap-sbo",
         "sap.isProjectResolutionSuspicious": True,
         "sap.movementType": "egreso",
     }
 
-    manual_resolved_len_expr = {
+    manual_resolved_id_len_expr = {
         "$strLenCP": {
             "$trim": {
                 "input": {
@@ -4700,9 +4776,9 @@ def build_suspicious_project_resolutions_query(
 
     normalized_status = (status or "pending").strip().lower()
     if normalized_status == "pending":
-        query["$expr"] = {"$eq": [manual_resolved_len_expr, 0]}
+        query["$expr"] = {"$eq": [manual_resolved_id_len_expr, 0]}
     elif normalized_status == "resolved":
-        query["$expr"] = {"$gt": [manual_resolved_len_expr, 0]}
+        query["$expr"] = {"$gt": [manual_resolved_id_len_expr, 0]}
 
     normalized_source_sbo = normalize_non_empty_string(source_sbo)
     if normalized_source_sbo:
@@ -4771,20 +4847,68 @@ def normalize_suspicious_resolution_payload(payload: dict | None) -> dict:
 
 def resolve_project_metadata_from_id(project_id: str | None) -> tuple[str | None, str | None, str | None]:
     normalized_id = normalize_non_empty_string(project_id)
-    if not normalized_id:
+    if not normalized_id or not ObjectId.is_valid(normalized_id):
         return None, None, None
 
-    project_code = None
-    project_name = None
-    if ObjectId.is_valid(normalized_id):
-        project_doc = db.projects.find_one({"_id": ObjectId(normalized_id)}) or {}
-        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
-        project_code = normalize_non_empty_string(
-            project_doc.get("code") or project_doc.get("projectCode") or sap_doc.get("projectCode") or sap_doc.get("sapName")
-        )
-        project_name = normalize_non_empty_string(project_doc.get("name") or sap_doc.get("projectName") or project_doc.get("projectName"))
+    project_doc = db.projects.find_one({"_id": ObjectId(normalized_id)}) or {}
+    if not project_doc:
+        return None, None, None
+
+    sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+    project_code = normalize_non_empty_string(
+        project_doc.get("code") or project_doc.get("projectCode") or sap_doc.get("projectCode") or sap_doc.get("sapName")
+    )
+    project_name = normalize_non_empty_string(project_doc.get("name") or sap_doc.get("projectName") or project_doc.get("projectName"))
 
     return normalized_id, project_code, project_name
+
+
+def resolve_project_metadata_from_code_or_name(
+    project_code: str | None = None,
+    project_name: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    normalized_code = normalize_non_empty_string(project_code)
+    normalized_name = normalize_non_empty_string(project_name)
+    if not normalized_code and not normalized_name:
+        return None, None, None
+
+    normalized_code_folded = normalized_code.casefold() if normalized_code else None
+    normalized_name_folded = normalized_name.casefold() if normalized_name else None
+    matches: dict[str, tuple[str, str | None, str | None]] = {}
+
+    projection = {
+        "_id": 1,
+        "name": 1,
+        "projectName": 1,
+        "code": 1,
+        "projectCode": 1,
+        "sap.projectCode": 1,
+        "sap.sapName": 1,
+        "sap.projectName": 1,
+        "sap.projectNames": 1,
+    }
+    for project_doc in db.projects.find({}, projection):
+        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+        candidate_id = normalize_non_empty_string(project_doc.get("_id"))
+        candidate_code = normalize_non_empty_string(
+            project_doc.get("code") or project_doc.get("projectCode") or sap_doc.get("projectCode") or sap_doc.get("sapName")
+        )
+        candidate_name = normalize_non_empty_string(project_doc.get("name") or sap_doc.get("projectName") or project_doc.get("projectName"))
+        candidate_name_aliases = [candidate_name]
+        sap_project_names = sap_doc.get("projectNames") if isinstance(sap_doc.get("projectNames"), list) else []
+        candidate_name_aliases.extend(normalize_non_empty_string(name) for name in sap_project_names)
+
+        code_matches = (not normalized_code_folded) or (candidate_code and candidate_code.casefold() == normalized_code_folded)
+        name_matches = (not normalized_name_folded) or any(
+            alias and alias.casefold() == normalized_name_folded for alias in candidate_name_aliases
+        )
+        if code_matches and name_matches and candidate_id:
+            matches[candidate_id] = (candidate_id, candidate_code, candidate_name)
+
+    if len(matches) != 1:
+        return None, None, None
+
+    return next(iter(matches.values()))
 
 
 def serialize_suspicious_project_resolution_row(tx: dict) -> dict:
@@ -4905,25 +5029,30 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
     )
 
     if resolve_to == "document":
-        selected_project_code = document_code
-        selected_project_name = document_name
+        selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
+            project_code=document_code,
+            project_name=document_name,
+        )
     elif resolve_to == "payment":
-        selected_project_code = payment_code
-        selected_project_name = payment_name
+        selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
+            project_code=payment_code,
+            project_name=payment_name,
+        )
     elif resolve_to in {"custom", "other", "manual", ""}:
-        pass
+        if selected_project_id:
+            selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_id(selected_project_id)
+        elif selected_project_code or selected_project_name:
+            selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
+                project_code=selected_project_code,
+                project_name=selected_project_name,
+            )
     else:
         raise HTTPException(status_code=400, detail="resolve_to must be document, payment or custom")
 
-    if selected_project_id and (not selected_project_code or not selected_project_name):
-        _, project_code_from_id, project_name_from_id = resolve_project_metadata_from_id(selected_project_id)
-        selected_project_code = selected_project_code or project_code_from_id
-        selected_project_name = selected_project_name or project_name_from_id
-
-    if not (selected_project_code or selected_project_name or selected_project_id):
+    if not selected_project_id:
         raise HTTPException(
             status_code=400,
-            detail="Could not derive resolved project. Provide project_id/project_code/project_name or use resolve_to=document|payment with available SAP projects.",
+            detail="Could not derive resolved project id. Provide a valid project_id or a unique project_code/project_name mapping.",
         )
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -4949,8 +5078,8 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
     persisted_project_id = normalize_non_empty_string(updated_sap.get("manualResolvedProjectId"))
     persisted_project_code = normalize_non_empty_string(updated_sap.get("manualResolvedProjectCode"))
     persisted_project_name = normalize_non_empty_string(updated_sap.get("manualResolvedProjectName"))
-    if not (persisted_project_id or persisted_project_code or persisted_project_name):
-        raise HTTPException(status_code=500, detail="Manual resolution was not persisted")
+    if not (persisted_project_id and persisted_project_code and persisted_project_name):
+        raise HTTPException(status_code=500, detail="Manual resolution persisted an incomplete target project")
 
     return {
         "ok": True,
@@ -4982,12 +5111,20 @@ def bulk_resolve_admin_suspicious_project_resolution_to_document(payload: dict, 
         if not tx:
             continue
         sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
+            project_code=normalize_non_empty_string(sap_doc.get("documentProjectCode")),
+            project_name=normalize_non_empty_string(sap_doc.get("documentProjectName")),
+        )
+        if not selected_project_id:
+            continue
+
         db.transactions.update_one(
             {"_id": ObjectId(tx_id)},
             {
                 "$set": {
-                    "sap.manualResolvedProjectCode": normalize_non_empty_string(sap_doc.get("documentProjectCode")),
-                    "sap.manualResolvedProjectName": normalize_non_empty_string(sap_doc.get("documentProjectName")),
+                    "sap.manualResolvedProjectId": selected_project_id,
+                    "sap.manualResolvedProjectCode": selected_project_code,
+                    "sap.manualResolvedProjectName": selected_project_name,
                     "sap.manualResolvedBy": resolved_by,
                     "sap.manualResolvedAt": now_iso,
                     "sap.manualResolutionReason": reason,
