@@ -15,18 +15,17 @@ function formatCurrency(value) {
 }
 
 function getAmountWithoutTax(row) {
-  const subtotal = Number(row?.subtotal ?? row?.montoSinIva);
-  if (Number.isFinite(subtotal)) return subtotal;
-  const total = Number(row?.totalFactura ?? row?.amount);
-  const iva = Number(row?.iva ?? row?.montoIva);
-  if (Number.isFinite(total) && Number.isFinite(iva)) return total - iva;
-  return Number.isFinite(total) ? total : 0;
+  const subtotal = Number(row?.subtotal ?? row?.montoSinIva ?? row?.tax?.subtotal);
+  return Number.isFinite(subtotal) ? subtotal : null;
 }
 
 function getAmountWithTax(row) {
-  const total = Number(row?.totalFactura ?? row?.amount);
-  if (Number.isFinite(total)) return total;
-  return getAmountWithoutTax(row) + (Number(row?.iva ?? row?.montoIva) || 0);
+  const total = Number(row?.totalFactura ?? row?.tax?.totalFactura);
+  return Number.isFinite(total) ? total : null;
+}
+
+function formatCurrencyWithFallback(value) {
+  return Number.isFinite(value) ? formatCurrency(value) : '—';
 }
 
 function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows, totalWithoutTax, totalWithTax }) {
@@ -44,7 +43,10 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
       <td>${supplier?.name || '—'}</td>
       <td>${row?.description || '—'}</td>
       <td>${category2?.name || '—'}</td>
-      <td style="text-align:right">$${formatMoney(getAmountWithTax(row))}</td>
+      <td style="text-align:right">
+        <div><strong>Sin IVA:</strong> ${formatCurrencyWithFallback(getAmountWithoutTax(row))}</div>
+        <div><strong>Con IVA:</strong> ${formatCurrencyWithFallback(getAmountWithTax(row))}</div>
+      </td>
       <td>${getTypeLabel(row?.type)}</td>
     </tr>`;
   }).join('');
@@ -64,7 +66,7 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
       <div><strong>Total con IVA:</strong> $${formatMoney(totalWithTax)}</div>
     </div>
     <table>
-      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th>Total</th><th>Tipo</th></tr></thead>
+      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th>Montos</th><th>Tipo</th></tr></thead>
       <tbody>${rowsHtml || '<tr><td colspan="6">Sin resultados</td></tr>'}</tbody>
     </table>
   </body></html>`;
@@ -304,8 +306,14 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
       return row?.type === typeFilter;
     }), [rows, query, categoryMap, supplierFilter, category2Filter, typeFilter]);
 
-  const totalWithoutTax = useMemo(() => visibleRows.reduce((acc, row) => acc + getAmountWithoutTax(row), 0), [visibleRows]);
-  const totalWithTax = useMemo(() => visibleRows.reduce((acc, row) => acc + getAmountWithTax(row), 0), [visibleRows]);
+  const totalWithoutTax = useMemo(
+    () => visibleRows.reduce((acc, row) => acc + (getAmountWithoutTax(row) || 0), 0),
+    [visibleRows],
+  );
+  const totalWithTax = useMemo(
+    () => visibleRows.reduce((acc, row) => acc + (getAmountWithTax(row) || 0), 0),
+    [visibleRows],
+  );
 
   function exportPdf() {
     setExporting(true);
@@ -411,7 +419,7 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
               <th>Proveedor</th>
               <th>Descripción</th>
               <th>Categoría 2</th>
-              <th>Total</th>
+              <th>Montos</th>
               <th>Tipo</th>
             </tr>
           </thead>
@@ -425,7 +433,10 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
                   <td>{supplier?.name || '—'}</td>
                   <td>{row.description || '—'}</td>
                   <td>{category2?.name || '—'}</td>
-                  <td>{formatCurrency(getAmountWithTax(row))}</td>
+                  <td style={{ whiteSpace: 'nowrap', minWidth: 160 }}>
+                    <div className="small"><strong>Sin IVA:</strong> {formatCurrencyWithFallback(getAmountWithoutTax(row))}</div>
+                    <div className="small" style={{ marginTop: 2 }}><strong>Con IVA:</strong> {formatCurrencyWithFallback(getAmountWithTax(row))}</div>
+                  </td>
                   <td>{getTypeLabel(row?.type)}</td>
                 </tr>
               );
