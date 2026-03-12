@@ -48,7 +48,9 @@ Opcional: puedes usar `render.yaml` incluido como base para crear el servicio `t
 ## Telegram + imports SAP (V2)
 
 - Backend centraliza notificaciones Telegram para `POST /api/cron/import/sap-movements-by-sbo`.
-- Destinatarios: `telegram_users` con `status=approved`/`approved=true`; fallback a `TELEGRAM_CHAT_ID` y `TELEGRAM_DEFAULT_CHAT_ID`.
+- Destinatario para imports SAP por SBO: `TELEGRAM_IMPORTS_CHAT_ID` (chat fijo admin).
+- Las notificaciones de imports SAP por SBO no leen `telegram_users` ni envían broadcast.
+- Otras funciones del bot (por ejemplo tests/admin) pueden seguir usando `telegram_users`/fallback existentes.
 - Si Telegram falla, el import SAP **no** se cae (best-effort; solo log).
 - Webhook disponible en `POST /api/telegram/webhook`.
 - Test manual admin: `POST /api/admin/telegram/test?message=<texto>`.
