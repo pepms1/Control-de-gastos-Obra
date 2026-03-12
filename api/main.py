@@ -961,6 +961,41 @@ def send_telegram_to_chat(text: str, chat_id: int | str | None = None) -> bool:
         return False
 
 
+def send_telegram_import_message(text: str) -> bool:
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    imports_chat_id = (os.getenv("TELEGRAM_IMPORTS_CHAT_ID") or "").strip()
+
+    if not token or not imports_chat_id:
+        logger.warning(
+            "Telegram imports notification skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_IMPORTS_CHAT_ID is not configured"
+        )
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({"chat_id": imports_chat_id, "text": text}).encode("utf-8")
+    req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+
+    try:
+        with urlopen(req, timeout=15) as response:
+            if response.status >= 400:
+                body = response.read().decode("utf-8")
+                logger.error(
+                    "Telegram imports send failed for chat_id=%s body=%s",
+                    imports_chat_id,
+                    body,
+                )
+                return False
+            logger.info(
+                "Telegram imports message sent to chat_id=%s status=%s",
+                imports_chat_id,
+                response.status,
+            )
+            return True
+    except Exception:
+        logger.exception("Telegram imports send failed for chat_id=%s", imports_chat_id)
+        return False
+
+
 def get_telegram_notification_chat_ids() -> list[str]:
     chat_ids: set[str] = set()
 
@@ -2435,14 +2470,12 @@ def notify_sap_movements_by_sbo_result(
             result=result,
         )
 
-    delivery = send_telegram_broadcast(message)
+    sent = send_telegram_import_message(message)
     logger.info(
-        "Telegram SAP movements notification delivered source=%s actor=%s sent=%s/%s failed=%s",
+        "Telegram SAP movements notification delivered source=%s actor=%s sent=%s",
         normalized_source,
         normalized_actor,
-        delivery.get("sent"),
-        delivery.get("total"),
-        delivery.get("failed"),
+        sent,
     )
 
 
@@ -2461,13 +2494,8 @@ def notify_sap_movements_by_sbo_error(
         actor=_summarize_actor(actor),
         error=_summarize_error(exc),
     )
-    delivery = send_telegram_broadcast(message)
-    logger.info(
-        "Telegram SAP movements error notification delivered sent=%s/%s failed=%s",
-        delivery.get("sent"),
-        delivery.get("total"),
-        delivery.get("failed"),
-    )
+    sent = send_telegram_import_message(message)
+    logger.info("Telegram SAP movements error notification delivered sent=%s", sent)
 
 
 def notify_sap_latest_import_success(project: str, result: dict):
