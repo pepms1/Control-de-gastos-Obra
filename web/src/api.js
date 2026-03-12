@@ -69,9 +69,9 @@ export function getSession() {
     uiPrefs: (() => {
       try {
         const raw = localStorage.getItem(USER_UI_PREFS_KEY);
-        return raw ? JSON.parse(raw) : { hiddenProjectIds: [] };
+        return raw ? JSON.parse(raw) : { hiddenProjectIds: [], defaultProjectId: '' };
       } catch {
-        return { hiddenProjectIds: [] };
+        return { hiddenProjectIds: [], defaultProjectId: '' };
       }
     })(),
   };
@@ -85,7 +85,7 @@ export function saveSession({ access_token, token, role, username, displayName, 
   localStorage.setItem(USER_ID_KEY, id || '');
   localStorage.setItem(USER_EMAIL_KEY, email || '');
   localStorage.setItem(USER_ACTIVE_KEY, String(isActive !== false));
-  localStorage.setItem(USER_UI_PREFS_KEY, JSON.stringify(uiPrefs && typeof uiPrefs === 'object' ? uiPrefs : { hiddenProjectIds: [] }));
+  localStorage.setItem(USER_UI_PREFS_KEY, JSON.stringify(uiPrefs && typeof uiPrefs === 'object' ? uiPrefs : { hiddenProjectIds: [], defaultProjectId: '' }));
 }
 
 export function clearSession() {

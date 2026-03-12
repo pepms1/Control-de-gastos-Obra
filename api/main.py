@@ -485,8 +485,12 @@ def normalize_hidden_project_ids(raw_ids) -> list[str]:
 
 def normalize_ui_prefs(raw_ui_prefs) -> dict:
     ui_prefs = raw_ui_prefs if isinstance(raw_ui_prefs, dict) else {}
+    default_project_id = str(ui_prefs.get("defaultProjectId") or "").strip()
+    if not ObjectId.is_valid(default_project_id):
+        default_project_id = ""
     return {
         "hiddenProjectIds": normalize_hidden_project_ids(ui_prefs.get("hiddenProjectIds")),
+        "defaultProjectId": default_project_id,
     }
 
 
@@ -779,7 +783,7 @@ def ensure_default_users():
                 "active": True,
                 "isActive": True,
                 "allowedProjectIds": [],
-                "uiPrefs": {"hiddenProjectIds": []},
+                "uiPrefs": {"hiddenProjectIds": [], "defaultProjectId": ""},
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
         )
@@ -788,7 +792,7 @@ def ensure_default_users():
     users.update_many({"isActive": {"$exists": False}}, [{"$set": {"isActive": {"$ifNull": ["$active", True]}}}])
     users.update_many({"role": {"$exists": False}}, {"$set": {"role": "SUPERADMIN"}})
     users.update_many({"allowedProjectIds": {"$exists": False}}, {"$set": {"allowedProjectIds": []}})
-    users.update_many({"uiPrefs": {"$exists": False}}, {"$set": {"uiPrefs": {"hiddenProjectIds": []}}})
+    users.update_many({"uiPrefs": {"$exists": False}}, {"$set": {"uiPrefs": {"hiddenProjectIds": [], "defaultProjectId": ""}}})
     users.update_many(
         {"allowedProjectIds": {"$type": "array"}},
         [{"$set": {"allowedProjectIds": {"$setUnion": [{"$ifNull": ["$allowedProjectIds", []]}, []]}}}],
@@ -796,6 +800,10 @@ def ensure_default_users():
     users.update_many(
         {"uiPrefs.hiddenProjectIds": {"$exists": False}},
         [{"$set": {"uiPrefs.hiddenProjectIds": {"$setUnion": [{"$ifNull": ["$uiPrefs.hiddenProjectIds", []]}, []]}}}],
+    )
+    users.update_many(
+        {"uiPrefs.defaultProjectId": {"$exists": False}},
+        [{"$set": {"uiPrefs.defaultProjectId": {"$ifNull": ["$uiPrefs.defaultProjectId", ""]}}}],
     )
     users.update_many(
         {"role": "ADMIN", "roleVersion": {"$exists": False}},
@@ -4341,10 +4349,14 @@ def update_my_preferences(payload: dict, user: dict = Depends(require_authentica
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be an object")
 
-    if "uiPrefs" in payload:
-        raw_hidden_project_ids = (payload.get("uiPrefs") or {}).get("hiddenProjectIds")
-    else:
-        raw_hidden_project_ids = payload.get("hiddenProjectIds")
+    source_ui_prefs = payload.get("uiPrefs") if isinstance(payload.get("uiPrefs"), dict) else payload
+    current_ui_prefs = normalize_ui_prefs(user.get("uiPrefs"))
+
+    should_update_hidden_projects = isinstance(source_ui_prefs, dict) and ("hiddenProjectIds" in source_ui_prefs)
+    raw_hidden_project_ids = source_ui_prefs.get("hiddenProjectIds") if should_update_hidden_projects else current_ui_prefs.get("hiddenProjectIds")
+
+    should_update_default_project = isinstance(source_ui_prefs, dict) and ("defaultProjectId" in source_ui_prefs)
+    raw_default_project_id = source_ui_prefs.get("defaultProjectId") if should_update_default_project else current_ui_prefs.get("defaultProjectId")
 
     normalized_hidden_project_ids = normalize_hidden_project_ids(raw_hidden_project_ids)
     if normalized_hidden_project_ids:
@@ -4356,11 +4368,28 @@ def update_my_preferences(payload: dict, user: dict = Depends(require_authentica
         existing_ids = {str(row.get("_id")) for row in rows}
         normalized_hidden_project_ids = [project_id for project_id in normalized_hidden_project_ids if project_id in existing_ids]
 
+    normalized_default_project_id = str(raw_default_project_id or "").strip()
+    if normalized_default_project_id:
+        if not ObjectId.is_valid(normalized_default_project_id):
+            raise HTTPException(status_code=400, detail="defaultProjectId must be a valid project id")
+
+        project_exists = db.projects.find_one(
+            {"_id": ObjectId(normalized_default_project_id)},
+            {"_id": 1},
+        )
+        if not project_exists:
+            raise HTTPException(status_code=400, detail="defaultProjectId does not exist")
+        if not can_access_project(user, normalized_default_project_id):
+            raise HTTPException(status_code=403, detail="defaultProjectId is not allowed for this user")
+
     user_id = str(user.get("id") or "").strip()
     if not user_id or not ObjectId.is_valid(user_id):
         raise HTTPException(status_code=404, detail="User not found")
 
-    ui_prefs = {"hiddenProjectIds": normalized_hidden_project_ids}
+    ui_prefs = {
+        "hiddenProjectIds": normalized_hidden_project_ids,
+        "defaultProjectId": normalized_default_project_id,
+    }
     updated = db.users.find_one_and_update(
         {"_id": ObjectId(user_id)},
         {
