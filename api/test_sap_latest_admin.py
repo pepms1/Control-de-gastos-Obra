@@ -62,6 +62,43 @@ class SapLatestAdminEndpointTests(unittest.TestCase):
         core_mock.assert_called_once()
 
 
+class TelegramAdminBootstrapTests(unittest.TestCase):
+    class _FakeTelegramUsers:
+        def __init__(self):
+            self.calls = []
+
+        def update_one(self, query, update, upsert=False):
+            self.calls.append({'query': query, 'update': update, 'upsert': upsert})
+            return None
+
+    def test_ensure_telegram_admin_user_upserts_approved_admin_chat(self):
+        fake_telegram_users = self._FakeTelegramUsers()
+        fake_db = type('FakeDb', (), {'telegram_users': fake_telegram_users})()
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'get_telegram_admin_chat_id', return_value='13875693'):
+            main.ensure_telegram_admin_user()
+
+        self.assertEqual(len(fake_telegram_users.calls), 1)
+        call = fake_telegram_users.calls[0]
+        self.assertEqual(call['query'], {'chat_id': '13875693'})
+        self.assertTrue(call['upsert'])
+        update_set = call['update']['$set']
+        self.assertEqual(update_set['status'], 'approved')
+        self.assertTrue(update_set['approved'])
+        self.assertEqual(update_set['chat_id'], '13875693')
+        self.assertTrue(update_set['is_admin'])
+        self.assertEqual(call['update']['$setOnInsert'], {'requested_at': update_set['updated_at']})
+
+    def test_ensure_telegram_admin_user_skips_when_chat_id_missing(self):
+        fake_telegram_users = self._FakeTelegramUsers()
+        fake_db = type('FakeDb', (), {'telegram_users': fake_telegram_users})()
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'get_telegram_admin_chat_id', return_value=''):
+            main.ensure_telegram_admin_user()
+
+        self.assertEqual(fake_telegram_users.calls, [])
+
+
 if __name__ == '__main__':
     unittest.main()
 
