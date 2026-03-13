@@ -9,8 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main  # noqa: E402
 from bson import ObjectId  # noqa: E402
-from types import SimpleNamespace
-from unittest.mock import patch
 
 
 def _matches(document, query):
@@ -107,45 +105,6 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
         project_filter = main.build_effective_project_filter("507f1f77bcf86cd799439011")
 
         self.assertTrue(_matches(tx, project_filter))
-
-    def test_transactions_query_prioritizes_manual_resolution_for_project_views(self):
-        tx = {
-            "projectId": "PB Y PC INTERIORES",
-            "supplierName": "PROVEEDOR UNO",
-            "sap": {
-                "manualResolvedProjectId": "CALDERON DE LA BARCA",
-                "pagoNum": "PAY-12345",
-            },
-        }
-
-        query = main.build_transactions_query(project_id="CALDERON DE LA BARCA")
-
-        self.assertTrue(_matches(tx, query))
-
-    def test_transactions_query_searches_by_sap_payment_number(self):
-        fake_db = SimpleNamespace(categories=SimpleNamespace(find=lambda *_args, **_kwargs: []))
-        with patch.object(main, "db", fake_db):
-            query = main.build_transactions_query(project_id="CALDERON DE LA BARCA", search_query="PAY-12345")
-
-        def collect_or_fields(node):
-            fields = set()
-            if isinstance(node, dict):
-                for key, value in node.items():
-                    if key == "$or" and isinstance(value, list):
-                        for clause in value:
-                            if isinstance(clause, dict) and len(clause) == 1:
-                                fields.add(next(iter(clause.keys())))
-                            fields.update(collect_or_fields(clause))
-                    else:
-                        fields.update(collect_or_fields(value))
-            elif isinstance(node, list):
-                for item in node:
-                    fields.update(collect_or_fields(item))
-            return fields
-
-        search_fields = collect_or_fields(query)
-
-        self.assertIn("sap.pagoNum", search_fields)
 
 
 if __name__ == '__main__':

@@ -1490,7 +1490,7 @@ def _telegram_import_status_summary() -> str:
 
 
 def _telegram_count_transactions(project_id: str) -> str:
-    total = db.transactions.count_documents(with_effective_project_filter({}, project_id))
+    total = db.transactions.count_documents({"projectId": project_id})
     return f"Total transactions projectId={project_id}: {total}"
 
 
@@ -1663,7 +1663,7 @@ def _telegram_build_transactions_list(transactions: list[dict], limit_used: int,
 
 
 def _telegram_query_transactions(project_id: str, query: dict, limit: int, page: int) -> str:
-    effective_query = with_effective_project_filter(query, project_id)
+    effective_query = {"projectId": project_id, **query}
     skip = (page - 1) * limit
     projection = {
         "date": 1,
@@ -2687,13 +2687,9 @@ def build_transactions_query(
             {"description": {"$regex": escaped_search, "$options": "i"}},
             {"concept": {"$regex": escaped_search, "$options": "i"}},
             {"supplierName": {"$regex": escaped_search, "$options": "i"}},
-            {"supplierCardCode": {"$regex": escaped_search, "$options": "i"}},
             {"proveedorNombre": {"$regex": escaped_search, "$options": "i"}},
             {"beneficiario": {"$regex": escaped_search, "$options": "i"}},
             {"proveedor.name": {"$regex": escaped_search, "$options": "i"}},
-            {"sap.pagoNum": {"$regex": escaped_search, "$options": "i"}},
-            {"sap.facturaNum": {"$regex": escaped_search, "$options": "i"}},
-            {"sap.facturaUUID": {"$regex": escaped_search, "$options": "i"}},
         ]
 
         normalized_search = normalize_category_name(cleaned_search)
