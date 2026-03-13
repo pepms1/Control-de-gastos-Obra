@@ -408,6 +408,12 @@ export const api = {
       body: JSON.stringify({ transactionIds, reason }),
     }),
 
+  bulkResolveSuspiciousProjectResolutionToPayment: (transactionIds = [], reason = '') =>
+    backendReq('/api/admin/suspicious-project-resolutions/bulk-resolve-payment', {
+      method: 'POST',
+      body: JSON.stringify({ transactionIds, reason }),
+    }),
+
   adminProjects: () => backendReq('/api/admin/projects'),
 
   adminUsers: () => backendReq('/api/admin/users'),

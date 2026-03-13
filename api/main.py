@@ -4831,13 +4831,17 @@ def raw_data_update_row(collection: str, row_id: str, payload: dict, _: dict = D
 
 def build_suspicious_project_resolutions_query(
     source_sbo: str | None = None,
+    payment_entity: str | None = None,
     supplier: str | None = None,
     document_project: str | None = None,
     payment_project: str | None = None,
+    effective_project: str | None = None,
     status: str | None = None,
     text: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
 ) -> dict:
 
     query: dict = {
@@ -4866,9 +4870,27 @@ def build_suspicious_project_resolutions_query(
     if normalized_source_sbo:
         query["sourceSbo"] = normalized_source_sbo
 
+    normalized_payment_entity = normalize_non_empty_string(payment_entity)
+    if normalized_payment_entity:
+        escaped_entity = re.escape(normalized_payment_entity)
+        query["$and"] = query.get("$and", []) + [{
+            "$or": [
+                {"sourceDb": {"$regex": escaped_entity, "$options": "i"}},
+                {"sourceSbo": {"$regex": escaped_entity, "$options": "i"}},
+                {"sap.sourceSbo": {"$regex": escaped_entity, "$options": "i"}},
+            ]
+        }]
+
     normalized_supplier = normalize_non_empty_string(supplier)
     if normalized_supplier:
-        query["supplierName"] = {"$regex": re.escape(normalized_supplier), "$options": "i"}
+        escaped_supplier = re.escape(normalized_supplier)
+        query["$and"] = query.get("$and", []) + [{
+            "$or": [
+                {"supplierName": {"$regex": escaped_supplier, "$options": "i"}},
+                {"sap.businessPartner": {"$regex": escaped_supplier, "$options": "i"}},
+                {"sap.cardCode": {"$regex": escaped_supplier, "$options": "i"}},
+            ]
+        }]
 
     normalized_document_project = normalize_non_empty_string(document_project)
     if normalized_document_project:
@@ -4877,6 +4899,17 @@ def build_suspicious_project_resolutions_query(
     normalized_payment_project = normalize_non_empty_string(payment_project)
     if normalized_payment_project:
         query["sap.paymentProjectName"] = {"$regex": re.escape(normalized_payment_project), "$options": "i"}
+
+    normalized_effective_project = normalize_non_empty_string(effective_project)
+    if normalized_effective_project:
+        escaped_effective_project = re.escape(normalized_effective_project)
+        query["$and"] = query.get("$and", []) + [{
+            "$or": [
+                {"sap.manualResolvedProjectName": {"$regex": escaped_effective_project, "$options": "i"}},
+                {"effectiveProjectName": {"$regex": escaped_effective_project, "$options": "i"}},
+                {"rawProjectName": {"$regex": escaped_effective_project, "$options": "i"}},
+            ]
+        }]
 
     parsed_from = parse_excel_date(date_from) if date_from else None
     parsed_to = parse_excel_date(date_to) if date_to else None
@@ -4888,15 +4921,29 @@ def build_suspicious_project_resolutions_query(
             date_query["$lte"] = parsed_to
         query["date"] = date_query
 
+    if amount_min is not None or amount_max is not None:
+        amount_query = {}
+        if amount_min is not None:
+            amount_query["$gte"] = amount_min
+        if amount_max is not None:
+            amount_query["$lte"] = amount_max
+        query["amount"] = amount_query
+
     normalized_text = normalize_non_empty_string(text)
     if normalized_text:
         escaped = re.escape(normalized_text)
-        query["$or"] = [
+        text_or = [
             {"sap.paymentNum": {"$regex": escaped, "$options": "i"}},
             {"sap.invoiceNum": {"$regex": escaped, "$options": "i"}},
             {"supplierName": {"$regex": escaped, "$options": "i"}},
             {"sap.businessPartner": {"$regex": escaped, "$options": "i"}},
+            {"description": {"$regex": escaped, "$options": "i"}},
+            {"comments": {"$regex": escaped, "$options": "i"}},
+            {"sap.comments": {"$regex": escaped, "$options": "i"}},
+            {"sap.remarks": {"$regex": escaped, "$options": "i"}},
+            {"sap.cardCode": {"$regex": escaped, "$options": "i"}},
         ]
+        query["$and"] = query.get("$and", []) + [{"$or": text_or}]
 
     return query
 
@@ -5134,13 +5181,17 @@ def get_suspicious_project_resolutions_collection():
 @app.get("/api/admin/suspicious-project-resolutions")
 def list_admin_suspicious_project_resolutions(
     sourceSbo: str | None = None,
+    paymentEntity: str | None = None,
     supplier: str | None = None,
     documentProject: str | None = None,
     paymentProject: str | None = None,
+    effectiveProject: str | None = None,
     status: str | None = "pending",
     q: str | None = None,
     dateFrom: str | None = None,
     dateTo: str | None = None,
+    amountMin: float | None = None,
+    amountMax: float | None = None,
     page: int = 1,
     limit: int = 50,
     _: dict = Depends(require_admin),
@@ -5151,13 +5202,17 @@ def list_admin_suspicious_project_resolutions(
 
     query = build_suspicious_project_resolutions_query(
         source_sbo=sourceSbo,
+        payment_entity=paymentEntity,
         supplier=supplier,
         document_project=documentProject,
         payment_project=paymentProject,
+        effective_project=effectiveProject,
         status=status,
         text=q,
         date_from=dateFrom,
         date_to=dateTo,
+        amount_min=amountMin,
+        amount_max=amountMax,
     )
 
     suspicious_collection, _, _ = get_suspicious_project_resolutions_collection()
@@ -5336,11 +5391,13 @@ def bulk_resolve_admin_suspicious_project_resolution_to_document(payload: dict, 
     now_iso = datetime.now(timezone.utc).isoformat()
     updated_count = 0
 
+    suspicious_collection, _, _ = get_suspicious_project_resolutions_collection()
+
     for raw_id in transaction_ids:
         tx_id = str(raw_id or "").strip()
         if not ObjectId.is_valid(tx_id):
             continue
-        tx = db.transactions.find_one({"_id": ObjectId(tx_id), "source": "sap-sbo"}, {"sap.documentProjectCode": 1, "sap.documentProjectName": 1})
+        tx = suspicious_collection.find_one({"_id": ObjectId(tx_id), "source": "sap-sbo"}, {"sap.documentProjectCode": 1, "sap.documentProjectName": 1})
         if not tx:
             continue
         sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
@@ -5351,7 +5408,53 @@ def bulk_resolve_admin_suspicious_project_resolution_to_document(payload: dict, 
         if not selected_project_id:
             continue
 
-        db.transactions.update_one(
+        suspicious_collection.update_one(
+            {"_id": ObjectId(tx_id)},
+            {
+                "$set": {
+                    "sap.manualResolvedProjectId": selected_project_id,
+                    "sap.manualResolvedProjectCode": selected_project_code,
+                    "sap.manualResolvedProjectName": selected_project_name,
+                    "sap.manualResolvedBy": resolved_by,
+                    "sap.manualResolvedAt": now_iso,
+                    "sap.manualResolutionReason": reason,
+                    "updated_at": now_iso,
+                }
+            },
+        )
+        updated_count += 1
+
+    return {"ok": True, "updated": updated_count}
+
+
+@app.post("/api/admin/suspicious-project-resolutions/bulk-resolve-payment")
+def bulk_resolve_admin_suspicious_project_resolution_to_payment(payload: dict, user: dict = Depends(require_admin)):
+    transaction_ids = payload.get("transactionIds") if isinstance(payload.get("transactionIds"), list) else []
+    reason = normalize_non_empty_string(payload.get("reason") or "bulk_resolve_to_payment")
+    if not transaction_ids:
+        raise HTTPException(status_code=400, detail="transactionIds is required")
+
+    resolved_by = normalize_non_empty_string(user.get("displayName") or user.get("username") or user.get("id"))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updated_count = 0
+    suspicious_collection, _, _ = get_suspicious_project_resolutions_collection()
+
+    for raw_id in transaction_ids:
+        tx_id = str(raw_id or "").strip()
+        if not ObjectId.is_valid(tx_id):
+            continue
+        tx = suspicious_collection.find_one({"_id": ObjectId(tx_id), "source": "sap-sbo"}, {"sap.paymentProjectCode": 1, "sap.paymentProjectName": 1})
+        if not tx:
+            continue
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
+            project_code=normalize_non_empty_string(sap_doc.get("paymentProjectCode")),
+            project_name=normalize_non_empty_string(sap_doc.get("paymentProjectName")),
+        )
+        if not selected_project_id:
+            continue
+
+        suspicious_collection.update_one(
             {"_id": ObjectId(tx_id)},
             {
                 "$set": {
