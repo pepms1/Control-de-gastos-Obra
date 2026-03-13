@@ -38,6 +38,16 @@ if not MONGO_URL:
     raise RuntimeError("MONGO_URL env var is required")
 
 DB_NAME = os.getenv("DB_NAME", "obra")
+SUSPICIOUS_PROJECT_RESOLUTIONS_DB_NAME = (
+    os.getenv("SUSPICIOUS_PROJECT_RESOLUTIONS_DB")
+    or os.getenv("SUSPICIOUS_PROJECT_RESOLUTION_DB")
+    or "control_obra_v2"
+)
+SUSPICIOUS_PROJECT_RESOLUTIONS_COLLECTION_NAME = (
+    os.getenv("SUSPICIOUS_PROJECT_RESOLUTIONS_COLLECTION")
+    or os.getenv("SUSPICIOUS_PROJECT_RESOLUTION_COLLECTION")
+    or "transactions"
+)
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
@@ -4946,6 +4956,17 @@ def serialize_suspicious_project_resolution_row(tx: dict) -> dict:
     }
 
 
+def get_suspicious_project_resolutions_collection():
+    db_name = normalize_non_empty_string(SUSPICIOUS_PROJECT_RESOLUTIONS_DB_NAME) or DB_NAME
+    collection_name = normalize_non_empty_string(SUSPICIOUS_PROJECT_RESOLUTIONS_COLLECTION_NAME) or "transactions"
+
+    current_db_name = normalize_non_empty_string(getattr(db, "name", None))
+    if hasattr(db, collection_name) and (not current_db_name or current_db_name == db_name):
+        return getattr(db, collection_name), current_db_name or db_name, collection_name
+
+    return client[db_name][collection_name], db_name, collection_name
+
+
 @app.get("/api/admin/suspicious-project-resolutions")
 def list_admin_suspicious_project_resolutions(
     sourceSbo: str | None = None,
@@ -4975,8 +4996,9 @@ def list_admin_suspicious_project_resolutions(
         date_to=dateTo,
     )
 
-    total_count = db.transactions.count_documents(query)
-    rows = list(db.transactions.find(query).sort([("date", -1), ("_id", -1)]).skip(skip).limit(normalized_limit))
+    suspicious_collection, _, _ = get_suspicious_project_resolutions_collection()
+    total_count = suspicious_collection.count_documents(query)
+    rows = list(suspicious_collection.find(query).sort([("date", -1), ("_id", -1)]).skip(skip).limit(normalized_limit))
     return {
         "items": [serialize_suspicious_project_resolution_row(row) for row in rows],
         "page": normalized_page,
@@ -4987,7 +5009,8 @@ def list_admin_suspicious_project_resolutions(
 
 @app.get("/api/admin/suspicious-project-resolutions/{transaction_id}")
 def get_admin_suspicious_project_resolution_detail(transaction_id: str, _: dict = Depends(require_admin)):
-    tx = db.transactions.find_one({"_id": oid(transaction_id), "source": "sap-sbo"})
+    suspicious_collection, _, _ = get_suspicious_project_resolutions_collection()
+    tx = suspicious_collection.find_one({"_id": oid(transaction_id), "source": "sap-sbo"})
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return serialize_suspicious_project_resolution_row(tx)
@@ -5012,13 +5035,25 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
     reason = normalize_non_empty_string(normalized_payload.get("resolution_reason"))
 
     oid_transaction_id = ObjectId(normalized_transaction_id)
-    tx = db.transactions.find_one({"_id": oid_transaction_id, "source": "sap-sbo"})
+    suspicious_collection, suspicious_db_name, suspicious_collection_name = get_suspicious_project_resolutions_collection()
+    tx = suspicious_collection.find_one({"_id": oid_transaction_id, "source": "sap-sbo"})
+    logger.info(
+        "resolve suspicious-project lookup transactionId=%s objectId=%s db=%s collection=%s found=%s",
+        normalized_transaction_id,
+        str(oid_transaction_id),
+        suspicious_db_name,
+        suspicious_collection_name,
+        bool(tx),
+    )
     if not tx:
         raise HTTPException(
             status_code=404,
             detail={
                 "message": "Transaction not found",
                 "transactionId": normalized_transaction_id,
+                "db": suspicious_db_name,
+                "collection": suspicious_collection_name,
+                "objectIdParsed": str(oid_transaction_id),
             },
         )
 
@@ -5068,7 +5103,7 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
     now_iso = datetime.now(timezone.utc).isoformat()
     resolved_by = normalize_non_empty_string(user.get("displayName") or user.get("username") or user.get("id"))
 
-    db.transactions.update_one(
+    suspicious_collection.update_one(
         {"_id": oid_transaction_id},
         {
             "$set": {
@@ -5083,7 +5118,7 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
         },
     )
 
-    updated = db.transactions.find_one({"_id": oid_transaction_id})
+    updated = suspicious_collection.find_one({"_id": oid_transaction_id})
     updated_sap = updated.get("sap") if isinstance(updated.get("sap"), dict) else {}
     persisted_project_id = normalize_non_empty_string(updated_sap.get("manualResolvedProjectId"))
     persisted_project_code = normalize_non_empty_string(updated_sap.get("manualResolvedProjectCode"))
