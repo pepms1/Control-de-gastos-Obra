@@ -176,6 +176,37 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
             },
         )()
 
+    def test_resolve_lookup_ignores_x_project_id_header_and_matches_only_by_transaction_id(self):
+        project_a = ObjectId()
+        project_b = ObjectId()
+        tx_with_project_a = {
+            **self.base_tx,
+            'projectId': str(project_a),
+            'sap': {
+                **self.base_tx['sap'],
+                'documentProjectCode': 'PAY-CODE',
+                'documentProjectName': 'Proyecto Pago',
+            },
+        }
+        fake_db = self._fake_db(tx_doc=tx_with_project_a)
+
+        class _Request:
+            headers = {'x-project-id': str(project_b)}
+
+        with patch.object(main, 'db', fake_db):
+            out = main.resolve_admin_suspicious_project_resolution(
+                str(self.tx_id),
+                {'resolve_to': 'document', 'resolution_reason': 'cross-project resolution'},
+                request=_Request(),
+                user={'username': 'admin'},
+            )
+
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['transactionId'], str(self.tx_id))
+        self.assertEqual(out['manualResolvedProjectCode'], 'PAY-CODE')
+        self.assertEqual(out['manualResolvedProjectName'], 'Proyecto Pago')
+        self.assertEqual(fake_db.transactions.last_update['query'], {'_id': self.tx_id})
+
     def test_resolve_to_document_and_payment(self):
         fake_db = self._fake_db()
         with patch.object(main, 'db', fake_db):
