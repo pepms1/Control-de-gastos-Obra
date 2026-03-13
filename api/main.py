@@ -753,20 +753,51 @@ def resolve_project_id(project_id: str | None = None) -> str:
 
 
 def with_legacy_project_filter(query: dict, project_id: str) -> dict:
-    # Multitenancy rule: nunca mezclar proyectos, contemplando registros legacy en sap.projectId.
+    # Multitenancy rule: nunca mezclar proyectos.
+    # Project precedence for filtering is:
+    #   1) sap.manualResolvedProjectId (if present)
+    #   2) fallback to projectId / legacy sap.projectId
     project_candidates: list[str | ObjectId] = [project_id]
     if ObjectId.is_valid(project_id):
         project_candidates.append(ObjectId(project_id))
 
-    legacy_filter = {
+    effective_project_filter = {
         "$or": [
-            {"projectId": {"$in": project_candidates}},
-            {"sap.projectId": {"$in": project_candidates}},
+            {"sap.manualResolvedProjectId": {"$in": project_candidates}},
+            {
+                "$and": [
+                    {
+                        "$or": [
+                            {"sap.manualResolvedProjectId": {"$exists": False}},
+                            {"sap.manualResolvedProjectId": None},
+                            {"sap.manualResolvedProjectId": ""},
+                        ]
+                    },
+                    {
+                        "$or": [
+                            {"manualResolvedProjectId": {"$exists": False}},
+                            {"manualResolvedProjectId": None},
+                            {"manualResolvedProjectId": ""},
+                        ]
+                    },
+                    {
+                        "$or": [
+                            {"projectId": {"$in": project_candidates}},
+                            {"sap.projectId": {"$in": project_candidates}},
+                        ]
+                    },
+                ]
+            },
         ]
     }
+
+    query = dict(query or {})
+    query.pop("projectId", None)
+    query.pop("sap.projectId", None)
+
     if not query:
-        return legacy_filter
-    return {"$and": [legacy_filter, query]}
+        return effective_project_filter
+    return {"$and": [effective_project_filter, query]}
 
 
 def ensure_default_users():
@@ -8767,7 +8798,7 @@ def list_categories(active_only: bool = True, request: FastAPIRequest = None, us
             "displayLabel": f"{name} ({code})" if code and code != name else name,
         })
 
-    tx_query = {"projectId": active_project_id}
+    tx_query = with_legacy_project_filter({}, active_project_id)
     projection = {
         "categoryManualCode": 1,
         "categoryManualName": 1,
@@ -8914,7 +8945,7 @@ def list_vendors(
                 seen_keys.add(f"sap-sbo:{project_key}:name:{name}")
 
     projection = {"supplierName": 1, "sap.cardCode": 1, "sap.businessPartner": 1, "projectId": 1}
-    tx_query = {"projectId": active_project_id, "source": "sap-sbo"}
+    tx_query = with_legacy_project_filter({"source": "sap-sbo"}, active_project_id)
     for tx in db.transactions.find(tx_query, projection):
         project_id = str(tx.get("projectId") or "").strip()
         sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
@@ -9533,7 +9564,7 @@ def spend_by_category(
             return {"total_expenses": 0.0, "rows": []}
         raise HTTPException(status_code=403, detail="Project access denied")
 
-    match = {"type": "EXPENSE", "projectId": active_project_id}
+    match = with_legacy_project_filter({"type": "EXPENSE"}, active_project_id)
     if vendor_id:
         match["vendor_id"] = vendor_id
     if date_from or date_to:
