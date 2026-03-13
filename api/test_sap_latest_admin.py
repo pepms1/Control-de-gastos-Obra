@@ -107,6 +107,40 @@ class LatestImportsEndpointTests(unittest.TestCase):
         self.assertEqual(row['concept'], 'Pago de proveedor')
         self.assertEqual(row['monto'], 1250.5)
 
+    def test_latest_imports_filters_and_sorts_by_document_date(self):
+        class CapturingCursor(self._FakeCursor):
+            def __init__(self, docs):
+                super().__init__(docs)
+                self.sort_args = None
+
+            def sort(self, args, **_kwargs):
+                self.sort_args = args
+                return self
+
+        class CapturingTransactions(self._FakeTransactions):
+            def __init__(self, docs):
+                super().__init__(docs)
+                self.last_query = None
+                self.last_projection = None
+                self.last_cursor = None
+
+            def find(self, query, projection):
+                self.last_query = query
+                self.last_projection = projection
+                self.last_cursor = CapturingCursor(self.docs)
+                return self.last_cursor
+
+        tx = CapturingTransactions([])
+        fake_db = type('FakeDb', (), {'transactions': tx})()
+
+        with patch.object(main, 'db', fake_db):
+            main.list_admin_latest_imports(days=7, limit=100, _={'role': 'SUPERADMIN'})
+
+        self.assertIn('$or', tx.last_query)
+        self.assertEqual(tx.last_cursor.sort_args[0][0], 'date')
+        self.assertEqual(tx.last_cursor.sort_args[0][1], -1)
+
+
 
 class TelegramAdminBootstrapTests(unittest.TestCase):
     class _FakeTelegramUsers:
