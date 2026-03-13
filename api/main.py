@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File, Query, Request as FastAPIRequest, Security, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pymongo import MongoClient, UpdateOne
+from pymongo import MongoClient, UpdateOne, ReturnDocument
 from pymongo.errors import BulkWriteError, OperationFailure, DuplicateKeyError
 from bson import ObjectId
 from datetime import date, datetime, timedelta, timezone
@@ -38,6 +38,16 @@ if not MONGO_URL:
     raise RuntimeError("MONGO_URL env var is required")
 
 DB_NAME = os.getenv("DB_NAME", "obra")
+SUSPICIOUS_PROJECT_RESOLUTIONS_DB_NAME = (
+    os.getenv("SUSPICIOUS_PROJECT_RESOLUTIONS_DB")
+    or os.getenv("SUSPICIOUS_PROJECT_RESOLUTION_DB")
+    or "control_obra_v2"
+)
+SUSPICIOUS_PROJECT_RESOLUTIONS_COLLECTION_NAME = (
+    os.getenv("SUSPICIOUS_PROJECT_RESOLUTIONS_COLLECTION")
+    or os.getenv("SUSPICIOUS_PROJECT_RESOLUTION_COLLECTION")
+    or "transactions"
+)
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
@@ -47,6 +57,8 @@ db = client[DB_NAME]
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 logger = logging.getLogger(__name__)
 bearer_scheme = HTTPBearer(auto_error=False)
+USER_ROLES = ("SUPERADMIN", "ADMIN", "VIEWER")
+ROLE_SCHEMA_VERSION = 2
 
 
 TELEGRAM_SETTINGS_KEY = "telegram_default_chat_id"
@@ -85,7 +97,7 @@ def get_env_auth_users():
     viewer_users_raw = env_get("VIEWER_USERS", "viewer_users", "") or ""
 
     auth_users = {
-        default_admin_user: {"password": default_admin_pass, "role": "ADMIN", "displayName": default_admin_name},
+        default_admin_user: {"password": default_admin_pass, "role": "SUPERADMIN", "displayName": default_admin_name},
     }
 
     for default_username, default_password, default_display_name in default_viewer_accounts():
@@ -187,6 +199,183 @@ def normalize_project_slug(raw_slug: str | None) -> str:
     return slug
 
 
+def normalize_slug_from_raw_project_name(raw_project_name: str | None) -> str:
+    value = (raw_project_name or "").strip().lower()
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = re.sub(r"-+", "-", value)
+    return value.strip("-")
+
+
+def normalize_text_for_matching(value: str | None) -> str:
+    normalized = unicodedata.normalize("NFD", str(value or "").strip().lower())
+    normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+TRABAJOS_ESPECIALES_PREFIX = "trabajos especiales"
+TRABAJOS_ESPECIALES_UNCLASSIFIED_ID = "trabajos_especiales_unclassified"
+TRABAJOS_ESPECIALES_UNCLASSIFIED_NAME = "Trabajos Especiales sin clasificar"
+UNRESOLVED_CATEGORY2_ID = "sin_categoria_2"
+UNRESOLVED_CATEGORY2_NAME = "Sin categoría 2"
+
+
+def build_supplier_key(supplier_card_code: str | None = None, business_partner: str | None = None, supplier_name: str | None = None) -> str | None:
+    normalized_card_code = normalize_non_empty_string(supplier_card_code)
+    normalized_business_partner = normalize_non_empty_string(business_partner)
+    if normalized_business_partner and normalized_card_code:
+        normalized_bp = normalize_text_for_matching(normalized_business_partner)
+        normalized_cc = normalize_text_for_matching(normalized_card_code)
+        return f"bpcc:{normalized_bp}|{normalized_cc}"
+
+    if normalized_business_partner:
+        return f"bp:{normalize_text_for_matching(normalized_business_partner)}"
+
+    if normalized_card_code:
+        return f"cardcode:{normalize_text_for_matching(normalized_card_code)}"
+
+    normalized_supplier_name = normalize_non_empty_string(supplier_name)
+    if normalized_supplier_name:
+        return f"name:{normalize_text_for_matching(normalized_supplier_name)}"
+
+    return None
+
+
+def build_supplier_identity_from_transaction(tx: dict) -> dict:
+    sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+    supplier_card_code = normalize_non_empty_string(tx.get("supplierCardCode") or sap_doc.get("cardCode"))
+    business_partner = normalize_non_empty_string(sap_doc.get("businessPartner") or tx.get("businessPartner"))
+    supplier_name = normalize_non_empty_string(
+        tx.get("supplierName")
+        or tx.get("proveedorNombre")
+        or tx.get("beneficiario")
+        or business_partner
+        or supplier_card_code
+    )
+    supplier_key = build_supplier_key(supplier_card_code, business_partner, supplier_name)
+
+    return {
+        "supplierKey": supplier_key,
+        "supplierName": supplier_name,
+        "supplierCardCode": supplier_card_code,
+        "businessPartner": business_partner,
+    }
+
+
+def build_supplier_rule_indexes(supplier_rules: list[dict] | None) -> dict[str, dict]:
+    by_key: dict[str, dict] = {}
+    by_card_code: dict[str, dict] = {}
+    by_business_partner: dict[str, dict] = {}
+    by_supplier_name: dict[str, dict] = {}
+
+    def register_unique(index: dict[str, dict], raw_value: str | None, rule: dict):
+        normalized_value = normalize_text_for_matching(raw_value)
+        if not normalized_value:
+            return
+        existing = index.get(normalized_value)
+        if existing is None:
+            index[normalized_value] = rule
+            return
+
+        same_category = (
+            normalize_non_empty_string(existing.get("category2Id")) == normalize_non_empty_string(rule.get("category2Id"))
+            and normalize_text_for_matching(existing.get("category2Name")) == normalize_text_for_matching(rule.get("category2Name"))
+        )
+        if same_category:
+            return
+
+        index[normalized_value] = {}
+
+    for rule in supplier_rules or []:
+        supplier_key = normalize_non_empty_string((rule or {}).get("supplierKey"))
+        if supplier_key:
+            by_key[supplier_key] = rule
+        register_unique(by_card_code, rule.get("supplierCardCode"), rule)
+        register_unique(by_business_partner, rule.get("businessPartner"), rule)
+        register_unique(by_supplier_name, rule.get("supplierName"), rule)
+
+    return {
+        "by_key": by_key,
+        "by_card_code": by_card_code,
+        "by_business_partner": by_business_partner,
+        "by_supplier_name": by_supplier_name,
+    }
+
+
+def resolve_supplier_category2_rule(
+    tx_doc: dict,
+    supplier_rules_by_key: dict[str, dict] | None = None,
+    supplier_rule_indexes: dict[str, dict] | None = None,
+) -> dict | None:
+    identity = build_supplier_identity_from_transaction(tx_doc)
+    supplier_key = normalize_non_empty_string(identity.get("supplierKey"))
+    if supplier_key and isinstance(supplier_rules_by_key, dict):
+        direct_match = supplier_rules_by_key.get(supplier_key)
+        if direct_match:
+            return direct_match
+
+    indexes = supplier_rule_indexes if isinstance(supplier_rule_indexes, dict) else {}
+
+    card_code_index = indexes.get("by_card_code") if isinstance(indexes.get("by_card_code"), dict) else {}
+    normalized_card_code = normalize_text_for_matching(identity.get("supplierCardCode"))
+    candidate = card_code_index.get(normalized_card_code)
+    if normalized_card_code and candidate and candidate.get("supplierKey"):
+        return candidate
+
+    business_partner_index = indexes.get("by_business_partner") if isinstance(indexes.get("by_business_partner"), dict) else {}
+    normalized_business_partner = normalize_text_for_matching(identity.get("businessPartner"))
+    candidate = business_partner_index.get(normalized_business_partner)
+    if normalized_business_partner and candidate and candidate.get("supplierKey"):
+        return candidate
+
+    supplier_name_index = indexes.get("by_supplier_name") if isinstance(indexes.get("by_supplier_name"), dict) else {}
+    normalized_supplier_name = normalize_text_for_matching(identity.get("supplierName"))
+    candidate = supplier_name_index.get(normalized_supplier_name)
+    if normalized_supplier_name and candidate and candidate.get("supplierKey"):
+        return candidate
+
+    if supplier_key and supplier_rules_by_key is None:
+        return db.supplierCategory2Rules.find_one({"supplierKey": supplier_key, "isActive": {"$ne": False}})
+    return None
+
+
+def resolve_transaction_category2(
+    tx_doc: dict,
+    supplier_rules_by_key: dict[str, dict] | None = None,
+    supplier_rule_indexes: dict[str, dict] | None = None,
+) -> dict:
+    category1_id = normalize_non_empty_string(tx_doc.get("categoryEffectiveCode"))
+    category1_name = normalize_non_empty_string(tx_doc.get("categoryEffectiveName"))
+    normalized_category1_name = normalize_text_for_matching(category1_name)
+
+    if not normalized_category1_name.startswith(TRABAJOS_ESPECIALES_PREFIX):
+        return {
+            "resolvedCategory2Id": category1_id,
+            "resolvedCategory2Name": category1_name,
+            "resolvedCategory2Source": "inherited",
+        }
+
+    rule = resolve_supplier_category2_rule(
+        tx_doc,
+        supplier_rules_by_key=supplier_rules_by_key,
+        supplier_rule_indexes=supplier_rule_indexes,
+    )
+
+    if rule:
+        return {
+            "resolvedCategory2Id": normalize_non_empty_string(rule.get("category2Id")),
+            "resolvedCategory2Name": normalize_non_empty_string(rule.get("category2Name")),
+            "resolvedCategory2Source": "supplier_rule",
+        }
+
+    return {
+        "resolvedCategory2Id": TRABAJOS_ESPECIALES_UNCLASSIFIED_ID,
+        "resolvedCategory2Name": TRABAJOS_ESPECIALES_UNCLASSIFIED_NAME,
+        "resolvedCategory2Source": "trabajos_especiales_unclassified",
+    }
+
+
 def normalize_project_prefix(raw_prefix: str | None, slug: str) -> str:
     prefix = (raw_prefix or "").strip()
     if not prefix:
@@ -201,7 +390,43 @@ def normalize_project_prefix(raw_prefix: str | None, slug: str) -> str:
     return prefix
 
 
-def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dict] | None = None):
+def resolve_effective_sap_project_fields(tx_doc: dict) -> dict:
+    sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+
+    manual_project_id = normalize_non_empty_string(
+        sap_doc.get("manualResolvedProjectId") or tx_doc.get("manualResolvedProjectId")
+    )
+    manual_project_code = normalize_non_empty_string(
+        sap_doc.get("manualResolvedProjectCode") or tx_doc.get("manualResolvedProjectCode")
+    )
+    manual_project_name = normalize_non_empty_string(
+        sap_doc.get("manualResolvedProjectName") or tx_doc.get("manualResolvedProjectName")
+    )
+    raw_project_code = normalize_non_empty_string(sap_doc.get("rawProjectCode"))
+    raw_project_name = normalize_non_empty_string(sap_doc.get("rawProjectName"))
+
+    if manual_project_id:
+        return {
+            "effectiveProjectId": manual_project_id,
+            "effectiveProjectCode": manual_project_code or raw_project_code,
+            "effectiveProjectName": manual_project_name or raw_project_name,
+            "effectiveProjectSource": "manual",
+        }
+
+    return {
+        "effectiveProjectId": normalize_non_empty_string(tx_doc.get("projectId")),
+        "effectiveProjectCode": raw_project_code,
+        "effectiveProjectName": raw_project_name,
+        "effectiveProjectSource": "automatic",
+    }
+
+
+def serialize_transaction_with_supplier(
+    tx: dict,
+    suppliers_by_id: dict[str, dict] | None = None,
+    supplier_rules_by_key: dict[str, dict] | None = None,
+    supplier_rule_indexes: dict[str, dict] | None = None,
+):
     tx_doc = serialize(tx)
     supplier = None
     supplier_id = tx_doc.get("supplierId")
@@ -252,6 +477,16 @@ def serialize_transaction_with_supplier(tx: dict, suppliers_by_id: dict[str, dic
     tx_doc["categoryEffectiveName"] = normalize_non_empty_string(
         tx_doc.get("categoryEffectiveName") or effective_fields.get("categoryEffectiveName")
     )
+    tx_doc.update(
+        resolve_transaction_category2(
+            tx_doc,
+            supplier_rules_by_key=supplier_rules_by_key,
+            supplier_rule_indexes=supplier_rule_indexes,
+        )
+    )
+
+    effective_project_fields = resolve_effective_sap_project_fields(tx_doc)
+    tx_doc.update(effective_project_fields)
 
     return tx_doc
 
@@ -260,6 +495,155 @@ def serialize_user(user):
     user_doc = serialize(user)
     user_doc.pop("password_hash", None)
     return user_doc
+
+
+def serialize_admin_user(user):
+    user_doc = serialize_user(user)
+    user_doc["role"] = resolve_effective_user_role(user, fallback_role=user_doc.get("role"))
+    user_doc["allowedProjectIds"] = normalize_allowed_project_ids(user_doc.get("allowedProjectIds"))
+    user_doc["isActive"] = bool(user_doc.get("isActive", user_doc.get("active", True)))
+    return user_doc
+
+
+def normalize_allowed_project_ids(raw_ids) -> list[str]:
+    if not isinstance(raw_ids, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_ids:
+        candidate = str(raw or "").strip()
+        if not candidate or not ObjectId.is_valid(candidate):
+            continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+
+    return normalized
+
+
+def normalize_hidden_project_ids(raw_ids) -> list[str]:
+    return normalize_allowed_project_ids(raw_ids)
+
+
+def normalize_ui_prefs(raw_ui_prefs) -> dict:
+    ui_prefs = raw_ui_prefs if isinstance(raw_ui_prefs, dict) else {}
+    default_project_id = str(ui_prefs.get("defaultProjectId") or "").strip()
+    if not ObjectId.is_valid(default_project_id):
+        default_project_id = ""
+    return {
+        "hiddenProjectIds": normalize_hidden_project_ids(ui_prefs.get("hiddenProjectIds")),
+        "defaultProjectId": default_project_id,
+    }
+
+
+def normalize_user_role(raw_role: str | None) -> str:
+    normalized = str(raw_role or "").strip().upper()
+    if normalized in USER_ROLES:
+        return normalized
+    return "SUPERADMIN"
+
+
+def resolve_effective_user_role(user_doc: dict | None, fallback_role: str | None = None) -> str:
+    """
+    Compatibilidad de transición de roles:
+    - ADMIN legacy (sin roleVersion >= 2) => SUPERADMIN
+    - VIEWER => VIEWER
+    - SUPERADMIN => SUPERADMIN
+    - ADMIN nuevo real (roleVersion >= 2) => ADMIN
+    """
+    source_role = (user_doc or {}).get("role") if isinstance(user_doc, dict) else fallback_role
+    normalized_role = normalize_user_role(source_role)
+
+    if normalized_role != "ADMIN":
+        return normalized_role
+
+    role_version_raw = (user_doc or {}).get("roleVersion") if isinstance(user_doc, dict) else None
+    try:
+        role_version = int(role_version_raw)
+    except (TypeError, ValueError):
+        role_version = 0
+
+    if role_version >= ROLE_SCHEMA_VERSION:
+        return "ADMIN"
+    return "SUPERADMIN"
+
+
+def is_user_active(user: dict | None) -> bool:
+    if not isinstance(user, dict):
+        return False
+    if "isActive" in user:
+        return bool(user.get("isActive"))
+    return bool(user.get("active", True))
+
+
+def is_superadmin(user: dict | None) -> bool:
+    return normalize_user_role((user or {}).get("role")) == "SUPERADMIN"
+
+
+def is_admin(user: dict | None) -> bool:
+    return normalize_user_role((user or {}).get("role")) == "ADMIN"
+
+
+def is_viewer(user: dict | None) -> bool:
+    return normalize_user_role((user or {}).get("role")) == "VIEWER"
+
+
+def count_superadmins(exclude_user_id: str | None = None) -> int:
+    total = 0
+    for user_doc in db.users.find({}, {"role": 1, "roleVersion": 1}):
+        user_id = str(user_doc.get("_id") or "")
+        if exclude_user_id and user_id == str(exclude_user_id):
+            continue
+        if resolve_effective_user_role(user_doc) == "SUPERADMIN":
+            total += 1
+    return total
+
+
+def get_accessible_project_ids(user: dict | None) -> list[str] | None:
+    if is_superadmin(user) or is_admin(user):
+        return None
+    if is_viewer(user):
+        return normalize_allowed_project_ids((user or {}).get("allowedProjectIds"))
+    return None
+
+
+def can_access_project(user: dict | None, project_id: str | None) -> bool:
+    normalized_project_id = str(project_id or "").strip()
+    if not normalized_project_id:
+        return False
+    accessible_project_ids = get_accessible_project_ids(user)
+    if accessible_project_ids is None:
+        return True
+    return normalized_project_id in set(accessible_project_ids)
+
+
+def build_current_user_payload(username: str, role: str, display_name: str, user_doc: dict | None = None) -> dict:
+    normalized_role = normalize_user_role(role)
+    is_active = is_user_active(user_doc) if user_doc is not None else True
+    resolved_email = ""
+    user_id = username
+
+    if user_doc:
+        user_id = str(user_doc.get("_id") or username)
+        resolved_email = str(user_doc.get("email") or "").strip()
+
+    allowed_project_ids = normalize_allowed_project_ids((user_doc or {}).get("allowedProjectIds"))
+    ui_prefs = normalize_ui_prefs((user_doc or {}).get("uiPrefs"))
+
+    return {
+        "id": user_id,
+        "username": username,
+        "name": (display_name or username),
+        "displayName": (display_name or username),
+        "email": resolved_email,
+        "role": normalized_role,
+        "isActive": is_active,
+        "active": is_active,
+        "allowedProjectIds": allowed_project_ids,
+        "uiPrefs": ui_prefs,
+    }
 
 
 def role_from_token(credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme)):
@@ -277,12 +661,10 @@ def role_from_token(credentials: HTTPAuthorizationCredentials | None = Security(
 
     user = db.users.find_one({"username": username})
     if user:
-        if not user.get("active", True):
+        if not is_user_active(user):
             raise HTTPException(status_code=401, detail="User inactive or not found")
 
-        role = user.get("role")
-        if role not in ("ADMIN", "VIEWER"):
-            raise HTTPException(status_code=401, detail="Invalid role")
+        role = resolve_effective_user_role(user)
 
         env_user = get_env_auth_users().get(username)
         display_name = (
@@ -292,28 +674,23 @@ def role_from_token(credentials: HTTPAuthorizationCredentials | None = Security(
             or payload.get("name")
             or user["username"]
         )
-        return {
-            "username": user["username"],
-            "role": role,
-            "displayName": display_name,
-            "active": user.get("active", True),
-        }
+        return build_current_user_payload(user["username"], role, display_name, user_doc=user)
 
-    token_role = payload.get("role")
+    token_role = normalize_user_role(payload.get("role"))
     env_user = get_env_auth_users().get(username)
     if not env_user:
         raise HTTPException(status_code=401, detail="User inactive or not found")
 
-    role = env_user.get("role")
-    if role not in ("ADMIN", "VIEWER") or token_role != role:
+    role = normalize_user_role(env_user.get("role"))
+    if role not in USER_ROLES or token_role != role:
         raise HTTPException(status_code=401, detail="Invalid role")
     display_name = payload.get("displayName") or payload.get("name") or env_user.get("displayName") or username
-    return {"username": username, "role": role, "displayName": display_name, "active": True}
+    return build_current_user_payload(username, role, display_name)
 
 
 def require_admin(user=Depends(role_from_token)):
-    if user["role"] != "ADMIN":
-        raise HTTPException(status_code=403, detail="ADMIN role required")
+    if user["role"] != "SUPERADMIN":
+        raise HTTPException(status_code=403, detail="SUPERADMIN role required")
     return user
 
 
@@ -376,11 +753,51 @@ def resolve_project_id(project_id: str | None = None) -> str:
 
 
 def with_legacy_project_filter(query: dict, project_id: str) -> dict:
-    # Multitenancy rule: nunca mezclar proyectos, contemplando registros legacy en sap.projectId.
-    legacy_filter = {"$or": [{"projectId": project_id}, {"sap.projectId": project_id}]}
+    # Multitenancy rule: nunca mezclar proyectos.
+    # Project precedence for filtering is:
+    #   1) sap.manualResolvedProjectId (if present)
+    #   2) fallback to projectId / legacy sap.projectId
+    project_candidates: list[str | ObjectId] = [project_id]
+    if ObjectId.is_valid(project_id):
+        project_candidates.append(ObjectId(project_id))
+
+    effective_project_filter = {
+        "$or": [
+            {"sap.manualResolvedProjectId": {"$in": project_candidates}},
+            {
+                "$and": [
+                    {
+                        "$or": [
+                            {"sap.manualResolvedProjectId": {"$exists": False}},
+                            {"sap.manualResolvedProjectId": None},
+                            {"sap.manualResolvedProjectId": ""},
+                        ]
+                    },
+                    {
+                        "$or": [
+                            {"manualResolvedProjectId": {"$exists": False}},
+                            {"manualResolvedProjectId": None},
+                            {"manualResolvedProjectId": ""},
+                        ]
+                    },
+                    {
+                        "$or": [
+                            {"projectId": {"$in": project_candidates}},
+                            {"sap.projectId": {"$in": project_candidates}},
+                        ]
+                    },
+                ]
+            },
+        ]
+    }
+
+    query = dict(query or {})
+    query.pop("projectId", None)
+    query.pop("sap.projectId", None)
+
     if not query:
-        return legacy_filter
-    return {"$and": [legacy_filter, query]}
+        return effective_project_filter
+    return {"$and": [effective_project_filter, query]}
 
 
 def ensure_default_users():
@@ -390,7 +807,7 @@ def ensure_default_users():
     default_admin_user = env_get("DEFAULT_ADMIN_USERNAME", "default_admin_username", "admin")
     default_admin_pass = env_get("DEFAULT_ADMIN_PASSWORD", "default_admin_password", "admin123")
     default_admin_name = env_get("DEFAULT_ADMIN_NAME", "default_admin_name", default_admin_user)
-    defaults = [(default_admin_user, default_admin_pass, "ADMIN", default_admin_name)]
+    defaults = [(default_admin_user, default_admin_pass, "SUPERADMIN", default_admin_name)]
 
     for default_username, default_password, _ in default_viewer_accounts():
         viewer_username = env_get(
@@ -413,23 +830,90 @@ def ensure_default_users():
     for username, plain_password, role, display_name in defaults:
         existing = users.find_one({"username": username})
         if existing:
+            target_role = normalize_user_role(existing.get("role") or role)
+            target_role_version = existing.get("roleVersion", ROLE_SCHEMA_VERSION)
+            if username == default_admin_user:
+                target_role = "SUPERADMIN"
+                target_role_version = ROLE_SCHEMA_VERSION
             users.update_one(
                 {"_id": existing["_id"]},
-                {"$set": {"displayName": existing.get("displayName") or display_name}},
+                {
+                    "$set": {
+                        "displayName": existing.get("displayName") or display_name,
+                        "role": target_role,
+                        "roleVersion": target_role_version,
+                        "allowedProjectIds": normalize_allowed_project_ids(existing.get("allowedProjectIds")),
+                        "uiPrefs": normalize_ui_prefs(existing.get("uiPrefs")),
+                    }
+                },
             )
             continue
         users.insert_one(
             {
                 "username": username,
                 "password_hash": pwd_context.hash(plain_password),
-                "role": role,
+                "role": normalize_user_role(role),
+                "roleVersion": ROLE_SCHEMA_VERSION,
                 "displayName": display_name,
                 "active": True,
+                "isActive": True,
+                "allowedProjectIds": [],
+                "uiPrefs": {"hiddenProjectIds": [], "defaultProjectId": ""},
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
         )
 
     users.update_many({"active": {"$exists": False}}, {"$set": {"active": True}})
+    users.update_many({"isActive": {"$exists": False}}, [{"$set": {"isActive": {"$ifNull": ["$active", True]}}}])
+    users.update_many({"role": {"$exists": False}}, {"$set": {"role": "SUPERADMIN"}})
+    users.update_many({"allowedProjectIds": {"$exists": False}}, {"$set": {"allowedProjectIds": []}})
+    users.update_many({"uiPrefs": {"$exists": False}}, {"$set": {"uiPrefs": {"hiddenProjectIds": [], "defaultProjectId": ""}}})
+    users.update_many(
+        {"allowedProjectIds": {"$type": "array"}},
+        [{"$set": {"allowedProjectIds": {"$setUnion": [{"$ifNull": ["$allowedProjectIds", []]}, []]}}}],
+    )
+    users.update_many(
+        {"uiPrefs.hiddenProjectIds": {"$exists": False}},
+        [{"$set": {"uiPrefs.hiddenProjectIds": {"$setUnion": [{"$ifNull": ["$uiPrefs.hiddenProjectIds", []]}, []]}}}],
+    )
+    users.update_many(
+        {"uiPrefs.defaultProjectId": {"$exists": False}},
+        [{"$set": {"uiPrefs.defaultProjectId": {"$ifNull": ["$uiPrefs.defaultProjectId", ""]}}}],
+    )
+    users.update_many(
+        {"role": "ADMIN", "roleVersion": {"$exists": False}},
+        {
+            "$set": {
+                "legacyRole": "ADMIN",
+                "role": "SUPERADMIN",
+                "roleVersion": ROLE_SCHEMA_VERSION,
+            }
+        },
+    )
+
+
+def ensure_telegram_admin_user():
+    admin_chat_id = _telegram_normalize_chat_id(get_telegram_admin_chat_id())
+    if not admin_chat_id:
+        return
+
+    now_iso = _telegram_now_iso()
+    db.telegram_users.update_one(
+        {"chat_id": admin_chat_id},
+        {
+            "$set": {
+                "chat_id": admin_chat_id,
+                "status": "approved",
+                "approved": True,
+                "approved_at": now_iso,
+                "revoked_at": None,
+                "updated_at": now_iso,
+                "is_admin": True,
+            },
+            "$setOnInsert": {"requested_at": now_iso},
+        },
+        upsert=True,
+    )
 
 
 def to_monto_aplicado_cents(value) -> int:
@@ -582,6 +1066,101 @@ def send_telegram_to_chat(text: str, chat_id: int | str | None = None) -> bool:
     except Exception as exc:
         logger.exception("Telegram send failed for chat_id=%s: %s", resolved_chat_id, exc)
         return False
+
+
+def get_telegram_imports_chat_id() -> str:
+    imports_chat_id = (os.getenv("TELEGRAM_IMPORTS_CHAT_ID") or "").strip()
+    if imports_chat_id:
+        return imports_chat_id
+
+    admin_chat_id = _telegram_normalize_chat_id(get_telegram_admin_chat_id())
+    if admin_chat_id:
+        return admin_chat_id
+
+    fallback_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    if fallback_chat_id:
+        return fallback_chat_id
+
+    default_chat_id = get_telegram_default_chat_id()
+    return str(default_chat_id).strip() if default_chat_id is not None else ""
+
+
+def send_telegram_import_message(text: str) -> bool:
+    token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+    imports_chat_id = get_telegram_imports_chat_id()
+
+    if not token or not imports_chat_id:
+        logger.warning(
+            "Telegram imports notification skipped: TELEGRAM_BOT_TOKEN or chat id is not configured"
+        )
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({"chat_id": imports_chat_id, "text": text}).encode("utf-8")
+    req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+
+    try:
+        with urlopen(req, timeout=15) as response:
+            if response.status >= 400:
+                body = response.read().decode("utf-8")
+                logger.error(
+                    "Telegram imports send failed for chat_id=%s body=%s",
+                    imports_chat_id,
+                    body,
+                )
+                return False
+            logger.info(
+                "Telegram imports message sent to chat_id=%s status=%s",
+                imports_chat_id,
+                response.status,
+            )
+            return True
+    except Exception:
+        logger.exception("Telegram imports send failed for chat_id=%s", imports_chat_id)
+        return False
+
+
+def get_telegram_notification_chat_ids() -> list[str]:
+    chat_ids: set[str] = set()
+
+    try:
+        approved_users = db.telegram_users.find(
+            {"$or": [{"status": "approved"}, {"approved": True}]},
+            {"chat_id": 1},
+        )
+        for user_doc in approved_users:
+            normalized = _telegram_normalize_chat_id(user_doc.get("chat_id"))
+            if normalized:
+                chat_ids.add(normalized)
+    except Exception:
+        logger.exception("Failed to resolve telegram_users recipients; falling back to env/default chat ids")
+
+    env_chat_id = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()
+    if env_chat_id:
+        chat_ids.add(env_chat_id)
+
+    default_chat_id = get_telegram_default_chat_id()
+    if default_chat_id is not None:
+        chat_ids.add(str(default_chat_id))
+
+    return sorted(chat_ids)
+
+
+def send_telegram_broadcast(text: str) -> dict:
+    recipients = get_telegram_notification_chat_ids()
+    if not recipients:
+        logger.info("Telegram broadcast skipped: no recipients configured")
+        return {"total": 0, "sent": 0, "failed": 0}
+
+    sent = 0
+    failed = 0
+    for chat_id in recipients:
+        if tg_send(chat_id=chat_id, text=text):
+            sent += 1
+        else:
+            failed += 1
+
+    return {"total": len(recipients), "sent": sent, "failed": failed}
 
 
 def tg_answer_callback_query(callback_query_id: str, text: str | None = None) -> bool:
@@ -1919,6 +2498,130 @@ def _summarize_error(exc: Exception) -> str:
     return (message or exc.__class__.__name__).replace("\n", " ").strip()[:300]
 
 
+def _normalize_trigger_source(trigger_source: str | None) -> str:
+    normalized = str(trigger_source or "").strip().lower()
+    if normalized in {"cron", "frontend", "api"}:
+        return normalized
+    return "api"
+
+
+def _summarize_actor(actor: str | None) -> str:
+    normalized = str(actor or "").strip()
+    return normalized or "system"
+
+
+def _build_sap_movements_success_message(
+    *,
+    sbo: str,
+    mode: str,
+    trigger_source: str,
+    actor: str,
+    result: dict,
+) -> str:
+    lines = [
+        "✅ SAP import",
+        f"SBO: {sbo}",
+        f"Modo: {mode}",
+        f"Origen: {trigger_source}",
+        f"Actor: {actor}",
+        f"Rows total: {int(result.get('rowsTotal') or 0)}",
+        f"Rows ok: {int(result.get('rowsOk') or 0)}",
+        f"Imported: {int(result.get('imported') or 0)}",
+        f"Updated: {int(result.get('updated') or 0)}",
+        f"Unmatched: {int(result.get('unmatched') or 0)}",
+        f"ImportRunId: {result.get('importRunId') or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def _build_sap_movements_already_imported_message(
+    *,
+    sbo: str,
+    mode: str,
+    trigger_source: str,
+    actor: str,
+    import_run_id: str | None,
+) -> str:
+    lines = [
+        "ℹ️ SAP import",
+        f"SBO: {sbo}",
+        f"Modo: {mode}",
+        f"Origen: {trigger_source}",
+        f"Actor: {actor}",
+        "Resultado: already imported",
+        f"ImportRunId: {import_run_id or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def _build_sap_movements_error_message(*, sbo: str, mode: str, trigger_source: str, actor: str, error: str) -> str:
+    lines = [
+        "❌ SAP import",
+        f"SBO: {sbo}",
+        f"Modo: {mode}",
+        f"Origen: {trigger_source}",
+        f"Actor: {actor}",
+        f"Error: {error}",
+    ]
+    return "\n".join(lines)
+
+
+def notify_sap_movements_by_sbo_result(
+    *,
+    sbo: str,
+    mode: str,
+    trigger_source: str,
+    actor: str,
+    result: dict,
+) -> None:
+    normalized_source = _normalize_trigger_source(trigger_source)
+    normalized_actor = _summarize_actor(actor)
+
+    if result.get("already_imported"):
+        message = _build_sap_movements_already_imported_message(
+            sbo=sbo,
+            mode=mode,
+            trigger_source=normalized_source,
+            actor=normalized_actor,
+            import_run_id=str(result.get("importRunId") or "") or None,
+        )
+    else:
+        message = _build_sap_movements_success_message(
+            sbo=sbo,
+            mode=mode,
+            trigger_source=normalized_source,
+            actor=normalized_actor,
+            result=result,
+        )
+
+    sent = send_telegram_import_message(message)
+    logger.info(
+        "Telegram SAP movements notification delivered source=%s actor=%s sent=%s",
+        normalized_source,
+        normalized_actor,
+        sent,
+    )
+
+
+def notify_sap_movements_by_sbo_error(
+    *,
+    sbo: str,
+    mode: str,
+    trigger_source: str,
+    actor: str,
+    exc: Exception,
+) -> None:
+    message = _build_sap_movements_error_message(
+        sbo=sbo,
+        mode=mode,
+        trigger_source=_normalize_trigger_source(trigger_source),
+        actor=_summarize_actor(actor),
+        error=_summarize_error(exc),
+    )
+    sent = send_telegram_import_message(message)
+    logger.info("Telegram SAP movements error notification delivered sent=%s", sent)
+
+
 def notify_sap_latest_import_success(project: str, result: dict):
     message = (
         f"✅ SAP import OK ({project})\n"
@@ -1981,6 +2684,17 @@ def ensure_indexes():
         unique=True,
         name="supplier_categories_project_supplier_unique",
     )
+    db.supplierCategory2Rules.update_many(
+        {"supplierKey": ""},
+        {"$unset": {"supplierKey": ""}},
+    )
+    db.supplierCategory2Rules.create_index(
+        [("supplierKey", 1)],
+        unique=True,
+        name="supplier_category2_rules_supplier_key_unique",
+        partialFilterExpression={"supplierKey": {"$exists": True, "$type": "string", "$gt": ""}},
+    )
+    db.supplierCategory2Rules.create_index([("isActive", 1), ("updatedAt", -1)], name="supplier_category2_rules_active_updated_idx")
     db.projects.create_index("name", unique=True)
     db.projects.create_index("slug", unique=True)
     db.payments.create_index([("projectId", 1), ("sapPaymentNum", 1)], unique=True)
@@ -1997,6 +2711,11 @@ def ensure_indexes():
         unique=True,
         name="sap_import_state_project_source_unique",
     )
+    db.unmatched_projects.create_index(
+        [("sourceSbo", 1), ("normalizedProjectName", 1)],
+        unique=True,
+        name="unmatched_projects_source_sbo_project_name_unique",
+    )
     db.adminActions.create_index([("projectId", 1), ("requestedAt", -1)])
     db.adminActions.create_index([("action", 1), ("requestedAt", -1)])
     db.settings.create_index("key", unique=True)
@@ -2009,6 +2728,14 @@ def ensure_indexes():
         backfill_sap_transactions_metadata()
     except Exception:
         logger.exception("SAP metadata backfill failed during startup; continuing without blocking server startup")
+    try:
+        backfill_sbo_project_resolution_suspicious_flags()
+    except Exception:
+        logger.exception("SBO suspicious project-resolution backfill failed during startup; continuing without blocking server startup")
+    try:
+        repair_partial_suspicious_project_resolutions()
+    except Exception:
+        logger.exception("SBO suspicious project-resolution repair failed during startup; continuing without blocking server startup")
     dedupe_sap_transactions_for_unique_index()
     db.transactions.create_index(
         [
@@ -2023,6 +2750,7 @@ def ensure_indexes():
         partialFilterExpression={"source": "sap"},
         name="sap_transactions_unique_v2_cents",
     )
+    db.transactions.create_index([("dedupeKey", 1)], name="transactions_dedupe_key_idx")
     db.transactions.create_index([("projectId", 1), ("date", -1)])
     db.transactions.create_index([("projectId", 1)], name="transactions_project_id_idx")
     db.transactions.create_index(
@@ -2030,6 +2758,10 @@ def ensure_indexes():
         name="transactions_project_source_db_category_idx",
     )
     db.transactions.create_index([("sap.projectId", 1)], name="transactions_sap_project_id_idx")
+    db.transactions.create_index(
+        [("sap.isProjectResolutionSuspicious", 1), ("sap.manualResolvedProjectId", 1), ("date", -1)],
+        name="transactions_sap_project_resolution_suspicious_idx",
+    )
     db.vendors.create_index(
         [("projectId", 1), ("supplierCardCode", 1)],
         unique=True,
@@ -2088,6 +2820,145 @@ def infer_sap_source_db_for_backfill(tx: dict) -> str:
         return "EFECTIVO"
 
 
+def backfill_sbo_project_resolution_suspicious_flags():
+    query = {
+        "source": "sap-sbo",
+        "sap": {"$exists": True},
+        "sap.movementType": "egreso",
+        "sap.documentProjectCode": {"$exists": True},
+        "sap.paymentProjectCode": {"$exists": True},
+    }
+    ops = []
+    projection = {
+        "sap.documentProjectCode": 1,
+        "sap.documentProjectName": 1,
+        "sap.paymentProjectCode": 1,
+        "sap.paymentProjectName": 1,
+        "sap.isProjectResolutionSuspicious": 1,
+        "sap.projectResolutionSuspicionReasons": 1,
+        "sap.suggestedProjectCode": 1,
+        "sap.suggestedProjectName": 1,
+        "sap.conflictingPaymentProjectCode": 1,
+        "sap.conflictingPaymentProjectName": 1,
+        "sap.rawProjectCode": 1,
+        "sap.rawProjectName": 1,
+        "sap.projectResolutionSource": 1,
+    }
+
+    scanned = 0
+    for tx in db.transactions.find(query, projection):
+        scanned += 1
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        project_fields = {
+            "document_project_code": normalize_non_empty_string(sap_doc.get("documentProjectCode")),
+            "document_project_name": normalize_non_empty_string(sap_doc.get("documentProjectName")),
+            "payment_project_code": normalize_non_empty_string(sap_doc.get("paymentProjectCode")),
+            "payment_project_name": normalize_non_empty_string(sap_doc.get("paymentProjectName")),
+        }
+        suspicious = build_project_resolution_suspicion_fields("egreso", project_fields)
+
+        desired_set = {
+            "sap.isProjectResolutionSuspicious": suspicious["isProjectResolutionSuspicious"],
+            "sap.projectResolutionSuspicionReasons": suspicious["projectResolutionSuspicionReasons"],
+            "sap.suggestedProjectCode": suspicious["suggestedProjectCode"],
+            "sap.suggestedProjectName": suspicious["suggestedProjectName"],
+            "sap.conflictingPaymentProjectCode": suspicious["conflictingPaymentProjectCode"],
+            "sap.conflictingPaymentProjectName": suspicious["conflictingPaymentProjectName"],
+            "sap.rawProjectCode": project_fields.get("document_project_code") or normalize_non_empty_string(sap_doc.get("rawProjectCode")),
+            "sap.rawProjectName": project_fields.get("document_project_name") or normalize_non_empty_string(sap_doc.get("rawProjectName")),
+            "sap.projectResolutionSource": "document",
+        }
+
+        requires = False
+        for k,v in desired_set.items():
+            parts=k.split('.')[1:]
+            cur=sap_doc
+            for part in parts:
+                cur=cur.get(part) if isinstance(cur,dict) else None
+            if cur!=v:
+                requires=True
+                break
+        if not requires:
+            continue
+        ops.append(UpdateOne({"_id": tx["_id"]}, {"$set": desired_set}))
+
+    if ops:
+        result = db.transactions.bulk_write(ops, ordered=False)
+        return {"scanned": scanned, "updated": (result.modified_count or 0)}
+    return {"scanned": scanned, "updated": 0}
+
+
+
+
+def repair_partial_suspicious_project_resolutions():
+    query = {
+        "source": "sap-sbo",
+        "sap.isProjectResolutionSuspicious": True,
+        "$expr": {
+            "$eq": [
+                {
+                    "$strLenCP": {
+                        "$trim": {
+                            "input": {"$toString": {"$ifNull": ["$sap.manualResolvedProjectId", ""]}}
+                        }
+                    }
+                },
+                0,
+            ]
+        },
+        "$or": [
+            {"sap.manualResolvedProjectName": {"$exists": True, "$ne": None}},
+            {"sap.manualResolvedAt": {"$exists": True, "$ne": None}},
+        ],
+    }
+    projection = {
+        "sap.manualResolvedProjectCode": 1,
+        "sap.manualResolvedProjectName": 1,
+        "sap.manualResolvedBy": 1,
+        "sap.manualResolvedAt": 1,
+        "sap.manualResolutionReason": 1,
+    }
+    scanned = 0
+    fixed = 0
+    cleared = 0
+    for tx in db.transactions.find(query, projection):
+        scanned += 1
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        project_id, project_code, project_name = resolve_project_metadata_from_code_or_name(
+            project_code=normalize_non_empty_string(sap_doc.get("manualResolvedProjectCode")),
+            project_name=normalize_non_empty_string(sap_doc.get("manualResolvedProjectName")),
+        )
+        if project_id:
+            db.transactions.update_one(
+                {"_id": tx.get("_id")},
+                {
+                    "$set": {
+                        "sap.manualResolvedProjectId": project_id,
+                        "sap.manualResolvedProjectCode": project_code,
+                        "sap.manualResolvedProjectName": project_name,
+                    }
+                },
+            )
+            fixed += 1
+            continue
+
+        db.transactions.update_one(
+            {"_id": tx.get("_id")},
+            {
+                "$unset": {
+                    "sap.manualResolvedProjectId": "",
+                    "sap.manualResolvedProjectCode": "",
+                    "sap.manualResolvedProjectName": "",
+                    "sap.manualResolvedBy": "",
+                    "sap.manualResolvedAt": "",
+                    "sap.manualResolutionReason": "",
+                }
+            },
+        )
+        cleared += 1
+
+    return {"scanned": scanned, "fixed": fixed, "cleared": cleared}
+
 def backfill_sap_transactions_metadata():
     query = {
         "$or": [
@@ -2104,6 +2975,8 @@ def backfill_sap_transactions_metadata():
         "amount": 1,
         "sap": 1,
     }
+    collision_skips = 0
+    planned_unique_keys: set[tuple] = set()
     for tx in db.transactions.find(query, projection):
         sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else None
         if not sap_doc:
@@ -2142,6 +3015,39 @@ def backfill_sap_transactions_metadata():
             "sap.montoAplicado": normalized_sap["montoAplicado"],
             "sap.montoAplicadoCents": normalized_sap["montoAplicadoCents"],
         }
+
+        unique_key = (
+            str(tx.get("projectId") or ""),
+            set_values["source"],
+            set_values["sourceDb"],
+            set_values["sap.pagoNum"],
+            set_values["sap.facturaNum"],
+            set_values["sap.montoAplicadoCents"],
+        )
+        duplicate_filter = {
+            "_id": {"$ne": tx["_id"]},
+            "projectId": tx.get("projectId"),
+            "source": set_values["source"],
+            "sourceDb": set_values["sourceDb"],
+            "sap.pagoNum": set_values["sap.pagoNum"],
+            "sap.facturaNum": set_values["sap.facturaNum"],
+            "sap.montoAplicadoCents": set_values["sap.montoAplicadoCents"],
+        }
+        existing_collision = db.transactions.find_one(duplicate_filter, {"_id": 1})
+        if existing_collision or unique_key in planned_unique_keys:
+            collision_skips += 1
+            logger.warning(
+                "Skipping SAP metadata backfill update due to unique-key collision tx=%s projectId=%s sourceDb=%s pagoNum=%s facturaNum=%s montoAplicadoCents=%s",
+                tx.get("_id"),
+                tx.get("projectId"),
+                set_values["sourceDb"],
+                set_values["sap.pagoNum"],
+                set_values["sap.facturaNum"],
+                set_values["sap.montoAplicadoCents"],
+            )
+            continue
+        planned_unique_keys.add(unique_key)
+
         if source_db_was_missing:
             set_values["sourceDbInferred"] = True
 
@@ -2155,9 +3061,17 @@ def backfill_sap_transactions_metadata():
         )
 
     if ops:
-        result = db.transactions.bulk_write(ops, ordered=False)
-        return {"scanned": len(ops), "updated": (result.modified_count or 0) + (result.upserted_count or 0)}
-    return {"scanned": 0, "updated": 0}
+        try:
+            result = db.transactions.bulk_write(ops, ordered=False)
+            return {
+                "scanned": len(ops),
+                "updated": (result.modified_count or 0) + (result.upserted_count or 0),
+                "skippedCollisions": collision_skips,
+            }
+        except BulkWriteError:
+            logger.exception("SAP metadata backfill hit duplicate-key errors; startup will continue")
+            return {"scanned": len(ops), "updated": 0, "skippedCollisions": collision_skips}
+    return {"scanned": 0, "updated": 0, "skippedCollisions": collision_skips}
 
 
 def _is_missing(value) -> bool:
@@ -2514,6 +3428,194 @@ def normalize_category_name(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "").strip()).lower()
 
 
+def normalize_global_category_key(value: str | None) -> str:
+    return normalize_text_for_matching(value)
+
+
+def clean_global_category_name(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+GLOBAL_CATEGORIES_PROJECT_ID = "__global__"
+
+
+def build_global_category_code(value: str | None) -> str | None:
+    key = normalize_global_category_key(value)
+    if not key:
+        return None
+    token = re.sub(r"[^a-z0-9]+", "-", key).strip("-")
+    token = re.sub(r"-+", "-", token)
+    if not token:
+        token = sha256(key.encode("utf-8")).hexdigest()[:12]
+    return f"global:{token}"
+
+
+def iter_existing_global_category_names() -> list[str]:
+    names: list[str] = []
+
+    for row in db.transactions.aggregate(
+        [
+            {
+                "$project": {
+                    "names": [
+                        "$categoryEffectiveName",
+                        "$categoryManualName",
+                        "$categoryHintName",
+                    ]
+                }
+            },
+            {"$unwind": "$names"},
+            {"$match": {"names": {"$type": "string", "$nin": ["", None]}}},
+            {"$group": {"_id": "$names"}},
+        ]
+    ):
+        name = clean_global_category_name(row.get("_id"))
+        if name:
+            names.append(name)
+
+    for row in db.supplierCategory2Rules.find(
+        {"category2Name": {"$exists": True, "$nin": [None, ""]}},
+        {"category2Name": 1},
+    ):
+        name = clean_global_category_name(row.get("category2Name"))
+        if name:
+            names.append(name)
+
+    return names
+
+
+def ensure_global_categories_catalog() -> dict:
+    existing_rows = list(db.categories.find({}, {"name": 1, "active": 1, "nameKey": 1, "normalizedName": 1, "code": 1, "projectId": 1}))
+    by_key: dict[str, dict] = {}
+    by_code: dict[str, dict] = {}
+
+    for row in existing_rows:
+        name = clean_global_category_name(row.get("name"))
+        key = normalize_global_category_key(name)
+        if not key:
+            continue
+
+        row_id = row.get("_id")
+        current = by_key.get(key)
+        if current is None:
+            by_key[key] = row
+        else:
+            current_is_active = current.get("active") is not False
+            row_is_active = row.get("active") is not False
+            if row_is_active and not current_is_active:
+                by_key[key] = row
+            elif row_is_active == current_is_active and str(row_id) < str(current.get("_id")):
+                by_key[key] = row
+
+        code = normalize_non_empty_string(row.get("code"))
+        if code and code not in by_code:
+            by_code[code] = row
+
+    candidate_names = [
+        *[clean_global_category_name(row.get("name")) for row in existing_rows],
+        *DEFAULT_CATEGORIES,
+        *iter_existing_global_category_names(),
+    ]
+
+    seeded = 0
+    reactivated = 0
+    normalized_updates = 0
+
+    for raw_name in candidate_names:
+        name = clean_global_category_name(raw_name)
+        key = normalize_global_category_key(name)
+        code = build_global_category_code(name)
+        if not name or not key or not code:
+            continue
+
+        keeper = by_key.get(key)
+        if keeper is None:
+            keeper = by_code.get(code)
+            if keeper is not None:
+                by_key[key] = keeper
+
+        if keeper is None:
+            try:
+                inserted_id = db.categories.insert_one(
+                    {
+                        "name": name,
+                        "active": True,
+                        "nameKey": key,
+                        "normalizedName": key,
+                        "code": code,
+                        "projectId": GLOBAL_CATEGORIES_PROJECT_ID,
+                    }
+                ).inserted_id
+                keeper = {
+                    "_id": inserted_id,
+                    "name": name,
+                    "active": True,
+                    "nameKey": key,
+                    "normalizedName": key,
+                    "code": code,
+                    "projectId": GLOBAL_CATEGORIES_PROJECT_ID,
+                }
+                by_key[key] = keeper
+                by_code[code] = keeper
+                seeded += 1
+            except DuplicateKeyError:
+                keeper = db.categories.find_one(
+                    {
+                        "$or": [
+                            {"nameKey": key},
+                            {"normalizedName": key},
+                            {"projectId": GLOBAL_CATEGORIES_PROJECT_ID, "code": code},
+                            {"code": code},
+                        ]
+                    },
+                    {"name": 1, "active": 1, "nameKey": 1, "normalizedName": 1, "code": 1, "projectId": 1},
+                )
+                if keeper is None:
+                    logger.warning("Global categories bootstrap skipped problematic category name=%s code=%s", name, code)
+                    continue
+                by_key[key] = keeper
+                existing_code = normalize_non_empty_string(keeper.get("code"))
+                if existing_code:
+                    by_code[existing_code] = keeper
+            continue
+
+        updates: dict = {}
+        if keeper.get("active") is False:
+            updates["active"] = True
+            reactivated += 1
+        if keeper.get("nameKey") != key:
+            updates["nameKey"] = key
+        if keeper.get("normalizedName") != key:
+            updates["normalizedName"] = key
+        if normalize_non_empty_string(keeper.get("code")) != code:
+            updates["code"] = code
+        if clean_global_category_name(keeper.get("name")) != name:
+            updates["name"] = name
+
+        if updates:
+            try:
+                db.categories.update_one({"_id": keeper.get("_id")}, {"$set": updates})
+                keeper.update(updates)
+                normalized_updates += 1
+                updated_code = normalize_non_empty_string(keeper.get("code"))
+                if updated_code:
+                    by_code[updated_code] = keeper
+            except DuplicateKeyError:
+                logger.warning(
+                    "Global categories bootstrap skipped update due to duplicate key for category_id=%s name=%s code=%s",
+                    keeper.get("_id"),
+                    name,
+                    code,
+                )
+                continue
+
+    return {
+        "seeded": seeded,
+        "reactivated": reactivated,
+        "normalizedUpdates": normalized_updates,
+    }
+
+
 def normalize_non_empty_string(value) -> str | None:
     if value is None:
         return None
@@ -2568,6 +3670,44 @@ def compute_monto_sin_iva(tx: dict):
     return round(sign * proporcional, 2)
 
 
+def resolve_transaction_tax_components(tx: dict) -> tuple[float | None, float | None, float | None]:
+    tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else {}
+    sap = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+    source = str(tx.get("source") or "").strip().lower()
+
+    # SBO: por seguridad no exponemos desglose fiscal hasta que el export
+    # garantice misma moneda/escala para amount vs invoiceSubtotal/IVA/Total.
+    # Si en el futuro existe una señal explícita, permitirlo con este flag.
+    sbo_tax_breakdown_compatible = bool(sap.get("taxBreakdownSameCurrency"))
+    if source == "sap-sbo" and not sbo_tax_breakdown_compatible:
+        return None, None, None
+
+    subtotal = parse_optional_decimal(tax.get("subtotal"))
+    iva = parse_optional_decimal(tax.get("iva"))
+    total_factura = parse_optional_decimal(tax.get("totalFactura"))
+
+    if subtotal is None:
+        subtotal = parse_optional_decimal(tx.get("subtotal"))
+    if subtotal is None:
+        subtotal = parse_optional_decimal(tx.get("montoSinIva"))
+    if subtotal is None:
+        subtotal = parse_optional_decimal(sap.get("invoiceSubtotal"))
+
+    if iva is None:
+        iva = parse_optional_decimal(tx.get("iva"))
+    if iva is None:
+        iva = parse_optional_decimal(tx.get("montoIva"))
+    if iva is None:
+        iva = parse_optional_decimal(sap.get("invoiceIva"))
+
+    if total_factura is None:
+        total_factura = parse_optional_decimal(tx.get("totalFactura"))
+    if total_factura is None:
+        total_factura = parse_optional_decimal(sap.get("invoiceTotal"))
+
+    return subtotal, iva, total_factura
+
+
 def compute_monto_iva(tx: dict):
     amount = round(float(tx.get("amount") or 0), 2)
     tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else None
@@ -2606,7 +3746,22 @@ def build_transactions_query(
 ):
     q = {}
     if type_value:
-        q["type"] = type_value
+        normalized_type = str(type_value).strip().upper()
+        if normalized_type == "EXPENSE":
+            type_filter = {
+                "$or": [
+                    {"type": "EXPENSE"},
+                    {
+                        "$and": [
+                            {"source": "sap-sbo"},
+                            {"$or": [{"type": {"$exists": False}}, {"type": None}, {"type": ""}]},
+                        ]
+                    },
+                ]
+            }
+            q.update(type_filter)
+        else:
+            q["type"] = normalized_type
     if category_id:
         if category_id == "__UNCATEGORIZED__":
             q["$or"] = [
@@ -2619,17 +3774,90 @@ def build_transactions_query(
             ]
         else:
             q["$or"] = [
+                {"resolvedCategory2Id": category_id},
+                {"resolvedCategory2Name": category_id},
                 {"categoryEffectiveCode": category_id},
                 {"categoryEffectiveName": category_id},
                 {"categoryManualCode": category_id},
                 {"categoryHintCode": category_id},
+                {"categoryHintName": category_id},
+                {"category_id": category_id},
+                {"categoryId": category_id},
             ]
     if vendor_id:
         q["vendor_id"] = vendor_id
     if supplier_id:
         supplier_filter = [{"supplierId": supplier_id}, {"supplier_id": supplier_id}, {"vendor_id": supplier_id}]
+
+        stable_supplier_match = re.match(r"^sap-sbo:([^:]+):(.+)$", str(supplier_id).strip(), re.IGNORECASE)
+        if stable_supplier_match:
+            stable_project_id = stable_supplier_match.group(1).strip()
+            stable_vendor_key = stable_supplier_match.group(2).strip()
+            if stable_project_id and stable_vendor_key:
+                escaped_vendor_key = re.escape(stable_vendor_key)
+                supplier_filter.append(
+                    {
+                        "$and": [
+                            {"projectId": stable_project_id},
+                            {
+                                "$or": [
+                                    {"sap.cardCode": {"$regex": f"^{escaped_vendor_key}$", "$options": "i"}},
+                                    {"supplierName": {"$regex": f"^{escaped_vendor_key}$", "$options": "i"}},
+                                    {"sap.businessPartner": {"$regex": f"^{escaped_vendor_key}$", "$options": "i"}},
+                                ]
+                            },
+                        ]
+                    }
+                )
         if ObjectId.is_valid(supplier_id):
             supplier_filter.append({"supplierId": oid(supplier_id)})
+
+        vendor_lookup_filters = [{"_id": supplier_id}, {"id": supplier_id}]
+        if ObjectId.is_valid(supplier_id):
+            vendor_lookup_filters.append({"_id": oid(supplier_id)})
+
+        vendor_doc = db.vendors.find_one(
+            {"$or": vendor_lookup_filters},
+            {"_id": 1, "id": 1, "source": 1, "projectId": 1, "supplierCardCode": 1, "cardCode": 1, "name": 1},
+        )
+        if vendor_doc:
+            vendor_db_id = str(vendor_doc.get("_id") or "").strip()
+            vendor_stable_id = str(vendor_doc.get("id") or "").strip()
+            if vendor_db_id and vendor_db_id != supplier_id:
+                supplier_filter.append({"vendor_id": vendor_db_id})
+            if vendor_stable_id and vendor_stable_id != supplier_id:
+                supplier_filter.append({"vendor_id": vendor_stable_id})
+
+            card_code = str(vendor_doc.get("supplierCardCode") or vendor_doc.get("cardCode") or "").strip()
+            vendor_name = str(vendor_doc.get("name") or "").strip()
+            sap_conditions = []
+            if card_code:
+                sap_conditions.append({"sap.cardCode": {"$regex": f"^{re.escape(card_code)}$", "$options": "i"}})
+            if vendor_name:
+                escaped_name = re.escape(vendor_name)
+                sap_conditions.extend(
+                    [
+                        {"supplierName": {"$regex": f"^{escaped_name}$", "$options": "i"}},
+                        {"sap.businessPartner": {"$regex": f"^{escaped_name}$", "$options": "i"}},
+                    ]
+                )
+
+            if sap_conditions:
+                sap_query = {}
+                vendor_project_id = str(vendor_doc.get("projectId") or "").strip()
+                if vendor_project_id:
+                    sap_query["projectId"] = vendor_project_id
+                supplier_filter.append({"$and": [sap_query, {"$or": sap_conditions}]})
+        else:
+            escaped_supplier = re.escape(supplier_id)
+            supplier_filter.extend(
+                [
+                    {"sap.cardCode": {"$regex": f"^{escaped_supplier}$", "$options": "i"}},
+                    {"supplierName": {"$regex": f"^{escaped_supplier}$", "$options": "i"}},
+                    {"sap.businessPartner": {"$regex": f"^{escaped_supplier}$", "$options": "i"}},
+                ]
+            )
+
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": supplier_filter}]
         else:
@@ -2650,6 +3878,95 @@ def build_transactions_query(
             q["date"]["$lte"] = date_to
 
     cleaned_search = (search_query or "").strip()
+
+    def _build_trabajos_especiales_search_condition(raw_search: str) -> dict | None:
+        escaped = re.escape(raw_search)
+        matching_rules = list(
+            db.supplierCategory2Rules.find(
+                {
+                    "isActive": {"$ne": False},
+                    "category2Name": {"$regex": escaped, "$options": "i"},
+                },
+                {
+                    "supplierKey": 1,
+                    "supplierCardCode": 1,
+                    "businessPartner": 1,
+                    "supplierName": 1,
+                },
+            )
+        )
+        if not matching_rules:
+            return None
+
+        supplier_conditions: list[dict] = []
+        seen_supplier_conditions: set[str] = set()
+
+        def register_supplier_condition(condition: dict):
+            signature = str(condition)
+            if signature in seen_supplier_conditions:
+                return
+            seen_supplier_conditions.add(signature)
+            supplier_conditions.append(condition)
+
+        for rule in matching_rules:
+            raw_supplier_key = normalize_non_empty_string(rule.get("supplierKey"))
+            if raw_supplier_key.startswith("cardcode:"):
+                supplier_key_card_code = raw_supplier_key.split(":", 1)[1].strip()
+                if supplier_key_card_code:
+                    register_supplier_condition(
+                        {"sap.cardCode": {"$regex": f"^{re.escape(supplier_key_card_code)}$", "$options": "i"}}
+                    )
+
+            supplier_card_code = normalize_non_empty_string(rule.get("supplierCardCode"))
+            business_partner = normalize_non_empty_string(rule.get("businessPartner"))
+            supplier_name = normalize_non_empty_string(rule.get("supplierName"))
+
+            if supplier_card_code:
+                escaped_card_code = re.escape(supplier_card_code)
+                register_supplier_condition(
+                    {"sap.cardCode": {"$regex": f"^{escaped_card_code}$", "$options": "i"}}
+                )
+                register_supplier_condition(
+                    {"supplierCardCode": {"$regex": f"^{escaped_card_code}$", "$options": "i"}}
+                )
+
+            if business_partner:
+                escaped_business_partner = re.escape(business_partner)
+                register_supplier_condition(
+                    {"sap.businessPartner": {"$regex": f"^{escaped_business_partner}$", "$options": "i"}}
+                )
+                register_supplier_condition(
+                    {"businessPartner": {"$regex": f"^{escaped_business_partner}$", "$options": "i"}}
+                )
+
+            if supplier_name:
+                escaped_supplier_name = re.escape(supplier_name)
+                register_supplier_condition(
+                    {"supplierName": {"$regex": f"^{escaped_supplier_name}$", "$options": "i"}}
+                )
+                register_supplier_condition(
+                    {"proveedorNombre": {"$regex": f"^{escaped_supplier_name}$", "$options": "i"}}
+                )
+
+        if not supplier_conditions:
+            return None
+
+        trabajos_prefix_regex = f"^{re.escape(TRABAJOS_ESPECIALES_PREFIX)}"
+        trabajos_especiales_condition = {
+            "$or": [
+                {"categoryEffectiveName": {"$regex": trabajos_prefix_regex, "$options": "i"}},
+                {"categoryManualName": {"$regex": trabajos_prefix_regex, "$options": "i"}},
+                {"categoryHintName": {"$regex": trabajos_prefix_regex, "$options": "i"}},
+            ]
+        }
+
+        return {
+            "$and": [
+                trabajos_especiales_condition,
+                {"$or": supplier_conditions},
+            ]
+        }
+
     if cleaned_search:
         escaped_search = re.escape(cleaned_search)
         search_conditions = [
@@ -2658,8 +3975,20 @@ def build_transactions_query(
             {"supplierName": {"$regex": escaped_search, "$options": "i"}},
             {"proveedorNombre": {"$regex": escaped_search, "$options": "i"}},
             {"beneficiario": {"$regex": escaped_search, "$options": "i"}},
+            {"businessPartner": {"$regex": escaped_search, "$options": "i"}},
+            {"supplierCardCode": {"$regex": escaped_search, "$options": "i"}},
             {"proveedor.name": {"$regex": escaped_search, "$options": "i"}},
+            {"sap.businessPartner": {"$regex": escaped_search, "$options": "i"}},
+            {"sap.cardCode": {"$regex": escaped_search, "$options": "i"}},
+            {"resolvedCategory2Name": {"$regex": escaped_search, "$options": "i"}},
+            {"resolvedCategory2Id": {"$regex": escaped_search, "$options": "i"}},
+            {"categoryHintName": {"$regex": escaped_search, "$options": "i"}},
+            {"categoryHintCode": {"$regex": escaped_search, "$options": "i"}},
         ]
+
+        trabajos_especiales_search_condition = _build_trabajos_especiales_search_condition(cleaned_search)
+        if trabajos_especiales_search_condition:
+            search_conditions.append(trabajos_especiales_search_condition)
 
         normalized_search = normalize_category_name(cleaned_search)
         category_name_filters = [
@@ -2688,11 +4017,7 @@ def build_transactions_query(
                 },
             ]
 
-            exact_category_match = any((category.get("normalizedName") or "") == normalized_search for category in matching_categories)
-            if exact_category_match:
-                search_conditions = category_search_conditions
-            else:
-                search_conditions.extend(category_search_conditions)
+            search_conditions.extend(category_search_conditions)
         if "$or" in q:
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": search_conditions}]
         else:
@@ -2714,18 +4039,62 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
         {"$match": aggregate_match},
         {
             "$project": {
-                "type": 1,
+                "typeNormalized": {
+                    "$cond": [
+                        {
+                            "$and": [
+                                {"$eq": ["$source", "sap-sbo"]},
+                                {
+                                    "$or": [
+                                        {"$eq": ["$type", None]},
+                                        {"$eq": ["$type", ""]},
+                                    ]
+                                },
+                            ]
+                        },
+                        "EXPENSE",
+                        "$type",
+                    ]
+                },
                 "amount": {"$ifNull": ["$amount", 0]},
                 "montoIva": {
                     "$let": {
                         "vars": {
-                            "iva": {"$convert": {"input": "$tax.iva", "to": "double", "onError": None, "onNull": None}},
-                            "totalFactura": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": None, "onNull": None}},
+                            "isSapSbo": {"$eq": ["$source", "sap-sbo"]},
+                            "sboTaxBreakdownSameCurrency": {"$ifNull": ["$sap.taxBreakdownSameCurrency", False]},
+                            "iva": {
+                                "$convert": {
+                                    "input": {"$ifNull": ["$tax.iva", {"$ifNull": ["$iva", {"$ifNull": ["$montoIva", "$sap.invoiceIva"]}]}]},
+                                    "to": "double",
+                                    "onError": None,
+                                    "onNull": None,
+                                }
+                            },
+                            "totalFactura": {
+                                "$convert": {
+                                    "input": {"$ifNull": ["$tax.totalFactura", {"$ifNull": ["$totalFactura", "$sap.invoiceTotal"]}]},
+                                    "to": "double",
+                                    "onError": None,
+                                    "onNull": None,
+                                }
+                            },
                             "amountValue": {"$ifNull": ["$amount", 0]},
                         },
                         "in": {
                             "$cond": [
-                                {"$or": [{"$eq": ["$$iva", None]}, {"$eq": ["$$totalFactura", None]}, {"$eq": ["$$totalFactura", 0]}]},
+                                {
+                                    "$or": [
+                                        {
+                                            "$and": [
+                                                "$$isSapSbo",
+                                                {"$ne": ["$$sboTaxBreakdownSameCurrency", True]},
+                                            ]
+                                        },
+                                        {"$eq": ["$$iva", None]},
+                                        {"$eq": ["$$totalFactura", None]},
+                                        {"$eq": ["$$totalFactura", 0]},
+                                    ]
+                                },
                                 0,
                                 {
                                     "$round": [
@@ -2746,13 +4115,41 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                 "montoSinIva": {
                     "$let": {
                         "vars": {
-                            "subtotal": {"$convert": {"input": "$tax.subtotal", "to": "double", "onError": None, "onNull": None}},
-                            "totalFactura": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": None, "onNull": None}},
+                            "isSapSbo": {"$eq": ["$source", "sap-sbo"]},
+                            "sboTaxBreakdownSameCurrency": {"$ifNull": ["$sap.taxBreakdownSameCurrency", False]},
+                            "subtotal": {
+                                "$convert": {
+                                    "input": {"$ifNull": ["$tax.subtotal", {"$ifNull": ["$subtotal", {"$ifNull": ["$montoSinIva", "$sap.invoiceSubtotal"]}]}]},
+                                    "to": "double",
+                                    "onError": None,
+                                    "onNull": None,
+                                }
+                            },
+                            "totalFactura": {
+                                "$convert": {
+                                    "input": {"$ifNull": ["$tax.totalFactura", {"$ifNull": ["$totalFactura", "$sap.invoiceTotal"]}]},
+                                    "to": "double",
+                                    "onError": None,
+                                    "onNull": None,
+                                }
+                            },
                             "amountValue": {"$ifNull": ["$amount", 0]},
                         },
                         "in": {
                             "$cond": [
-                                {"$or": [{"$eq": ["$$subtotal", None]}, {"$eq": ["$$totalFactura", None]}, {"$eq": ["$$totalFactura", 0]}]},
+                                {
+                                    "$or": [
+                                        {
+                                            "$and": [
+                                                "$$isSapSbo",
+                                                {"$ne": ["$$sboTaxBreakdownSameCurrency", True]},
+                                            ]
+                                        },
+                                        {"$eq": ["$$subtotal", None]},
+                                        {"$eq": ["$$totalFactura", None]},
+                                        {"$eq": ["$$totalFactura", 0]},
+                                    ]
+                                },
                                 {
                                     "$round": [
                                         {
@@ -2761,8 +4158,22 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                                                 {
                                                     "$let": {
                                                         "vars": {
-                                                            "iva": {"$convert": {"input": "$tax.iva", "to": "double", "onError": None, "onNull": None}},
-                                                            "totalFacturaIva": {"$convert": {"input": "$tax.totalFactura", "to": "double", "onError": None, "onNull": None}},
+                                                            "iva": {
+                                                                "$convert": {
+                                                                    "input": {"$ifNull": ["$tax.iva", {"$ifNull": ["$iva", {"$ifNull": ["$montoIva", "$sap.invoiceIva"]}]}]},
+                                                                    "to": "double",
+                                                                    "onError": None,
+                                                                    "onNull": None,
+                                                                }
+                                                            },
+                                                            "totalFacturaIva": {
+                                                                "$convert": {
+                                                                    "input": {"$ifNull": ["$tax.totalFactura", {"$ifNull": ["$totalFactura", "$sap.invoiceTotal"]}]},
+                                                                    "to": "double",
+                                                                    "onError": None,
+                                                                    "onNull": None,
+                                                                }
+                                                            },
                                                         },
                                                         "in": {
                                                             "$cond": [
@@ -2811,16 +4222,16 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
             "$group": {
                 "_id": None,
                 "expensesGross": {
-                    "$sum": {"$cond": [{"$eq": ["$type", "EXPENSE"]}, "$amount", 0]}
+                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "EXPENSE"]}, "$amount", 0]}
                 },
                 "expensesTax": {
-                    "$sum": {"$cond": [{"$eq": ["$type", "EXPENSE"]}, "$montoIva", 0]}
+                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "EXPENSE"]}, "$montoIva", 0]}
                 },
                 "expensesWithoutTax": {
-                    "$sum": {"$cond": [{"$eq": ["$type", "EXPENSE"]}, "$montoSinIva", 0]}
+                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "EXPENSE"]}, "$montoSinIva", 0]}
                 },
                 "incomeGross": {
-                    "$sum": {"$cond": [{"$eq": ["$type", "INCOME"]}, "$amount", 0]}
+                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "INCOME"]}, "$amount", 0]}
                 },
             }
         },
@@ -3162,15 +4573,15 @@ def login(payload: LoginRequest):
 
     env_user = get_env_auth_users().get(username)
     if env_user and password == env_user.get("password"):
-        role = env_user.get("role", "VIEWER")
+        role = normalize_user_role(env_user.get("role", "VIEWER"))
         display_name = env_user.get("displayName") or username
     else:
         user = db.users.find_one({"username": username})
         if not user or not pwd_context.verify(password, user.get("password_hash", "")):
             raise HTTPException(status_code=401, detail="Invalid credentials")
-        if not user.get("active", True):
+        if not is_user_active(user):
             raise HTTPException(status_code=403, detail="User is inactive")
-        role = user.get("role", "VIEWER")
+        role = resolve_effective_user_role(user, fallback_role="SUPERADMIN")
         env_display_name = (get_env_auth_users().get(username) or {}).get("displayName")
         display_name = user.get("displayName") or env_display_name or username
         display_name = user.get("displayName") or username
@@ -3187,23 +4598,100 @@ def login(payload: LoginRequest):
 
 
 @app.get("/auth/me")
+@app.get("/api/me")
 def me(user=Depends(require_authenticated)):
-    return user
+    return {
+        "id": user.get("id"),
+        "name": user.get("name") or user.get("displayName") or user.get("username"),
+        "email": user.get("email") or "",
+        "role": normalize_user_role(user.get("role")),
+        "isActive": bool(user.get("isActive", user.get("active", True))),
+        "username": user.get("username"),
+        "displayName": user.get("displayName") or user.get("name") or user.get("username"),
+        "allowedProjectIds": normalize_allowed_project_ids(user.get("allowedProjectIds")),
+        "uiPrefs": normalize_ui_prefs(user.get("uiPrefs")),
+    }
+
+
+@app.patch("/api/me/preferences")
+def update_my_preferences(payload: dict, user: dict = Depends(require_authenticated)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    source_ui_prefs = payload.get("uiPrefs") if isinstance(payload.get("uiPrefs"), dict) else payload
+    current_ui_prefs = normalize_ui_prefs(user.get("uiPrefs"))
+
+    should_update_hidden_projects = isinstance(source_ui_prefs, dict) and ("hiddenProjectIds" in source_ui_prefs)
+    raw_hidden_project_ids = source_ui_prefs.get("hiddenProjectIds") if should_update_hidden_projects else current_ui_prefs.get("hiddenProjectIds")
+
+    should_update_default_project = isinstance(source_ui_prefs, dict) and ("defaultProjectId" in source_ui_prefs)
+    raw_default_project_id = source_ui_prefs.get("defaultProjectId") if should_update_default_project else current_ui_prefs.get("defaultProjectId")
+
+    normalized_hidden_project_ids = normalize_hidden_project_ids(raw_hidden_project_ids)
+    if normalized_hidden_project_ids:
+        candidate_object_ids = [ObjectId(project_id) for project_id in normalized_hidden_project_ids]
+        rows = db.projects.find(
+            {"_id": {"$in": candidate_object_ids}},
+            {"_id": 1},
+        )
+        existing_ids = {str(row.get("_id")) for row in rows}
+        normalized_hidden_project_ids = [project_id for project_id in normalized_hidden_project_ids if project_id in existing_ids]
+
+    normalized_default_project_id = str(raw_default_project_id or "").strip()
+    if normalized_default_project_id:
+        if not ObjectId.is_valid(normalized_default_project_id):
+            raise HTTPException(status_code=400, detail="defaultProjectId must be a valid project id")
+
+        project_exists = db.projects.find_one(
+            {"_id": ObjectId(normalized_default_project_id)},
+            {"_id": 1},
+        )
+        if not project_exists:
+            raise HTTPException(status_code=400, detail="defaultProjectId does not exist")
+        if not can_access_project(user, normalized_default_project_id):
+            raise HTTPException(status_code=403, detail="defaultProjectId is not allowed for this user")
+
+    user_id = str(user.get("id") or "").strip()
+    if not user_id or not ObjectId.is_valid(user_id):
+        raise HTTPException(status_code=404, detail="User not found")
+
+    ui_prefs = {
+        "hiddenProjectIds": normalized_hidden_project_ids,
+        "defaultProjectId": normalized_default_project_id,
+    }
+    updated = db.users.find_one_and_update(
+        {"_id": ObjectId(user_id)},
+        {
+            "$set": {
+                "uiPrefs": ui_prefs,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"ok": True, "uiPrefs": normalize_ui_prefs(updated.get("uiPrefs"))}
 
 
 @app.post("/users")
 def create_user(payload: dict, _: dict = Depends(require_admin)):
     username = (payload.get("username") or "").strip()
     password = payload.get("password") or ""
-    role = (payload.get("role") or "").strip().upper()
-    active = bool(payload.get("active", True))
+    role_raw = (payload.get("role") or "").strip().upper()
+    role = normalize_user_role(role_raw)
+    active = bool(payload.get("active", payload.get("isActive", True)))
+    display_name = (payload.get("displayName") or payload.get("name") or "").strip()
+    email = str(payload.get("email") or "").strip()
+    allowed_project_ids = normalize_allowed_project_ids(payload.get("allowedProjectIds")) if role == "VIEWER" else []
 
     if len(username) < 3:
         raise HTTPException(status_code=400, detail="username must have at least 3 characters")
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="password must have at least 6 characters")
-    if role not in ("ADMIN", "VIEWER"):
-        raise HTTPException(status_code=400, detail="role must be ADMIN or VIEWER")
+    if role_raw not in USER_ROLES:
+        raise HTTPException(status_code=400, detail="role must be SUPERADMIN, ADMIN or VIEWER")
     if db.users.find_one({"username": username}):
         raise HTTPException(status_code=409, detail="User already exists")
 
@@ -3211,17 +4699,83 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
         "username": username,
         "password_hash": pwd_context.hash(password),
         "role": role,
+        "roleVersion": ROLE_SCHEMA_VERSION,
+        "displayName": display_name or username,
+        "email": email,
         "active": active,
+        "isActive": active,
+        "allowedProjectIds": allowed_project_ids,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _id = db.users.insert_one(doc).inserted_id
     return serialize_user(db.users.find_one({"_id": _id}))
 
 
+@app.post("/api/admin/users")
+def create_admin_user(payload: dict, _: dict = Depends(require_admin)):
+    return create_user(payload, _)
+
+
 @app.get("/users")
 def list_users(_: dict = Depends(require_admin)):
     users = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
     return [serialize(u) for u in users]
+
+
+@app.get("/api/admin/users")
+def list_admin_users(_: dict = Depends(require_admin)):
+    users = db.users.find({}, {"password_hash": 0}).sort("created_at", -1)
+    return [serialize_admin_user(u) for u in users]
+
+
+@app.patch("/api/admin/users/{user_id}")
+def update_admin_user(user_id: str, payload: dict, _: dict = Depends(require_admin)):
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    existing = db.users.find_one({"_id": oid(user_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_fields: dict = {}
+
+    if "allowedProjectIds" in payload:
+        update_fields["allowedProjectIds"] = normalize_allowed_project_ids(payload.get("allowedProjectIds"))
+
+    if "role" in payload:
+        next_role = normalize_user_role(payload.get("role"))
+        if next_role not in USER_ROLES:
+            raise HTTPException(status_code=400, detail="role must be SUPERADMIN, ADMIN or VIEWER")
+
+        current_role = resolve_effective_user_role(existing, fallback_role=existing.get("role"))
+        if current_role == "SUPERADMIN" and next_role != "SUPERADMIN":
+            remaining_superadmins = count_superadmins(exclude_user_id=user_id)
+            if remaining_superadmins < 1:
+                raise HTTPException(status_code=400, detail="No se puede degradar al último SUPERADMIN")
+
+        update_fields["role"] = next_role
+        update_fields["roleVersion"] = ROLE_SCHEMA_VERSION
+
+    if "displayName" in payload or "name" in payload:
+        display_name = str(payload.get("displayName") or payload.get("name") or "").strip()
+        if not display_name:
+            raise HTTPException(status_code=400, detail="displayName cannot be empty")
+        update_fields["displayName"] = display_name
+
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No editable fields in payload")
+
+    update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    updated = db.users.find_one_and_update(
+        {"_id": oid(user_id)},
+        {"$set": update_fields},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return serialize_admin_user(updated)
 
 
 @app.get("/api/admin/raw-data/collections")
@@ -3275,37 +4829,734 @@ def raw_data_update_row(collection: str, row_id: str, payload: dict, _: dict = D
     return serialize_raw_doc(updated)
 
 
+def build_suspicious_project_resolutions_query(
+    source_sbo: str | None = None,
+    payment_entity: str | None = None,
+    supplier: str | None = None,
+    document_project: str | None = None,
+    payment_project: str | None = None,
+    effective_project: str | None = None,
+    status: str | None = None,
+    text: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    amount_min: float | None = None,
+    amount_max: float | None = None,
+) -> dict:
+
+    query: dict = {
+        "sap.isProjectResolutionSuspicious": True,
+    }
+
+    manual_resolved_id_len_expr = {
+        "$strLenCP": {
+            "$trim": {
+                "input": {
+                    "$toString": {
+                        "$ifNull": ["$sap.manualResolvedProjectId", ""]
+                    }
+                }
+            }
+        }
+    }
+
+    normalized_status = (status or "pending").strip().lower()
+    if normalized_status == "pending":
+        query["$expr"] = {"$eq": [manual_resolved_id_len_expr, 0]}
+    elif normalized_status == "resolved":
+        query["$expr"] = {"$gt": [manual_resolved_id_len_expr, 0]}
+
+    normalized_source_sbo = normalize_non_empty_string(source_sbo)
+    if normalized_source_sbo:
+        query["sourceSbo"] = normalized_source_sbo
+
+    normalized_payment_entity = normalize_non_empty_string(payment_entity)
+    if normalized_payment_entity:
+        escaped_entity = re.escape(normalized_payment_entity)
+        query["$and"] = query.get("$and", []) + [{
+            "$or": [
+                {"sourceDb": {"$regex": escaped_entity, "$options": "i"}},
+                {"sourceSbo": {"$regex": escaped_entity, "$options": "i"}},
+                {"sap.sourceSbo": {"$regex": escaped_entity, "$options": "i"}},
+            ]
+        }]
+
+    normalized_supplier = normalize_non_empty_string(supplier)
+    if normalized_supplier:
+        escaped_supplier = re.escape(normalized_supplier)
+        query["$and"] = query.get("$and", []) + [{
+            "$or": [
+                {"supplierName": {"$regex": escaped_supplier, "$options": "i"}},
+                {"sap.businessPartner": {"$regex": escaped_supplier, "$options": "i"}},
+                {"sap.cardCode": {"$regex": escaped_supplier, "$options": "i"}},
+            ]
+        }]
+
+    normalized_document_project = normalize_non_empty_string(document_project)
+    if normalized_document_project:
+        query["sap.documentProjectName"] = {"$regex": re.escape(normalized_document_project), "$options": "i"}
+
+    normalized_payment_project = normalize_non_empty_string(payment_project)
+    if normalized_payment_project:
+        query["sap.paymentProjectName"] = {"$regex": re.escape(normalized_payment_project), "$options": "i"}
+
+    normalized_effective_project = normalize_non_empty_string(effective_project)
+    if normalized_effective_project:
+        escaped_effective_project = re.escape(normalized_effective_project)
+        query["$and"] = query.get("$and", []) + [{
+            "$or": [
+                {"sap.manualResolvedProjectName": {"$regex": escaped_effective_project, "$options": "i"}},
+                {"effectiveProjectName": {"$regex": escaped_effective_project, "$options": "i"}},
+                {"rawProjectName": {"$regex": escaped_effective_project, "$options": "i"}},
+            ]
+        }]
+
+    parsed_from = parse_excel_date(date_from) if date_from else None
+    parsed_to = parse_excel_date(date_to) if date_to else None
+    if parsed_from or parsed_to:
+        date_query = {}
+        if parsed_from:
+            date_query["$gte"] = parsed_from
+        if parsed_to:
+            date_query["$lte"] = parsed_to
+        query["date"] = date_query
+
+    if amount_min is not None or amount_max is not None:
+        amount_query = {}
+        if amount_min is not None:
+            amount_query["$gte"] = amount_min
+        if amount_max is not None:
+            amount_query["$lte"] = amount_max
+        query["amount"] = amount_query
+
+    normalized_text = normalize_non_empty_string(text)
+    if normalized_text:
+        escaped = re.escape(normalized_text)
+        text_or = [
+            {"sap.paymentNum": {"$regex": escaped, "$options": "i"}},
+            {"sap.invoiceNum": {"$regex": escaped, "$options": "i"}},
+            {"supplierName": {"$regex": escaped, "$options": "i"}},
+            {"sap.businessPartner": {"$regex": escaped, "$options": "i"}},
+            {"description": {"$regex": escaped, "$options": "i"}},
+            {"comments": {"$regex": escaped, "$options": "i"}},
+            {"sap.comments": {"$regex": escaped, "$options": "i"}},
+            {"sap.remarks": {"$regex": escaped, "$options": "i"}},
+            {"sap.cardCode": {"$regex": escaped, "$options": "i"}},
+        ]
+        query["$and"] = query.get("$and", []) + [{"$or": text_or}]
+
+    return query
+
+
+def normalize_suspicious_resolution_payload(payload: dict | None) -> dict:
+    incoming = payload if isinstance(payload, dict) else {}
+    aliases = {
+        "projectId": "project_id",
+        "projectCode": "project_code",
+        "projectName": "project_name",
+        "resolutionReason": "resolution_reason",
+        "resolveTo": "resolve_to",
+        "manualResolvedProjectId": "manual_resolved_project_id",
+        "manualResolvedProjectCode": "manual_resolved_project_code",
+        "manualResolvedProjectName": "manual_resolved_project_name",
+    }
+    normalized = dict(incoming)
+    for camel_key, snake_key in aliases.items():
+        if normalized.get(snake_key) in (None, "") and normalized.get(camel_key) not in (None, ""):
+            normalized[snake_key] = normalized.get(camel_key)
+    if normalized.get("resolve_to") in (None, "") and normalized.get("resolution") not in (None, ""):
+        normalized["resolve_to"] = normalized.get("resolution")
+    if normalized.get("resolution_reason") in (None, ""):
+        for fallback_key in ("reason", "note"):
+            if normalized.get(fallback_key) not in (None, ""):
+                normalized["resolution_reason"] = normalized.get(fallback_key)
+                break
+    return normalized
+
+
+def resolve_project_metadata_from_id(project_id: str | None) -> tuple[str | None, str | None, str | None]:
+    normalized_id = normalize_non_empty_string(project_id)
+    if not normalized_id or not ObjectId.is_valid(normalized_id):
+        return None, None, None
+
+    project_doc = db.projects.find_one({"_id": ObjectId(normalized_id)}) or {}
+    if not project_doc:
+        return None, None, None
+
+    sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+    project_code = normalize_non_empty_string(
+        project_doc.get("code") or project_doc.get("projectCode") or sap_doc.get("projectCode") or sap_doc.get("sapName")
+    )
+    project_name = normalize_non_empty_string(project_doc.get("name") or sap_doc.get("projectName") or project_doc.get("projectName"))
+
+    return normalized_id, project_code, project_name
+
+
+def resolve_project_metadata_from_code_or_name(
+    project_code: str | None = None,
+    project_name: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    normalized_code = normalize_non_empty_string(project_code)
+    normalized_name = normalize_non_empty_string(project_name)
+    if not normalized_code and not normalized_name:
+        return None, None, None
+
+    normalized_code_folded = normalized_code.casefold() if normalized_code else None
+    normalized_name_folded = normalized_name.casefold() if normalized_name else None
+    matches: dict[str, tuple[str, str | None, str | None]] = {}
+
+    projection = {
+        "_id": 1,
+        "name": 1,
+        "projectName": 1,
+        "code": 1,
+        "projectCode": 1,
+        "sap.projectCode": 1,
+        "sap.sapName": 1,
+        "sap.projectName": 1,
+        "sap.projectNames": 1,
+    }
+    for project_doc in db.projects.find({}, projection):
+        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+        candidate_id = normalize_non_empty_string(project_doc.get("_id"))
+        candidate_code = normalize_non_empty_string(
+            project_doc.get("code") or project_doc.get("projectCode") or sap_doc.get("projectCode") or sap_doc.get("sapName")
+        )
+        candidate_name = normalize_non_empty_string(project_doc.get("name") or sap_doc.get("projectName") or project_doc.get("projectName"))
+        candidate_name_aliases = [candidate_name]
+        sap_project_names = sap_doc.get("projectNames") if isinstance(sap_doc.get("projectNames"), list) else []
+        candidate_name_aliases.extend(normalize_non_empty_string(name) for name in sap_project_names)
+
+        code_matches = (not normalized_code_folded) or (candidate_code and candidate_code.casefold() == normalized_code_folded)
+        name_matches = (not normalized_name_folded) or any(
+            alias and alias.casefold() == normalized_name_folded for alias in candidate_name_aliases
+        )
+        if code_matches and name_matches and candidate_id:
+            matches[candidate_id] = (candidate_id, candidate_code, candidate_name)
+
+    if len(matches) != 1:
+        return None, None, None
+
+    return next(iter(matches.values()))
+
+
+def resolve_project_metadata_from_identifiers(
+    identifiers: list[str | None] | tuple[str | None, ...],
+) -> tuple[str | None, str | None, str | None, list[dict]]:
+    normalized_identifiers = [normalize_non_empty_string(value) for value in identifiers]
+    normalized_identifiers = [value for value in normalized_identifiers if value]
+    if not normalized_identifiers:
+        return None, None, None, []
+
+    folded_identifiers = {value.casefold() for value in normalized_identifiers}
+    matches: dict[str, tuple[str, str | None, str | None]] = {}
+    debug_matches: list[dict] = []
+
+    projection = {
+        "_id": 1,
+        "slug": 1,
+        "name": 1,
+        "displayName": 1,
+        "projectName": 1,
+        "code": 1,
+        "projectCode": 1,
+        "sap.projectCode": 1,
+        "sap.sapName": 1,
+        "sap.projectName": 1,
+        "sap.projectNames": 1,
+    }
+    for project_doc in db.projects.find({}, projection):
+        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+        candidate_id = normalize_non_empty_string(project_doc.get("_id"))
+        if not candidate_id:
+            continue
+
+        canonical_code = normalize_non_empty_string(
+            project_doc.get("code")
+            or project_doc.get("projectCode")
+            or sap_doc.get("projectCode")
+            or sap_doc.get("sapName")
+            or project_doc.get("slug")
+            or project_doc.get("name")
+            or project_doc.get("displayName")
+        )
+        canonical_name = normalize_non_empty_string(
+            project_doc.get("displayName")
+            or project_doc.get("name")
+            or sap_doc.get("projectName")
+            or project_doc.get("projectName")
+            or project_doc.get("slug")
+            or canonical_code
+        )
+        candidate_aliases = [
+            normalize_non_empty_string(project_doc.get("displayName")),
+            normalize_non_empty_string(project_doc.get("name")),
+            normalize_non_empty_string(project_doc.get("slug")),
+            normalize_non_empty_string(project_doc.get("code")),
+            normalize_non_empty_string(project_doc.get("projectCode")),
+            normalize_non_empty_string(project_doc.get("projectName")),
+            normalize_non_empty_string(sap_doc.get("projectCode")),
+            normalize_non_empty_string(sap_doc.get("sapName")),
+            normalize_non_empty_string(sap_doc.get("projectName")),
+        ]
+        sap_project_names = sap_doc.get("projectNames") if isinstance(sap_doc.get("projectNames"), list) else []
+        candidate_aliases.extend(normalize_non_empty_string(name) for name in sap_project_names)
+
+        matched_aliases = sorted(
+            {
+                alias
+                for alias in candidate_aliases
+                if alias and alias.casefold() in folded_identifiers
+            }
+        )
+        if not matched_aliases:
+            continue
+
+        matches[candidate_id] = (candidate_id, canonical_code, canonical_name)
+        debug_matches.append(
+            {
+                "projectId": candidate_id,
+                "slug": normalize_non_empty_string(project_doc.get("slug")),
+                "name": normalize_non_empty_string(project_doc.get("name")),
+                "displayName": normalize_non_empty_string(project_doc.get("displayName")),
+                "matchedIdentifiers": matched_aliases,
+            }
+        )
+
+    if len(matches) != 1:
+        return None, None, None, debug_matches
+
+    selected_project = next(iter(matches.values()))
+    return selected_project[0], selected_project[1], selected_project[2], debug_matches
+
+
+def serialize_suspicious_project_resolution_row(tx: dict) -> dict:
+    tx_doc = serialize_transaction_with_supplier(tx)
+    sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+    mongo_id = normalize_non_empty_string(tx_doc.get("id") or tx.get("_id"))
+    return {
+        "id": mongo_id,
+        "transactionId": mongo_id,
+        "_id": mongo_id,
+        "date": tx_doc.get("date"),
+        "sourceSbo": tx_doc.get("sourceSbo") or sap_doc.get("sourceSbo"),
+        "sourceDb": tx_doc.get("sourceDb") or sap_doc.get("sourceDb"),
+        "supplier": tx_doc.get("supplierName") or sap_doc.get("businessPartner"),
+        "paymentNum": sap_doc.get("paymentNum"),
+        "invoiceNum": sap_doc.get("invoiceNum"),
+        "amount": tx_doc.get("amount"),
+        "invoiceTotal": sap_doc.get("invoiceTotal"),
+        "documentProjectCode": sap_doc.get("documentProjectCode"),
+        "documentProjectName": sap_doc.get("documentProjectName"),
+        "paymentProjectCode": sap_doc.get("paymentProjectCode"),
+        "paymentProjectName": sap_doc.get("paymentProjectName"),
+        "projectResolutionSource": sap_doc.get("projectResolutionSource"),
+        "suspicionReasons": sap_doc.get("projectResolutionSuspicionReasons") or [],
+        "isProjectResolutionSuspicious": bool(sap_doc.get("isProjectResolutionSuspicious")),
+        "currentAssignedProjectId": tx_doc.get("effectiveProjectId"),
+        "currentAssignedProjectCode": tx_doc.get("effectiveProjectCode"),
+        "currentAssignedProjectName": tx_doc.get("effectiveProjectName"),
+        "status": "resolved" if normalize_non_empty_string(sap_doc.get("manualResolvedProjectId")) else "pending",
+        "manualResolvedProjectId": sap_doc.get("manualResolvedProjectId"),
+        "manualResolvedProjectCode": sap_doc.get("manualResolvedProjectCode"),
+        "manualResolvedProjectName": sap_doc.get("manualResolvedProjectName"),
+        "manualResolvedBy": sap_doc.get("manualResolvedBy"),
+        "manualResolvedAt": sap_doc.get("manualResolvedAt"),
+        "manualResolutionReason": sap_doc.get("manualResolutionReason"),
+        "sap": sap_doc,
+    }
+
+
+def get_suspicious_project_resolutions_collection():
+    db_name = normalize_non_empty_string(SUSPICIOUS_PROJECT_RESOLUTIONS_DB_NAME) or DB_NAME
+    collection_name = normalize_non_empty_string(SUSPICIOUS_PROJECT_RESOLUTIONS_COLLECTION_NAME) or "transactions"
+
+    current_db_name = normalize_non_empty_string(getattr(db, "name", None))
+    if hasattr(db, collection_name) and (not current_db_name or current_db_name == db_name):
+        return getattr(db, collection_name), current_db_name or db_name, collection_name
+
+    return client[db_name][collection_name], db_name, collection_name
+
+
+@app.get("/api/admin/suspicious-project-resolutions")
+def list_admin_suspicious_project_resolutions(
+    sourceSbo: str | None = None,
+    paymentEntity: str | None = None,
+    supplier: str | None = None,
+    documentProject: str | None = None,
+    paymentProject: str | None = None,
+    effectiveProject: str | None = None,
+    status: str | None = "pending",
+    q: str | None = None,
+    dateFrom: str | None = None,
+    dateTo: str | None = None,
+    amountMin: float | None = None,
+    amountMax: float | None = None,
+    page: int = 1,
+    limit: int = 50,
+    _: dict = Depends(require_admin),
+):
+    normalized_limit = min(max(limit, 1), 500)
+    normalized_page = max(page, 1)
+    skip = (normalized_page - 1) * normalized_limit
+
+    query = build_suspicious_project_resolutions_query(
+        source_sbo=sourceSbo,
+        payment_entity=paymentEntity,
+        supplier=supplier,
+        document_project=documentProject,
+        payment_project=paymentProject,
+        effective_project=effectiveProject,
+        status=status,
+        text=q,
+        date_from=dateFrom,
+        date_to=dateTo,
+        amount_min=amountMin,
+        amount_max=amountMax,
+    )
+
+    suspicious_collection, _, _ = get_suspicious_project_resolutions_collection()
+    total_count = suspicious_collection.count_documents(query)
+    rows = list(suspicious_collection.find(query).sort([("date", -1), ("_id", -1)]).skip(skip).limit(normalized_limit))
+    return {
+        "items": [serialize_suspicious_project_resolution_row(row) for row in rows],
+        "page": normalized_page,
+        "limit": normalized_limit,
+        "totalCount": total_count,
+    }
+
+
+@app.get("/api/admin/suspicious-project-resolutions/{transaction_id}")
+def get_admin_suspicious_project_resolution_detail(transaction_id: str, _: dict = Depends(require_admin)):
+    suspicious_collection, _, _ = get_suspicious_project_resolutions_collection()
+    tx = suspicious_collection.find_one({"_id": oid(transaction_id), "source": "sap-sbo"})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    return serialize_suspicious_project_resolution_row(tx)
+
+
+@app.post("/api/admin/suspicious-project-resolutions/{transaction_id}/resolve")
+def resolve_admin_suspicious_project_resolution(
+    transaction_id: str,
+    payload: dict,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_admin),
+):
+    raw_transaction_id = str(transaction_id or "")
+    normalized_transaction_id = raw_transaction_id.strip()
+    logger.info("resolve suspicious-project incoming transactionId=%s normalized=%s", raw_transaction_id, normalized_transaction_id)
+    if not normalized_transaction_id or not ObjectId.is_valid(normalized_transaction_id):
+        raise HTTPException(status_code=400, detail="transactionId is required and must be a valid ObjectId")
+
+    normalized_payload = normalize_suspicious_resolution_payload(payload)
+    logger.info(
+        "resolve suspicious-project transactionId=%s payload=%s",
+        normalized_transaction_id,
+        _serialize_any(normalized_payload),
+    )
+
+    resolve_to = str(normalized_payload.get("resolve_to") or "").strip().lower()
+    reason = normalize_non_empty_string(normalized_payload.get("resolution_reason"))
+
+    oid_transaction_id = ObjectId(normalized_transaction_id)
+    suspicious_collection, suspicious_db_name, suspicious_collection_name = get_suspicious_project_resolutions_collection()
+    request_project_id = ""
+    if request is not None and getattr(request, "headers", None) is not None:
+        request_project_id = (request.headers.get("x-project-id") or "").strip()
+
+    tx_lookup_filter = {"_id": oid_transaction_id}
+    logger.info(
+        "resolve suspicious-project lookup transactionId=%s x-project-id=%s filter=%s",
+        normalized_transaction_id,
+        request_project_id or None,
+        _serialize_any(tx_lookup_filter),
+    )
+
+    tx = suspicious_collection.find_one(tx_lookup_filter)
+    logger.info(
+        "resolve suspicious-project lookup result transactionId=%s objectId=%s db=%s collection=%s found=%s",
+        normalized_transaction_id,
+        str(oid_transaction_id),
+        suspicious_db_name,
+        suspicious_collection_name,
+        bool(tx),
+    )
+    if not tx:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "Transaction not found",
+                "transactionId": normalized_transaction_id,
+                "db": suspicious_db_name,
+                "collection": suspicious_collection_name,
+                "objectIdParsed": str(oid_transaction_id),
+            },
+        )
+
+    sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+    document_code = normalize_non_empty_string(sap_doc.get("documentProjectCode"))
+    document_name = normalize_non_empty_string(sap_doc.get("documentProjectName"))
+    payment_code = normalize_non_empty_string(sap_doc.get("paymentProjectCode"))
+    payment_name = normalize_non_empty_string(sap_doc.get("paymentProjectName"))
+
+    selected_project_id = normalize_non_empty_string(
+        normalized_payload.get("manual_resolved_project_id") or normalized_payload.get("project_id")
+    )
+    selected_project_code = normalize_non_empty_string(
+        normalized_payload.get("manual_resolved_project_code") or normalized_payload.get("project_code")
+    )
+    selected_project_name = normalize_non_empty_string(
+        normalized_payload.get("manual_resolved_project_name") or normalized_payload.get("project_name")
+    )
+
+    candidate_projects_found: list[dict] = []
+    if resolve_to == "document":
+        selected_project_id, selected_project_code, selected_project_name, candidate_projects_found = resolve_project_metadata_from_identifiers(
+            [document_code, document_name]
+        )
+    elif resolve_to == "payment":
+        selected_project_id, selected_project_code, selected_project_name, candidate_projects_found = resolve_project_metadata_from_identifiers(
+            [payment_code, payment_name]
+        )
+    elif resolve_to in {"custom", "other", "manual", ""}:
+        if selected_project_id:
+            selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_id(selected_project_id)
+        elif selected_project_code or selected_project_name:
+            selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
+                project_code=selected_project_code,
+                project_name=selected_project_name,
+            )
+    else:
+        raise HTTPException(status_code=400, detail="resolve_to must be document, payment or custom")
+
+    if not selected_project_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Could not derive resolved project id. Provide a valid project_id or a unique project_code/project_name mapping.",
+                "resolveMode": resolve_to or "custom",
+                "documentProjectCode": document_code,
+                "documentProjectName": document_name,
+                "paymentProjectCode": payment_code,
+                "paymentProjectName": payment_name,
+                "candidateProjectsFound": candidate_projects_found,
+            },
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    resolved_by = normalize_non_empty_string(user.get("displayName") or user.get("username") or user.get("id"))
+
+    suspicious_collection.update_one(
+        {"_id": oid_transaction_id},
+        {
+            "$set": {
+                "sap.manualResolvedProjectId": selected_project_id,
+                "sap.manualResolvedProjectCode": selected_project_code,
+                "sap.manualResolvedProjectName": selected_project_name,
+                "sap.manualResolvedBy": resolved_by,
+                "sap.manualResolvedAt": now_iso,
+                "sap.manualResolutionReason": reason,
+                "updated_at": now_iso,
+            }
+        },
+    )
+
+    updated = suspicious_collection.find_one({"_id": oid_transaction_id})
+    updated_sap = updated.get("sap") if isinstance(updated.get("sap"), dict) else {}
+    persisted_project_id = normalize_non_empty_string(updated_sap.get("manualResolvedProjectId"))
+    persisted_project_code = normalize_non_empty_string(updated_sap.get("manualResolvedProjectCode"))
+    persisted_project_name = normalize_non_empty_string(updated_sap.get("manualResolvedProjectName"))
+    if not (persisted_project_id and persisted_project_code and persisted_project_name):
+        raise HTTPException(status_code=500, detail="Manual resolution persisted an incomplete target project")
+
+    return {
+        "ok": True,
+        "transactionId": normalized_transaction_id,
+        "manualResolvedProjectId": updated_sap.get("manualResolvedProjectId"),
+        "manualResolvedProjectCode": updated_sap.get("manualResolvedProjectCode"),
+        "manualResolvedProjectName": updated_sap.get("manualResolvedProjectName"),
+        "isProjectResolutionSuspicious": bool(updated_sap.get("isProjectResolutionSuspicious")),
+        "resolvedAt": updated_sap.get("manualResolvedAt"),
+    }
+
+
+@app.post("/api/admin/suspicious-project-resolutions/bulk-resolve-document")
+def bulk_resolve_admin_suspicious_project_resolution_to_document(payload: dict, user: dict = Depends(require_admin)):
+    transaction_ids = payload.get("transactionIds") if isinstance(payload.get("transactionIds"), list) else []
+    reason = normalize_non_empty_string(payload.get("reason") or "bulk_resolve_to_document")
+    if not transaction_ids:
+        raise HTTPException(status_code=400, detail="transactionIds is required")
+
+    resolved_by = normalize_non_empty_string(user.get("displayName") or user.get("username") or user.get("id"))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updated_count = 0
+
+    suspicious_collection, _, _ = get_suspicious_project_resolutions_collection()
+
+    for raw_id in transaction_ids:
+        tx_id = str(raw_id or "").strip()
+        if not ObjectId.is_valid(tx_id):
+            continue
+        tx = suspicious_collection.find_one({"_id": ObjectId(tx_id), "source": "sap-sbo"}, {"sap.documentProjectCode": 1, "sap.documentProjectName": 1})
+        if not tx:
+            continue
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
+            project_code=normalize_non_empty_string(sap_doc.get("documentProjectCode")),
+            project_name=normalize_non_empty_string(sap_doc.get("documentProjectName")),
+        )
+        if not selected_project_id:
+            continue
+
+        suspicious_collection.update_one(
+            {"_id": ObjectId(tx_id)},
+            {
+                "$set": {
+                    "sap.manualResolvedProjectId": selected_project_id,
+                    "sap.manualResolvedProjectCode": selected_project_code,
+                    "sap.manualResolvedProjectName": selected_project_name,
+                    "sap.manualResolvedBy": resolved_by,
+                    "sap.manualResolvedAt": now_iso,
+                    "sap.manualResolutionReason": reason,
+                    "updated_at": now_iso,
+                }
+            },
+        )
+        updated_count += 1
+
+    return {"ok": True, "updated": updated_count}
+
+
+@app.post("/api/admin/suspicious-project-resolutions/bulk-resolve-payment")
+def bulk_resolve_admin_suspicious_project_resolution_to_payment(payload: dict, user: dict = Depends(require_admin)):
+    transaction_ids = payload.get("transactionIds") if isinstance(payload.get("transactionIds"), list) else []
+    reason = normalize_non_empty_string(payload.get("reason") or "bulk_resolve_to_payment")
+    if not transaction_ids:
+        raise HTTPException(status_code=400, detail="transactionIds is required")
+
+    resolved_by = normalize_non_empty_string(user.get("displayName") or user.get("username") or user.get("id"))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    updated_count = 0
+    suspicious_collection, _, _ = get_suspicious_project_resolutions_collection()
+
+    for raw_id in transaction_ids:
+        tx_id = str(raw_id or "").strip()
+        if not ObjectId.is_valid(tx_id):
+            continue
+        tx = suspicious_collection.find_one({"_id": ObjectId(tx_id), "source": "sap-sbo"}, {"sap.paymentProjectCode": 1, "sap.paymentProjectName": 1})
+        if not tx:
+            continue
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
+            project_code=normalize_non_empty_string(sap_doc.get("paymentProjectCode")),
+            project_name=normalize_non_empty_string(sap_doc.get("paymentProjectName")),
+        )
+        if not selected_project_id:
+            continue
+
+        suspicious_collection.update_one(
+            {"_id": ObjectId(tx_id)},
+            {
+                "$set": {
+                    "sap.manualResolvedProjectId": selected_project_id,
+                    "sap.manualResolvedProjectCode": selected_project_code,
+                    "sap.manualResolvedProjectName": selected_project_name,
+                    "sap.manualResolvedBy": resolved_by,
+                    "sap.manualResolvedAt": now_iso,
+                    "sap.manualResolutionReason": reason,
+                    "updated_at": now_iso,
+                }
+            },
+        )
+        updated_count += 1
+
+    return {"ok": True, "updated": updated_count}
+
+
 @app.get("/api/supplier-categories")
 def list_supplier_categories(_: dict = Depends(require_authenticated)):
     return [serialize(c) for c in db.supplierCategoryCatalog.find({}).sort("name", 1)]
 
 
 @app.get("/api/projects")
-def list_projects(_: dict = Depends(require_authenticated)):
-    rows = db.projects.find({}, {"name": 1, "slug": 1}).sort("name", 1)
-    return [{"_id": str(row["_id"]), "name": row.get("name"), "slug": row.get("slug")} for row in rows]
+def list_projects(user: dict = Depends(require_authenticated)):
+    query: dict = {"visibleInFrontend": {"$ne": False}}
+    accessible_project_ids = get_accessible_project_ids(user)
+    if accessible_project_ids is not None:
+        if not accessible_project_ids:
+            return []
+        query["_id"] = {"$in": [ObjectId(pid) for pid in accessible_project_ids]}
+
+    rows = db.projects.find(
+        query,
+        {"name": 1, "displayName": 1, "slug": 1},
+    ).sort("name", 1)
+    return [
+        {
+            "_id": str(row["_id"]),
+            "name": row.get("name"),
+            "displayName": row.get("displayName"),
+            "slug": row.get("slug"),
+        }
+        for row in rows
+    ]
 
 
 @app.post("/api/admin/projects", status_code=201)
 def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
-    name = (payload.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="name is required")
+    display_name = (payload.get("displayName") or payload.get("name") or "").strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="displayName is required")
 
     slug = normalize_project_slug(payload.get("slug"))
-    s3_prefix = normalize_project_prefix(payload.get("s3Prefix"), slug)
+
+    raw_project_names = payload.get("sapProjectNames")
+    if not isinstance(raw_project_names, list):
+        raw_project_names = []
+    sap_project_names = [str(item).strip() for item in raw_project_names if str(item).strip()]
+
+    raw_project_name = (payload.get("rawProjectName") or "").strip()
+    if raw_project_name and raw_project_name not in sap_project_names:
+        sap_project_names.insert(0, raw_project_name)
+    if not sap_project_names:
+        sap_project_names = [display_name]
+
+    source_sbo = (payload.get("sourceSbo") or "").strip()
+
+    s3_prefix = None
+    if payload.get("s3Prefix"):
+        s3_prefix = normalize_project_prefix(payload.get("s3Prefix"), slug)
 
     if db.projects.find_one({"slug": slug}, {"_id": 1}):
         raise HTTPException(status_code=409, detail="Project slug already exists")
 
-    if db.projects.find_one({"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}, {"_id": 1}):
+    if db.projects.find_one(
+        {
+            "$or": [
+                {"name": {"$regex": f"^{re.escape(display_name)}$", "$options": "i"}},
+                {"displayName": {"$regex": f"^{re.escape(display_name)}$", "$options": "i"}},
+            ]
+        },
+        {"_id": 1},
+    ):
         raise HTTPException(status_code=409, detail="Project name already exists")
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    sap_payload = {
+        "projectNames": sap_project_names,
+    }
+    if source_sbo:
+        sap_payload["sourceSbo"] = source_sbo
+    if raw_project_name:
+        sap_payload["rawProjectName"] = raw_project_name
+    if s3_prefix:
+        sap_payload["s3"] = {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix}
+
     doc = {
-        "name": name,
+        "name": slug,
+        "displayName": display_name,
         "slug": slug,
-        "sap": {"s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix}},
+        "sap": sap_payload,
         "created_at": now_iso,
         "updated_at": now_iso,
     }
@@ -3318,9 +5569,171 @@ def create_project_admin(payload: dict, _: dict = Depends(require_admin)):
     return {
         "ok": True,
         "projectId": str(project_id),
-        "name": name,
+        "name": slug,
+        "displayName": display_name,
         "slug": slug,
-        "sap": {"s3": {"bucket": DEFAULT_PROJECT_S3_BUCKET, "prefix": s3_prefix}},
+        "sap": sap_payload,
+    }
+
+
+@app.get("/api/admin/projects")
+def list_projects_admin(_: dict = Depends(require_admin)):
+    projection = {
+        "name": 1,
+        "displayName": 1,
+        "slug": 1,
+        "visibleInFrontend": 1,
+        "sap.sourceSbo": 1,
+        "sap.rawProjectName": 1,
+        "sap.projectNames": 1,
+    }
+    rows = db.projects.find({}, projection).sort("name", 1)
+    response: list[dict] = []
+    for row in rows:
+        sap = row.get("sap") if isinstance(row.get("sap"), dict) else {}
+        response.append(
+            {
+                "_id": str(row["_id"]),
+                "name": row.get("name"),
+                "displayName": row.get("displayName"),
+                "slug": row.get("slug"),
+                "visibleInFrontend": row.get("visibleInFrontend") is not False,
+                "sap": {
+                    "sourceSbo": sap.get("sourceSbo"),
+                    "rawProjectName": sap.get("rawProjectName"),
+                    "projectNames": sap.get("projectNames") if isinstance(sap.get("projectNames"), list) else [],
+                },
+            }
+        )
+    return response
+
+
+@app.patch("/api/admin/projects/{project_id}/visibility")
+def update_project_visibility_admin(project_id: str, payload: dict, _: dict = Depends(require_admin)):
+    if "visibleInFrontend" not in payload or not isinstance(payload.get("visibleInFrontend"), bool):
+        raise HTTPException(status_code=400, detail="visibleInFrontend must be a boolean")
+
+    updated = db.projects.find_one_and_update(
+        {"_id": oid(project_id)},
+        {
+            "$set": {
+                "visibleInFrontend": payload.get("visibleInFrontend"),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return {
+        "ok": True,
+        "_id": str(updated.get("_id")),
+        "visibleInFrontend": updated.get("visibleInFrontend") is not False,
+    }
+
+
+@app.post("/api/admin/projects/create-from-unmatched")
+def create_projects_from_unmatched(_: dict = Depends(require_admin)):
+    created_projects: list[dict] = []
+    skipped_projects: list[dict] = []
+
+    projection = {"rawProjectName": 1, "sourceSbo": 1}
+    for row in db.unmatched_projects.find({}, projection):
+        raw_project_name = str(row.get("rawProjectName") or "").strip()
+        source_sbo = str(row.get("sourceSbo") or "").strip()
+
+        if not raw_project_name:
+            skipped_projects.append(
+                {
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "missing rawProjectName",
+                }
+            )
+            continue
+
+        slug = normalize_slug_from_raw_project_name(raw_project_name)
+        if not slug or not re.fullmatch(r"[a-z0-9-]+", slug):
+            skipped_projects.append(
+                {
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "invalid_slug",
+                }
+            )
+            continue
+
+        existing_by_sap = db.projects.find_one({"sap.projectNames": raw_project_name}, {"_id": 1})
+        if existing_by_sap:
+            skipped_projects.append(
+                {
+                    "displayName": raw_project_name,
+                    "slug": slug,
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "existing sap.projectNames match",
+                }
+            )
+            continue
+
+        existing_by_slug = db.projects.find_one({"slug": slug}, {"_id": 1})
+        if existing_by_slug:
+            skipped_projects.append(
+                {
+                    "displayName": raw_project_name,
+                    "slug": slug,
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "existing slug match",
+                }
+            )
+            continue
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        doc = {
+            "name": slug,
+            "displayName": raw_project_name,
+            "slug": slug,
+            "sap": {
+                "projectNames": [raw_project_name],
+                "sourceSbo": source_sbo,
+                "rawProjectName": raw_project_name,
+            },
+            "visibleInFrontend": False,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+
+        try:
+            db.projects.insert_one(doc)
+        except DuplicateKeyError:
+            skipped_projects.append(
+                {
+                    "displayName": raw_project_name,
+                    "slug": slug,
+                    "rawProjectName": raw_project_name,
+                    "sourceSbo": source_sbo,
+                    "reason": "duplicate key during insert",
+                }
+            )
+            continue
+
+        created_projects.append(
+            {
+                "displayName": raw_project_name,
+                "slug": slug,
+                "rawProjectName": raw_project_name,
+                "sourceSbo": source_sbo,
+            }
+        )
+
+    return {
+        "ok": True,
+        "createdCount": len(created_projects),
+        "skippedExistingCount": len(skipped_projects),
+        "createdProjects": created_projects,
+        "skippedProjects": skipped_projects,
     }
 
 
@@ -3358,8 +5771,13 @@ def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
 
 
 @app.get("/api/suppliers")
-def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, _: dict = Depends(require_authenticated)):
+def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, user: dict = Depends(require_authenticated)):
     active_project_id = get_active_project_id(request)
+    if not can_access_project(user, active_project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     query = {"$and": [{"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}]}
     if uncategorized == 1:
         query["$and"].append({"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]})
@@ -3389,8 +5807,13 @@ def update_supplier(supplier_id: str, payload: dict, request: FastAPIRequest, _:
 
 
 @app.get("/api/projects/{project_id}/supplier-categories")
-def list_project_supplier_categories(project_id: str, _: dict = Depends(require_authenticated)):
+def list_project_supplier_categories(project_id: str, user: dict = Depends(require_authenticated)):
     resolved_project_id = resolve_project_id(project_id)
+    if not can_access_project(user, resolved_project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     rows = list(db.supplierCategories.find({"projectId": resolved_project_id}).sort("updatedAt", -1))
 
     supplier_ids = [oid(row.get("supplierId")) for row in rows if ObjectId.is_valid(str(row.get("supplierId") or ""))]
@@ -3859,6 +6282,438 @@ def build_project_s3_key(project_id: str, filename: str) -> str:
         return filename
 
     return f"{prefix}/{filename}"
+
+
+def normalize_project_name_for_matching(raw_value) -> str:
+    return str(raw_value or "").strip().upper()
+
+
+def pick_first_non_empty_value(row: dict, *keys: str) -> str | None:
+    for key in keys:
+        value = normalize_non_empty_string(row.get(key))
+        if value:
+            return value
+    return None
+
+
+def resolve_sbo_project_fields_from_row(row: dict, movement_type: str) -> dict:
+    document_project_code = pick_first_non_empty_value(row, "document_project_code", "documentProjectCode")
+    document_project_name = pick_first_non_empty_value(row, "document_project_name", "documentProjectName")
+    payment_project_code = pick_first_non_empty_value(row, "payment_project_code", "paymentProjectCode")
+    payment_project_name = pick_first_non_empty_value(row, "payment_project_name", "paymentProjectName")
+    resolved_project_code = pick_first_non_empty_value(row, "resolved_project_code", "resolvedProjectCode")
+    resolved_project_name = pick_first_non_empty_value(row, "resolved_project_name", "resolvedProjectName")
+    project_resolution_source = pick_first_non_empty_value(
+        row,
+        "project_resolution_source",
+        "projectResolutionSource",
+    )
+    raw_project_code = pick_first_non_empty_value(row, "raw_project_code", "rawProjectCode")
+    raw_project_name = pick_first_non_empty_value(row, "raw_project_name", "rawProjectName")
+
+    # Business decision (SBO V2): outgoing payments now always resolve the automatic
+    # project from document-level project. payment_project_* is kept only for
+    # diagnostics/suspicious workflow.
+    if movement_type == "egreso":
+        effective_raw_project_code = document_project_code or raw_project_code or resolved_project_code
+        effective_raw_project_name = document_project_name or raw_project_name or resolved_project_name
+        project_resolution_source = "document" if document_project_code or document_project_name else "document"
+    else:
+        effective_raw_project_code = raw_project_code or resolved_project_code
+        effective_raw_project_name = raw_project_name or resolved_project_name
+
+    return {
+        "raw_project_code": effective_raw_project_code or "",
+        "raw_project_name": effective_raw_project_name or "",
+        "document_project_code": document_project_code,
+        "document_project_name": document_project_name,
+        "payment_project_code": payment_project_code,
+        "payment_project_name": payment_project_name,
+        "resolved_project_code": resolved_project_code,
+        "resolved_project_name": resolved_project_name,
+        "project_resolution_source": project_resolution_source,
+    }
+
+
+def build_project_resolution_suspicion_fields(movement_type: str, project_fields: dict) -> dict:
+    is_outgoing = str(movement_type or "").strip().lower() == "egreso"
+    document_project_code = normalize_non_empty_string(project_fields.get("document_project_code"))
+    document_project_name = normalize_non_empty_string(project_fields.get("document_project_name"))
+    payment_project_code = normalize_non_empty_string(project_fields.get("payment_project_code"))
+    payment_project_name = normalize_non_empty_string(project_fields.get("payment_project_name"))
+
+    suspicious = bool(
+        is_outgoing
+        and document_project_code
+        and payment_project_code
+        and document_project_code != payment_project_code
+    )
+
+    return {
+        "isProjectResolutionSuspicious": suspicious,
+        "projectResolutionSuspicionReasons": ["document_project_differs_from_payment_project"] if suspicious else [],
+        "suggestedProjectCode": document_project_code,
+        "suggestedProjectName": document_project_name,
+        "conflictingPaymentProjectCode": payment_project_code,
+        "conflictingPaymentProjectName": payment_project_name,
+    }
+
+
+def build_sbo_dedupe_key(row: dict) -> str:
+    amount_applied = parse_optional_decimal(row.get("amount_applied"))
+    dedupe_parts = [
+        normalize_source_db_value(row.get("source_db")),
+        str(row.get("movement_type") or "").strip().upper(),
+        str(row.get("source_type") or "").strip().upper(),
+        str(row.get("payment_docentry") or "").strip(),
+        str(row.get("invoice_docentry") or "").strip(),
+        f"{float(amount_applied or 0):.2f}",
+    ]
+    return sha256("|".join(dedupe_parts).encode("utf-8")).hexdigest()
+
+
+def resolve_projects_by_sap_names() -> dict[str, str]:
+    project_map: dict[str, str] = {}
+    projection = {"sap.projectNames": 1}
+    for project_doc in db.projects.find({"sap.projectNames": {"$exists": True}}, projection):
+        project_id = str(project_doc.get("_id") or "")
+        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+        project_names = sap_doc.get("projectNames") if isinstance(sap_doc.get("projectNames"), list) else []
+        for project_name in project_names:
+            normalized = normalize_project_name_for_matching(project_name)
+            if normalized and normalized not in project_map:
+                project_map[normalized] = project_id
+    return project_map
+
+
+def import_sap_movements_by_sbo(
+    sbo: str,
+    mode: str,
+    force: int = 0,
+    trigger_source: str = "api",
+    actor: str | None = None,
+) -> dict:
+    source_sbo = str(sbo or "").strip()
+    if not source_sbo:
+        raise HTTPException(status_code=400, detail="sbo is required")
+
+    normalized_mode = str(mode or "latest").strip().lower()
+    if normalized_mode not in {"backfill", "latest"}:
+        raise HTTPException(status_code=400, detail="Invalid mode. Use 'backfill' or 'latest'.")
+
+    bucket = DEFAULT_PROJECT_S3_BUCKET
+    s3_file = "backfill_movements.csv" if normalized_mode == "backfill" else "latest_movements.csv"
+    s3_key = f"exports-v2/{source_sbo}/{s3_file}"
+    file_name = s3_file
+    source_file = s3_key
+    file_bytes = downloadFromS3Object(bucket=bucket, key=s3_key)
+    file_hash = sha256(file_bytes).hexdigest()
+
+    import_key = f"sap-movements-by-sbo:{source_sbo}:{normalized_mode}:{s3_key}"
+    now = datetime.now(timezone.utc).isoformat()
+    normalized_trigger_source = _normalize_trigger_source(trigger_source)
+    actor_label = _summarize_actor(actor)
+
+    run_scope_filter = {
+        "source": "sap-movements-by-sbo",
+        "sourceSbo": source_sbo,
+        "mode": normalized_mode,
+    }
+    existing_run = db.importRuns.find_one({**run_scope_filter, "sha256": file_hash})
+    if existing_run and existing_run.get("status") == "ok" and force != 1:
+        return {"already_imported": True, "importRunId": str(existing_run.get("_id"))}
+
+    import_run_doc = {
+        "sha256": file_hash,
+        "fileName": file_name,
+        "sourceFile": source_file,
+        "sourceSbo": source_sbo,
+        "sourceDb": "SBO",
+        "importKey": import_key,
+        "source": "sap-movements-by-sbo",
+        "projectId": None,
+        "rowsTotal": 0,
+        "rowsOk": 0,
+        "rowsSkipped": 0,
+        "rowsError": 0,
+        "status": "processing",
+        "startedAt": now,
+        "finishedAt": None,
+        "errorsSample": [],
+        "mode": normalized_mode,
+        "bucket": bucket,
+        "s3Key": s3_key,
+        "triggerSource": normalized_trigger_source,
+        "triggerActor": actor_label,
+    }
+
+    if existing_run:
+        db.importRuns.update_one({"_id": existing_run["_id"]}, {"$set": import_run_doc})
+        import_run_id = existing_run["_id"]
+    else:
+        try:
+            import_run_id = db.importRuns.insert_one(import_run_doc).inserted_id
+        except DuplicateKeyError:
+            reusable_run = db.importRuns.find_one({**run_scope_filter, "sha256": file_hash})
+            if reusable_run:
+                db.importRuns.update_one({"_id": reusable_run["_id"]}, {"$set": import_run_doc})
+                import_run_id = reusable_run["_id"]
+            else:
+                raise
+
+    rows_total = 0
+    rows_ok = 0
+    rows_error = 0
+    rows_imported = 0
+    rows_updated = 0
+    rows_unmatched = 0
+    errors_sample = []
+    vendor_upserts: list[UpdateOne] = []
+    vendor_upsert_keys: set[str] = set()
+
+    normalized_projects = resolve_projects_by_sap_names()
+    decoded = file_bytes.decode("utf-8-sig")
+    reader = csv.DictReader(decoded.splitlines())
+
+    for idx, row in enumerate(reader, start=2):
+        rows_total += 1
+        try:
+            movement_type = str(row.get("movement_type") or row.get("movementType") or "").strip().lower()
+            project_fields = resolve_sbo_project_fields_from_row(row, movement_type)
+            raw_project_name = project_fields["raw_project_name"]
+            raw_project_code = project_fields["raw_project_code"]
+            normalized_project_name = normalize_project_name_for_matching(raw_project_name)
+            project_id = normalized_projects.get(normalized_project_name)
+            category_hint_code = normalize_non_empty_string(
+                row.get("CategoryHintCode")
+                or row.get("category_hint_code")
+                or row.get("categoryHintCode")
+            )
+            category_hint_name = normalize_non_empty_string(
+                row.get("CategoryHintName")
+                or row.get("category_hint_name")
+                or row.get("categoryHintName")
+            )
+
+            if not project_id:
+                rows_unmatched += 1
+                db.unmatched_projects.update_one(
+                    {"sourceSbo": source_sbo, "normalizedProjectName": normalized_project_name},
+                    {
+                        "$setOnInsert": {
+                            "sourceSbo": source_sbo,
+                            "normalizedProjectName": normalized_project_name,
+                            "firstSeenAt": now,
+                        },
+                        "$set": {
+                            "rawProjectName": raw_project_name,
+                            "lastSeenAt": now,
+                        },
+                        "$inc": {"count": 1},
+                    },
+                    upsert=True,
+                )
+
+            dedupe_key = build_sbo_dedupe_key(row)
+            source_db = normalize_source_db_value(row.get("source_db"))
+            movement_date = parse_excel_date(row.get("movement_date"))
+            invoice_date = parse_excel_date(row.get("invoice_date"))
+            amount_applied = parse_optional_decimal(row.get("amount_applied")) or 0.0
+            invoice_subtotal = parse_optional_decimal(row.get("invoice_subtotal"))
+            invoice_iva = parse_optional_decimal(row.get("invoice_iva"))
+            invoice_total = parse_optional_decimal(row.get("invoice_total"))
+            tx_type = "INCOME" if movement_type == "ingreso" else "EXPENSE" if movement_type == "egreso" else "EXPENSE"
+            suspicion_fields = build_project_resolution_suspicion_fields(movement_type, project_fields)
+
+            tx_doc = {
+                "projectId": project_id,
+                "source": "sap-sbo",
+                "sourceDb": source_db,
+                "sourceSbo": source_sbo,
+                "date": movement_date or invoice_date,
+                "amount": float(amount_applied),
+                "subtotal": invoice_subtotal,
+                "montoSinIva": invoice_subtotal,
+                "iva": invoice_iva,
+                "montoIva": invoice_iva,
+                "totalFactura": invoice_total,
+                "tax": {
+                    "subtotal": invoice_subtotal,
+                    "iva": invoice_iva,
+                    "totalFactura": invoice_total,
+                },
+                "type": tx_type,
+                "description": str(row.get("payment_comments") or "").strip() or str(row.get("invoice_comments") or "").strip(),
+                "supplierName": str(row.get("business_partner") or "").strip() or str(row.get("card_code") or "").strip(),
+                "dedupeKey": dedupe_key,
+                "categoryHintCode": category_hint_code,
+                "categoryHintName": category_hint_name,
+                "sap": {
+                    "movementType": str(row.get("movement_type") or "").strip(),
+                    "sourceType": str(row.get("source_type") or "").strip(),
+                    "paymentDocEntry": str(row.get("payment_docentry") or "").strip(),
+                    "paymentNum": str(row.get("payment_num") or "").strip(),
+                    "invoiceDocEntry": str(row.get("invoice_docentry") or "").strip(),
+                    "invoiceNum": str(row.get("invoice_num") or "").strip(),
+                    "externalDocNum": str(row.get("external_doc_num") or "").strip(),
+                    "movementDate": movement_date,
+                    "invoiceDate": invoice_date,
+                    "montoAplicado": float(amount_applied),
+                    "montoAplicadoCents": to_monto_aplicado_cents(amount_applied),
+                    "invoiceSubtotal": invoice_subtotal,
+                    "invoiceIva": invoice_iva,
+                    "invoiceTotal": invoice_total,
+                    "paymentCurrency": str(row.get("payment_currency") or "").strip(),
+                    "invoiceCurrency": str(row.get("invoice_currency") or "").strip(),
+                    "cardCode": str(row.get("card_code") or "").strip(),
+                    "businessPartner": str(row.get("business_partner") or "").strip(),
+                    "categoryHintCode": category_hint_code,
+                    "categoryHintName": category_hint_name,
+                    "rawProjectCode": raw_project_code,
+                    "rawProjectName": raw_project_name,
+                    "documentProjectCode": project_fields["document_project_code"],
+                    "documentProjectName": project_fields["document_project_name"],
+                    "paymentProjectCode": project_fields["payment_project_code"],
+                    "paymentProjectName": project_fields["payment_project_name"],
+                    "projectResolutionSource": project_fields["project_resolution_source"],
+                    "normalizedProjectName": normalized_project_name,
+                    "sourceDb": source_db,
+                    "sourceSbo": source_sbo,
+                    "sourceSboMode": normalized_mode,
+                    "isProjectResolutionSuspicious": suspicion_fields["isProjectResolutionSuspicious"],
+                    "projectResolutionSuspicionReasons": suspicion_fields["projectResolutionSuspicionReasons"],
+                    "suggestedProjectCode": suspicion_fields["suggestedProjectCode"],
+                    "suggestedProjectName": suspicion_fields["suggestedProjectName"],
+                    "conflictingPaymentProjectCode": suspicion_fields["conflictingPaymentProjectCode"],
+                    "conflictingPaymentProjectName": suspicion_fields["conflictingPaymentProjectName"],
+                },
+                "updated_at": now,
+            }
+
+            supplier_name = str(tx_doc.get("supplierName") or "").strip()
+            sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+            card_code = str(sap_doc.get("cardCode") or "").strip()
+            if project_id and (card_code or supplier_name):
+                vendor_key = card_code or supplier_name.lower()
+                upsert_key = f"{project_id}|{vendor_key}"
+                if upsert_key not in vendor_upsert_keys:
+                    vendor_upsert_keys.add(upsert_key)
+                    vendor_filter = {
+                        "source": "sap-sbo",
+                        "projectId": project_id,
+                        "supplierCardCode": card_code,
+                    } if card_code else {
+                        "source": "sap-sbo",
+                        "projectId": project_id,
+                        "name": supplier_name,
+                    }
+                    set_payload = {
+                        "source": "sap-sbo",
+                        "projectId": project_id,
+                        "active": True,
+                        "name": supplier_name or str(sap_doc.get("businessPartner") or "").strip() or card_code,
+                    }
+                    if card_code:
+                        set_payload["supplierCardCode"] = card_code
+                        set_payload["externalIds.sapCardCode"] = card_code
+                    vendor_upserts.append(
+                        UpdateOne(
+                            vendor_filter,
+                            {
+                                "$set": set_payload,
+                                "$setOnInsert": {
+                                    "categoryId": None,
+                                    "category_ids": [],
+                                    "created_at": now,
+                                },
+                            },
+                            upsert=True,
+                        )
+                    )
+
+            existing_tx = db.transactions.find_one(
+                {"dedupeKey": dedupe_key},
+                {
+                    "sap.manualResolvedProjectId": 1,
+                    "sap.manualResolvedProjectCode": 1,
+                    "sap.manualResolvedProjectName": 1,
+                    "sap.manualResolvedBy": 1,
+                    "sap.manualResolvedAt": 1,
+                    "sap.manualResolutionReason": 1,
+                },
+            )
+            existing_sap = existing_tx.get("sap") if isinstance((existing_tx or {}).get("sap"), dict) else {}
+            for manual_key in [
+                "manualResolvedProjectId",
+                "manualResolvedProjectCode",
+                "manualResolvedProjectName",
+                "manualResolvedBy",
+                "manualResolvedAt",
+                "manualResolutionReason",
+            ]:
+                manual_value = normalize_non_empty_string(existing_sap.get(manual_key))
+                if manual_value:
+                    tx_doc["sap"][manual_key] = manual_value
+
+            update_doc = {"$set": tx_doc, "$setOnInsert": {"created_at": now}}
+            update_result = db.transactions.update_one({"dedupeKey": dedupe_key}, update_doc, upsert=True)
+            if update_result.upserted_id:
+                rows_imported += 1
+            else:
+                rows_updated += 1
+            rows_ok += 1
+        except Exception as exc:
+            rows_error += 1
+            if len(errors_sample) < 50:
+                errors_sample.append({"row": idx, "error": str(exc)})
+
+    if vendor_upserts:
+        db.vendors.bulk_write(vendor_upserts, ordered=False)
+
+    finished_at = datetime.now(timezone.utc).isoformat()
+    status = "ok" if rows_error == 0 else "ok_with_errors"
+    db.importRuns.update_one(
+        {"_id": import_run_id},
+        {
+            "$set": {
+                "rowsTotal": rows_total,
+                "rowsOk": rows_ok,
+                "rowsSkipped": rows_unmatched,
+                "rowsError": rows_error,
+                "status": status,
+                "finishedAt": finished_at,
+                "errorsSample": errors_sample,
+                "summary": {
+                    "imported": rows_imported,
+                    "updated": rows_updated,
+                    "unmatched": rows_unmatched,
+                },
+            }
+        },
+    )
+
+    logger.info(
+        "sap-movements-by-sbo completed sbo=%s mode=%s source=%s actor=%s imported=%s updated=%s unmatched=%s rows_error=%s",
+        source_sbo,
+        normalized_mode,
+        normalized_trigger_source,
+        actor_label,
+        rows_imported,
+        rows_updated,
+        rows_unmatched,
+        rows_error,
+    )
+
+    return {
+        "status": status,
+        "importRunId": str(import_run_id),
+        "rowsTotal": rows_total,
+        "rowsOk": rows_ok,
+        "rowsError": rows_error,
+        "imported": rows_imported,
+        "updated": rows_updated,
+        "unmatched": rows_unmatched,
+    }
 
 
 def importCsv(
@@ -4967,7 +7822,7 @@ async def import_sap_payments(
         source="sap-payments",
         mode=mode,
         confirm_rebuild=confirm_rebuild,
-        allow_rebuild=admin_user["role"] == "ADMIN",
+        allow_rebuild=admin_user["role"] == "SUPERADMIN",
     )
 
     import_run_id = str((summary or {}).get("importRunId") or "").strip()
@@ -5073,6 +7928,49 @@ def cron_import_sap_latest(
     return handle_sap_latest_import(project=project, force=force, mode=mode, source="sap-latest-cron")
 
 
+@app.post("/api/cron/import/sap-movements-by-sbo")
+def cron_import_sap_movements_by_sbo(
+    sbo: str,
+    mode: str = "latest",
+    force: int = 0,
+    x_trigger_source: str | None = Header(default=None, alias="X-Trigger-Source"),
+    user: dict = Depends(require_admin),
+):
+    trigger_source = _normalize_trigger_source(x_trigger_source)
+    actor = str(user.get("displayName") or user.get("username") or "system").strip() or "system"
+    try:
+        result = import_sap_movements_by_sbo(
+            sbo=sbo,
+            mode=mode,
+            force=force,
+            trigger_source=trigger_source,
+            actor=actor,
+        )
+        try:
+            notify_sap_movements_by_sbo_result(
+                sbo=sbo,
+                mode=mode,
+                trigger_source=trigger_source,
+                actor=actor,
+                result=result,
+            )
+        except Exception:
+            logger.exception("SAP movements Telegram success notification failed sbo=%s mode=%s", sbo, mode)
+        return result
+    except Exception as exc:
+        try:
+            notify_sap_movements_by_sbo_error(
+                sbo=sbo,
+                mode=mode,
+                trigger_source=trigger_source,
+                actor=actor,
+                exc=exc,
+            )
+        except Exception:
+            logger.exception("SAP movements Telegram error notification failed sbo=%s mode=%s", sbo, mode)
+        raise
+
+
 def handle_sap_latest_import(
     project: str,
     force: int = 0,
@@ -5135,6 +8033,62 @@ def _sap_latest_result_summary(result: dict | None) -> dict:
         already_imported[label] = bool(bucket.get("already_imported"))
 
     return {"already_imported": already_imported, "importRunIds": import_run_ids}
+
+
+def _build_supplier_summary_bucket_key(tx: dict, trusted_id_to_supplier_key: dict[str, str]) -> str:
+    supplier_id = normalize_non_empty_string(tx.get("supplierId") or tx.get("supplier_id"))
+    vendor_id = normalize_non_empty_string(tx.get("vendor_id"))
+    identity = build_supplier_identity_from_transaction(tx)
+    supplier_key = normalize_non_empty_string(identity.get("supplierKey"))
+
+    if supplier_key:
+        return supplier_key
+
+    for candidate_id in (supplier_id, vendor_id):
+        if candidate_id and trusted_id_to_supplier_key.get(candidate_id):
+            return str(trusted_id_to_supplier_key.get(candidate_id))
+
+    # When canonical supplier identity is unavailable, avoid collapsing distinct
+    # vendors that share a legacy supplierId by keeping both IDs in the bucket key.
+    if supplier_id and vendor_id:
+        return f"supplier:{supplier_id}|vendor:{vendor_id}"
+    if vendor_id:
+        return f"vendor:{vendor_id}"
+    if supplier_id:
+        return f"supplier:{supplier_id}"
+    return f"tx:{str(tx.get('_id') or '').strip()}"
+
+
+def _build_trusted_id_supplier_key_map(movements: list[dict]) -> dict[str, str]:
+    trusted_id_candidates: dict[str, set[str]] = {}
+    for tx in movements:
+        identity = build_supplier_identity_from_transaction(tx)
+        supplier_key = normalize_non_empty_string(identity.get("supplierKey"))
+        if not supplier_key or supplier_key.startswith("name:"):
+            continue
+
+        supplier_id = normalize_non_empty_string(tx.get("supplierId") or tx.get("supplier_id"))
+        vendor_id = normalize_non_empty_string(tx.get("vendor_id"))
+        for candidate_id in (supplier_id, vendor_id):
+            if not candidate_id:
+                continue
+            trusted_id_candidates.setdefault(candidate_id, set()).add(supplier_key)
+
+    return {
+        supplier_id: next(iter(keys))
+        for supplier_id, keys in trusted_id_candidates.items()
+        if len(keys) == 1
+    }
+
+
+def _resolve_supplier_summary_display_name(tx: dict, identity: dict, suppliers_by_id: dict[str, dict]) -> str:
+    supplier_id = normalize_non_empty_string(tx.get("supplierId") or tx.get("supplier_id"))
+    supplier_doc = suppliers_by_id.get(supplier_id or "") if supplier_id else None
+    catalog_name = normalize_non_empty_string((supplier_doc or {}).get("name"))
+    supplier_name = normalize_non_empty_string(identity.get("supplierName"))
+    sap_business_partner = normalize_non_empty_string(identity.get("businessPartner"))
+    sap_card_code = normalize_non_empty_string(identity.get("supplierCardCode"))
+    return catalog_name or supplier_name or sap_business_partner or sap_card_code or ""
 
 
 @app.post("/api/admin/import/sap-latest")
@@ -5222,19 +8176,45 @@ def admin_import_sap_latest(payload: dict, user: dict = Depends(require_admin)):
 def summary_expenses_by_supplier(
     projectId: str | None = None,
     project: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    from_date: str | None = Query(default=None, alias="from"),
+    to_date: str | None = Query(default=None, alias="to"),
+    source: str | None = None,
+    sourceDb: str | None = None,
     include_iva: bool = False,
-    _: dict = Depends(require_authenticated),
+    user: dict = Depends(require_authenticated),
 ):
     project_id = resolve_project_id(projectId or project)
-    movements_query = {"type": "EXPENSE", "projectId": project_id}
+    if not can_access_project(user, project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    normalized_from_date = from_date if isinstance(from_date, str) else None
+    normalized_to_date = to_date if isinstance(to_date, str) else None
+    effective_date_from = normalized_from_date or date_from
+    effective_date_to = normalized_to_date or date_to
+    movements_query = build_transactions_query(
+        type_value="EXPENSE",
+        date_from=effective_date_from,
+        date_to=effective_date_to,
+        source=source,
+        source_db=sourceDb,
+    )
+    movements_query = with_legacy_project_filter(movements_query, project_id)
     movements = list(
         db.transactions.find(
             movements_query,
             {
+                "_id": 1,
+                "source": 1,
                 "supplierId": 1,
                 "supplier_id": 1,
                 "vendor_id": 1,
                 "supplierName": 1,
+                "sap.cardCode": 1,
+                "sap.businessPartner": 1,
                 "proveedorNombre": 1,
                 "beneficiario": 1,
                 "proveedor.name": 1,
@@ -5244,30 +8224,63 @@ def summary_expenses_by_supplier(
         )
     )
 
+    supplier_ids = []
+    for tx in movements:
+        supplier_id = normalize_non_empty_string(tx.get("supplierId") or tx.get("supplier_id"))
+        if supplier_id and ObjectId.is_valid(supplier_id):
+            supplier_ids.append(ObjectId(supplier_id))
+
+    suppliers_by_id = {}
+    if supplier_ids:
+        for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1}):
+            suppliers_by_id[str(supplier.get("_id"))] = supplier
+
+    trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
     supplier_totals = {}
     for tx in movements:
+        source = str(tx.get("source") or "").strip().lower()
         supplier_id = tx.get("supplierId") or tx.get("supplier_id")
         vendor_id = tx.get("vendor_id")
-        supplier_name = (
-            tx.get("supplierName")
-            or tx.get("proveedorNombre")
-            or tx.get("beneficiario")
-            or (tx.get("proveedor") or {}).get("name")
-            or ""
-        )
-        provider_key = str(supplier_id or vendor_id or "")
+        identity = build_supplier_identity_from_transaction(tx)
+        supplier_key = str(identity.get("supplierKey") or "").strip()
+        supplier_name = str(identity.get("supplierName") or "").strip()
+        sap_card_code = str(identity.get("supplierCardCode") or "").strip()
+        sap_business_partner = str(identity.get("businessPartner") or "").strip()
+
+        # Canonical key is preferred, but when canonical data is missing we bridge
+        # through IDs only if that ID maps to exactly one non-name supplier key.
+        provider_key = _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key)
+
+        display_name = _resolve_supplier_summary_display_name(tx, identity, suppliers_by_id)
         bucket = supplier_totals.setdefault(
             provider_key,
             {
-                "supplierId": supplier_id,
-                "vendorId": vendor_id,
-                "supplierName": supplier_name,
+                "supplierId": str(supplier_id).strip() if supplier_id else None,
+                "vendorId": str(vendor_id).strip() if vendor_id else None,
+                "supplierName": display_name,
+                "supplierKey": supplier_key,
+                "sapCardCode": sap_card_code,
+                "sapBusinessPartner": sap_business_partner,
+                "source": source,
                 "totalAmount": 0.0,
                 "count": 0,
             },
         )
-        if not bucket.get("supplierName") and supplier_name:
-            bucket["supplierName"] = supplier_name
+
+        stable_name = _resolve_supplier_summary_display_name(tx, identity, suppliers_by_id)
+        if stable_name and (not bucket.get("supplierName") or bucket.get("supplierName") == bucket.get("sapCardCode")):
+            bucket["supplierName"] = stable_name
+        if not bucket.get("sapBusinessPartner") and sap_business_partner:
+            bucket["sapBusinessPartner"] = sap_business_partner
+        if not bucket.get("sapCardCode") and sap_card_code:
+            bucket["sapCardCode"] = sap_card_code
+
+        # Keep original IDs only when missing; identity key is canonical for grouping.
+        if not bucket.get("supplierId") and supplier_id:
+            bucket["supplierId"] = str(supplier_id).strip()
+        if not bucket.get("vendorId") and vendor_id:
+            bucket["vendorId"] = str(vendor_id).strip()
+
         amount_value = float(tx.get("amount") or 0)
         bucket["totalAmount"] += amount_value if include_iva else compute_monto_sin_iva(tx)
         bucket["count"] += 1
@@ -5278,45 +8291,327 @@ def summary_expenses_by_supplier(
             "supplierId": values.get("supplierId"),
             "vendorId": values.get("vendorId"),
             "supplierName": values.get("supplierName") or "",
+            "supplierKey": values.get("supplierKey") or "",
+            "sapCardCode": values.get("sapCardCode") or "",
+            "sapBusinessPartner": values.get("sapBusinessPartner") or "",
+            "source": values.get("source") or "",
             "totalAmount": round(values["totalAmount"], 2),
             "count": values["count"],
         }
         for provider_id, values in supplier_totals.items()
     ]
 
-    for row in rows:
-        if row.get("supplierId"):
-            row["supplierId"] = str(row["supplierId"])
-        if row.get("vendorId"):
-            row["vendorId"] = str(row["vendorId"])
+    supplier_ids = [oid(row.get("supplierId")) for row in rows if row.get("supplierId") and ObjectId.is_valid(str(row.get("supplierId") or ""))]
+    vendor_ids = [oid(row.get("vendorId")) for row in rows if row.get("vendorId") and ObjectId.is_valid(str(row.get("vendorId") or ""))]
+    supplier_card_codes = [str(row.get("sapCardCode") or "").strip() for row in rows if str(row.get("sapCardCode") or "").strip()]
 
-    supplier_ids = [oid(row.get("supplierId")) for row in rows if row.get("supplierId")]
-    vendor_ids = [oid(row.get("vendorId")) for row in rows if row.get("vendorId")]
-    supplier_names = {}
+    supplier_names_by_id = {}
     if supplier_ids:
         for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1}):
-            supplier_names[str(supplier["_id"])] = supplier.get("name") or "(Sin proveedor)"
+            supplier_names_by_id[str(supplier["_id"])] = supplier.get("name") or "(Sin proveedor)"
+
+    supplier_names_by_card_code = {}
+    if supplier_card_codes:
+        for supplier in db.suppliers.find({"cardCode": {"$in": supplier_card_codes}}, {"name": 1, "cardCode": 1}):
+            card_code = str(supplier.get("cardCode") or "").strip()
+            if card_code and card_code not in supplier_names_by_card_code:
+                supplier_names_by_card_code[card_code] = supplier.get("name") or card_code
 
     vendor_names = {}
     if vendor_ids:
         for vendor in db.vendors.find({"_id": {"$in": vendor_ids}, "projectId": project_id}, {"name": 1}):
             vendor_names[str(vendor["_id"])] = vendor.get("name") or "(Sin proveedor)"
 
-    output = [
-        {
-            "supplierId": row.get("supplierId") or row.get("vendorId"),
-            "supplierName": supplier_names.get(row.get("supplierId"))
-            or vendor_names.get(row.get("vendorId"))
-            or row.get("supplierName")
-            or "(Sin proveedor)",
-            "totalAmount": round(float(row.get("totalAmount") or 0), 2),
-            "count": int(row.get("count") or 0),
-        }
-        for row in rows
-    ]
+    output = []
+    for row in rows:
+        provider_key = str(row.get("_id") or "")
+        supplier_name = row.get("supplierName") or ""
+        card_code = str(row.get("sapCardCode") or "").strip()
+
+        # For canonical keys (cardcode/bp/name), prefer identity-based naming so
+        # legacy supplierId defaults do not relabel providers (e.g. default vendor debt).
+        if provider_key.startswith(("bpcc:", "cardcode:", "bp:", "name:")):
+            resolved_name = (
+                supplier_name
+                or row.get("sapBusinessPartner")
+                or supplier_names_by_card_code.get(card_code)
+                or card_code
+                or "(Sin proveedor)"
+            )
+            resolved_supplier_id = row.get("supplierId")
+        else:
+            resolved_name = (
+                supplier_names_by_id.get(row.get("supplierId"))
+                or vendor_names.get(row.get("vendorId"))
+                or supplier_names_by_card_code.get(card_code)
+                or supplier_name
+                or row.get("sapBusinessPartner")
+                or card_code
+                or "(Sin proveedor)"
+            )
+            resolved_supplier_id = row.get("supplierId") or row.get("vendorId")
+
+        output.append(
+            {
+                "supplierId": resolved_supplier_id,
+                "supplierName": resolved_name,
+                "totalAmount": round(float(row.get("totalAmount") or 0), 2),
+                "count": int(row.get("count") or 0),
+            }
+        )
+
+    for row, item in zip(rows, output):
+        logger.info(
+            "[summary-by-supplier][debug] provider_key=%s supplierName=%s source=%s count=%s total=%s",
+            row.get("_id"),
+            item.get("supplierName"),
+            row.get("source"),
+            item.get("count"),
+            item.get("totalAmount"),
+        )
 
     output.sort(key=lambda item: (item["supplierName"] or "").lower())
     return output
+
+
+@app.get("/api/admin/trabajos-especiales/suppliers")
+def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
+    tx_query = {
+        "$or": [
+            {"categoryEffectiveName": {"$exists": True, "$nin": [None, ""]}},
+            {"categoryManualName": {"$exists": True, "$nin": [None, ""]}},
+            {"categoryHintName": {"$exists": True, "$nin": [None, ""]}},
+        ]
+    }
+    projection = {
+        "description": 1,
+        "categoryEffectiveName": 1,
+        "categoryManualName": 1,
+        "categoryHintName": 1,
+        "supplierId": 1,
+        "supplierName": 1,
+        "supplierCardCode": 1,
+        "sap.cardCode": 1,
+        "sap.businessPartner": 1,
+        "projectId": 1,
+        "project": 1,
+        "date": 1,
+    }
+
+    projects_by_id = {
+        str(project.get("_id")): project
+        for project in db.projects.find({}, {"name": 1, "displayName": 1, "sap.sourceSbo": 1})
+    }
+    supplier_rules = list(db.supplierCategory2Rules.find({"isActive": {"$ne": False}}, {"supplierKey": 1, "category2Id": 1, "category2Name": 1}))
+    rules_by_key = {str(rule.get("supplierKey") or "").strip(): rule for rule in supplier_rules if str(rule.get("supplierKey") or "").strip()}
+
+    grouped = {}
+    for tx in db.transactions.find(tx_query, projection):
+        category_manual_name = normalize_non_empty_string(tx.get("categoryManualName"))
+        category_hint_name = normalize_non_empty_string(tx.get("categoryHintName"))
+        category_effective_name = normalize_non_empty_string(tx.get("categoryEffectiveName")) or build_effective_category_fields(
+            None,
+            category_manual_name,
+            None,
+            category_hint_name,
+        ).get("categoryEffectiveName")
+        if not category_effective_name:
+            continue
+
+        normalized_effective_category = normalize_text_for_matching(category_effective_name)
+        if not normalized_effective_category.startswith(TRABAJOS_ESPECIALES_PREFIX):
+            continue
+
+        description = str(tx.get("description") or "").strip()
+        identity = build_supplier_identity_from_transaction(tx)
+        supplier_key = identity.get("supplierKey") or f"tx:{str(tx.get('_id') or '')}"
+
+        project_id = str(tx.get("projectId") or "").strip()
+        project_doc = projects_by_id.get(project_id) if project_id else None
+        project_name = (
+            str((project_doc or {}).get("displayName") or (project_doc or {}).get("name") or tx.get("project") or project_id or "")
+            .strip()
+        )
+        source_sbo = str(((project_doc or {}).get("sap") or {}).get("sourceSbo") or "").strip()
+
+        bucket = grouped.setdefault(
+            supplier_key,
+            {
+                "supplierKey": supplier_key,
+                "supplierId": str(tx.get("supplierId") or "").strip(),
+                "supplierName": identity.get("supplierName") or "(Sin proveedor)",
+                "supplierCardCode": identity.get("supplierCardCode") or "",
+                "businessPartner": identity.get("businessPartner") or "",
+                "transactionCount": 0,
+                "_projectKeys": set(),
+                "projects": [],
+                "sampleDescriptions": [],
+                "_sampleSeen": set(),
+                "matchedCategories": [],
+                "_matchedCategorySeen": set(),
+                "_lastSeenDate": None,
+            },
+        )
+
+        bucket["transactionCount"] += 1
+
+        project_key = project_id or project_name
+        if project_key and project_key not in bucket["_projectKeys"]:
+            bucket["_projectKeys"].add(project_key)
+            bucket["projects"].append(
+                {
+                    "projectId": project_id,
+                    "projectName": project_name,
+                    "sourceSbo": source_sbo,
+                }
+            )
+
+        normalized_category_sample = normalize_text_for_matching(category_effective_name)
+        if (
+            normalized_category_sample
+            and normalized_category_sample not in bucket["_matchedCategorySeen"]
+            and len(bucket["matchedCategories"]) < 5
+        ):
+            bucket["_matchedCategorySeen"].add(normalized_category_sample)
+            bucket["matchedCategories"].append(category_effective_name)
+
+        normalized_sample = normalize_text_for_matching(description)
+        if normalized_sample and normalized_sample not in bucket["_sampleSeen"] and len(bucket["sampleDescriptions"]) < 5:
+            bucket["_sampleSeen"].add(normalized_sample)
+            bucket["sampleDescriptions"].append(description)
+
+        tx_date = normalizeDate(tx.get("date"))
+        if tx_date and (bucket["_lastSeenDate"] is None or tx_date > bucket["_lastSeenDate"]):
+            bucket["_lastSeenDate"] = tx_date
+
+    suppliers = []
+    for values in grouped.values():
+        matching_rule = rules_by_key.get(values.get("supplierKey") or "")
+        assigned_category2_name = normalize_non_empty_string((matching_rule or {}).get("category2Name"))
+        suppliers.append(
+            {
+                "supplierKey": values.get("supplierKey") or "",
+                "supplierId": values.get("supplierId") or "",
+                "supplierName": values.get("supplierName") or "(Sin proveedor)",
+                "supplierCardCode": values.get("supplierCardCode") or "",
+                "businessPartner": values.get("businessPartner") or "",
+                "transactionCount": int(values.get("transactionCount") or 0),
+                "projectCount": len(values.get("_projectKeys") or set()),
+                "projects": sorted(
+                    values.get("projects") or [],
+                    key=lambda item: (str(item.get("projectName") or "").lower(), str(item.get("projectId") or "")),
+                ),
+                "matchedCategories": values.get("matchedCategories") or [],
+                "sampleDescriptions": values.get("sampleDescriptions") or [],
+                "lastSeenAt": values.get("_lastSeenDate").isoformat() if values.get("_lastSeenDate") else None,
+                "category2Rule": {
+                    "category2Id": normalize_non_empty_string((matching_rule or {}).get("category2Id")),
+                    "category2Name": assigned_category2_name,
+                    "status": "assigned" if assigned_category2_name else "unclassified",
+                },
+            }
+        )
+
+    suppliers.sort(key=lambda item: ((item.get("supplierName") or "").lower(), item.get("supplierCardCode") or "", item.get("supplierKey") or ""))
+    return {
+        "items": suppliers,
+        "totalSuppliers": len(suppliers),
+        "matchingPrefix": TRABAJOS_ESPECIALES_PREFIX,
+    }
+
+
+@app.get("/api/admin/trabajos-especiales/supplier-category2-rules")
+def list_admin_trabajos_especiales_supplier_category2_rules(_: dict = Depends(require_admin)):
+    rows = list(db.supplierCategory2Rules.find({}).sort([("updatedAt", -1), ("supplierName", 1)]))
+    return {"items": [serialize_raw_doc(row) for row in rows]}
+
+
+@app.get("/api/admin/categories/global")
+def list_admin_global_categories(_: dict = Depends(require_admin)):
+    ensure_global_categories_catalog()
+    rows = list(db.categories.find({"active": {"$ne": False}}))
+    deduped_by_key: dict[str, dict] = {}
+
+    for row in rows:
+        name = clean_global_category_name(row.get("name"))
+        key = normalize_global_category_key(name)
+        if not key:
+            continue
+        current = deduped_by_key.get(key)
+        if current is None or str(row.get("_id")) < str(current.get("_id")):
+            deduped_by_key[key] = row
+
+    ordered_rows = sorted(
+        deduped_by_key.values(),
+        key=lambda row: (normalize_global_category_key(row.get("name")), str(row.get("_id") or "")),
+    )
+    return [serialize(row) for row in ordered_rows]
+
+
+@app.put("/api/admin/trabajos-especiales/supplier-category2-rules")
+def upsert_admin_trabajos_especiales_supplier_category2_rule(payload: dict, user: dict = Depends(require_admin)):
+    category2_id = normalize_non_empty_string(payload.get("category2Id"))
+    if not category2_id or not ObjectId.is_valid(category2_id):
+        raise HTTPException(status_code=400, detail="category2Id is required")
+
+    category = db.categories.find_one({"_id": ObjectId(category2_id), "active": {"$ne": False}}, {"name": 1})
+    if not category:
+        raise HTTPException(status_code=400, detail="Invalid category2Id")
+
+    supplier_key = build_supplier_key(
+        payload.get("supplierCardCode"),
+        payload.get("businessPartner"),
+        payload.get("supplierName"),
+    )
+    if not supplier_key:
+        raise HTTPException(status_code=400, detail="supplierKey could not be resolved from supplierCardCode/businessPartner/supplierName")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    actor = normalize_non_empty_string((user or {}).get("username")) or normalize_non_empty_string((user or {}).get("email")) or "system"
+    updates = {
+        "supplierKey": supplier_key,
+        "supplierName": normalize_non_empty_string(payload.get("supplierName")) or "(Sin proveedor)",
+        "supplierCardCode": normalize_non_empty_string(payload.get("supplierCardCode")),
+        "businessPartner": normalize_non_empty_string(payload.get("businessPartner")),
+        "category2Id": str(category.get("_id")),
+        "category2Name": normalize_non_empty_string(category.get("name")) or category2_id,
+        "updatedAt": now_iso,
+        "updatedBy": actor,
+        "isActive": bool(payload.get("isActive", True)),
+    }
+
+    db.supplierCategory2Rules.update_one(
+        {"supplierKey": supplier_key},
+        {
+            "$set": updates,
+            "$setOnInsert": {
+                "createdAt": now_iso,
+                "createdBy": actor,
+            },
+        },
+        upsert=True,
+    )
+
+    saved = db.supplierCategory2Rules.find_one({"supplierKey": supplier_key})
+    return serialize_raw_doc(saved) if saved else {"ok": True, "supplierKey": supplier_key}
+
+
+@app.delete("/api/admin/trabajos-especiales/supplier-category2-rules/{supplier_key}")
+def deactivate_admin_trabajos_especiales_supplier_category2_rule(supplier_key: str, user: dict = Depends(require_admin)):
+    normalized_key = str(supplier_key or "").strip()
+    if not normalized_key:
+        raise HTTPException(status_code=400, detail="supplier_key is required")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    actor = normalize_non_empty_string((user or {}).get("username")) or normalize_non_empty_string((user or {}).get("email")) or "system"
+
+    result = db.supplierCategory2Rules.update_one(
+        {"supplierKey": normalized_key},
+        {"$set": {"isActive": False, "updatedAt": now_iso, "updatedBy": actor}},
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return {"ok": True, "supplierKey": normalized_key}
 
 
 @app.post("/api/admin/migrate/projectId")
@@ -5504,10 +8799,16 @@ def admin_cleanup_sap_iva_duplicates(
 
 
 @app.post("/api/admin/telegram/test")
-def admin_test_telegram(user: dict = Depends(require_admin)):
-    sent = send_telegram("✅ test telegram desde backend")
-    logger.info("Admin telegram test requested by %s sent=%s", user.get("username"), sent)
-    return {"sent": sent}
+def admin_test_telegram(message: str = "✅ test telegram desde backend", user: dict = Depends(require_admin)):
+    delivery = send_telegram_broadcast(message)
+    logger.info(
+        "Admin telegram test requested by %s sent=%s/%s failed=%s",
+        user.get("username"),
+        delivery.get("sent"),
+        delivery.get("total"),
+        delivery.get("failed"),
+    )
+    return {"ok": delivery.get("failed", 0) == 0, **delivery}
 
 
 # ---------- seed categories ----------
@@ -5567,8 +8868,13 @@ def seed(_: dict = Depends(require_admin)):
 # ---------- categories ----------
 @app.get("/api/categories")
 @app.get("/categories")
-def list_categories(active_only: bool = True, request: FastAPIRequest = None, _: dict = Depends(require_authenticated)):
+def list_categories(active_only: bool = True, request: FastAPIRequest = None, user: dict = Depends(require_authenticated)):
     active_project_id = get_active_project_id(request)
+    if not can_access_project(user, active_project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     q = {"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}
     if active_only:
         q["active"] = True
@@ -5595,7 +8901,7 @@ def list_categories(active_only: bool = True, request: FastAPIRequest = None, _:
             "displayLabel": f"{name} ({code})" if code and code != name else name,
         })
 
-    tx_query = {"projectId": active_project_id}
+    tx_query = with_legacy_project_filter({}, active_project_id)
     projection = {
         "categoryManualCode": 1,
         "categoryManualName": 1,
@@ -5705,9 +9011,14 @@ def list_vendors(
     category_id: str | None = None,
     include_sap: bool = True,
     request: FastAPIRequest = None,
-    _: dict = Depends(require_authenticated),
+    user: dict = Depends(require_authenticated),
 ):
     active_project_id = get_active_project_id(request)
+    if not can_access_project(user, active_project_id):
+        if is_viewer(user):
+            return []
+        raise HTTPException(status_code=403, detail="Project access denied")
+
     q = {"projectId": active_project_id, "active": True} if active_only else {"projectId": active_project_id}
     if category_id:
         q["category_ids"] = category_id
@@ -5715,7 +9026,62 @@ def list_vendors(
         q["$or"] = [{"source": {"$exists": False}}, {"source": "manual"}, {"source": "sap"}]
     else:
         q["$or"] = [{"source": {"$exists": False}}, {"source": "manual"}]
-    return [serialize(v) for v in db.vendors.find(q).sort("name", 1)]
+
+    vendors = [serialize(v) for v in db.vendors.find(q).sort("name", 1)]
+    if not include_sap or category_id:
+        return vendors
+
+    seen_keys = set()
+    for vendor in vendors:
+        source = str(vendor.get("source") or "").strip().lower()
+        card_code = str(vendor.get("supplierCardCode") or vendor.get("cardCode") or "").strip().upper()
+        name = str(vendor.get("name") or "").strip().lower()
+        if card_code:
+            seen_keys.add(f"card:{card_code}")
+        if name:
+            seen_keys.add(f"name:{name}")
+        if source == "sap-sbo":
+            project_key = str(vendor.get("projectId") or "").strip()
+            if card_code:
+                seen_keys.add(f"sap-sbo:{project_key}:card:{card_code}")
+            elif name:
+                seen_keys.add(f"sap-sbo:{project_key}:name:{name}")
+
+    projection = {"supplierName": 1, "sap.cardCode": 1, "sap.businessPartner": 1, "projectId": 1}
+    tx_query = with_legacy_project_filter({"source": "sap-sbo"}, active_project_id)
+    for tx in db.transactions.find(tx_query, projection):
+        project_id = str(tx.get("projectId") or "").strip()
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        card_code = str(sap_doc.get("cardCode") or "").strip()
+        supplier_name = str(tx.get("supplierName") or "").strip() or str(sap_doc.get("businessPartner") or "").strip()
+        if not supplier_name and not card_code:
+            continue
+
+        stable_key = card_code or supplier_name.lower()
+        seen_key = f"sap-sbo:{project_id}:{stable_key}"
+        if seen_key in seen_keys:
+            continue
+
+        vendors.append(
+            {
+                "id": f"sap-sbo:{project_id}:{stable_key}",
+                "projectId": project_id,
+                "name": supplier_name or card_code,
+                "cardCode": card_code or None,
+                "supplierCardCode": card_code or None,
+                "source": "sap-sbo",
+                "active": True,
+                "category_ids": [],
+            }
+        )
+        seen_keys.add(seen_key)
+        if card_code:
+            seen_keys.add(f"card:{card_code.upper()}")
+        if supplier_name:
+            seen_keys.add(f"name:{supplier_name.lower()}")
+
+    vendors.sort(key=lambda v: normalize_category_name(str(v.get("name") or "")))
+    return vendors
 
 
 @app.post("/vendors")
@@ -6168,11 +9534,28 @@ def list_transactions(
     q: str | None = None,
     page: int = 1,
     limit: int = 50,
-    _: dict = Depends(require_authenticated),
+    user: dict = Depends(require_authenticated),
 ):
     normalized_page = max(page, 1)
     resolved_project_id = resolve_project_id(project_id)
     logger.info("transactions projectId=%s resolved=%s", project_id, resolved_project_id)
+
+    if not can_access_project(user, resolved_project_id):
+        if is_viewer(user):
+            return {
+                "items": [],
+                "page": normalized_page,
+                "limit": min(max(limit, 1), 500),
+                "totalCount": 0,
+                "totals": {
+                    "expensesGross": 0.0,
+                    "expensesTax": 0.0,
+                    "expensesWithoutTax": 0.0,
+                    "incomeGross": 0.0,
+                    "net": 0.0,
+                },
+            }
+        raise HTTPException(status_code=403, detail="Project access denied")
     normalized_limit = min(max(limit, 1), 500)
     skip = (normalized_page - 1) * normalized_limit
     effective_date_from = from_date or date_from
@@ -6185,13 +9568,13 @@ def list_transactions(
         supplier_id=supplierId,
         date_from=effective_date_from,
         date_to=effective_date_to,
-        project_id=resolved_project_id,
+        project_id=None,
         origen=origen,
         source=source,
         source_db=sourceDb,
         search_query=q,
     )
-    match_query["projectId"] = resolved_project_id
+    match_query = with_legacy_project_filter(match_query, resolved_project_id)
 
     total_count = db.transactions.count_documents(match_query)
     totals = build_transaction_totals(match_query, search_query=q)
@@ -6218,24 +9601,45 @@ def list_transactions(
         for supplier in db.suppliers.find({"_id": {"$in": supplier_ids}}, {"name": 1, "cardCode": 1}):
             suppliers_by_id[str(supplier["_id"])] = supplier
 
+    supplier_rules = list(
+        db.supplierCategory2Rules.find(
+            {"isActive": {"$ne": False}},
+            {
+                "supplierKey": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "supplierName": 1,
+                "category2Id": 1,
+                "category2Name": 1,
+            },
+        )
+    )
+    supplier_rule_indexes = build_supplier_rule_indexes(supplier_rules)
+    supplier_rules_by_key = supplier_rule_indexes.get("by_key", {})
+
     items = []
     for tx in txs:
-        tx_doc = serialize_transaction_with_supplier(tx, suppliers_by_id)
+        tx_doc = serialize_transaction_with_supplier(
+            tx,
+            suppliers_by_id,
+            supplier_rules_by_key,
+            supplier_rule_indexes=supplier_rule_indexes,
+        )
 
-        tax_doc = tx_doc.get("tax") if isinstance(tx_doc.get("tax"), dict) else {}
-        subtotal = parse_optional_decimal(tax_doc.get("subtotal"))
-        iva = parse_optional_decimal(tax_doc.get("iva"))
-        total_factura = parse_optional_decimal(tax_doc.get("totalFactura"))
-
-        tx_doc["subtotal"] = subtotal if subtotal is not None else None
-        tx_doc["iva"] = iva if iva is not None else None
-        tx_doc["totalFactura"] = total_factura if total_factura is not None else None
+        subtotal, iva, total_factura = resolve_transaction_tax_components(tx_doc)
         amount = parse_optional_decimal(tx_doc.get("amount")) or 0
         sign = -1 if amount < 0 else 1
 
         tx_doc["subtotal"] = sign * subtotal if subtotal is not None else None
+        tx_doc["montoSinIva"] = tx_doc["subtotal"]
         tx_doc["iva"] = sign * iva if iva is not None else None
+        tx_doc["montoIva"] = tx_doc["iva"]
         tx_doc["totalFactura"] = sign * total_factura if total_factura is not None else None
+        tx_doc["tax"] = {
+            "subtotal": tx_doc["subtotal"],
+            "iva": tx_doc["iva"],
+            "totalFactura": tx_doc["totalFactura"],
+        }
         items.append(tx_doc)
 
     return {
@@ -6255,10 +9659,15 @@ def spend_by_category(
     include_iva: bool = False,
     projectId: str | None = None,
     project: str | None = None,
-    _: dict = Depends(require_authenticated),
+    user: dict = Depends(require_authenticated),
 ):
     active_project_id = resolve_project_id(projectId or project)
-    match = {"type": "EXPENSE", "projectId": active_project_id}
+    if not can_access_project(user, active_project_id):
+        if is_viewer(user):
+            return {"total_expenses": 0.0, "rows": []}
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    match = with_legacy_project_filter({"type": "EXPENSE"}, active_project_id)
     if vendor_id:
         match["vendor_id"] = vendor_id
     if date_from or date_to:
@@ -6268,16 +9677,108 @@ def spend_by_category(
         if date_to:
             match["date"]["$lte"] = date_to
 
-    transactions = list(db.transactions.find(match, {"category_id": 1, "amount": 1, "tax": 1}))
+    transactions = list(
+        db.transactions.find(
+            match,
+            {
+                "category_id": 1,
+                "categoryId": 1,
+                "categoryManualCode": 1,
+                "categoryManualName": 1,
+                "categoryHintCode": 1,
+                "categoryHintName": 1,
+                "categoryEffectiveCode": 1,
+                "categoryEffectiveName": 1,
+                "resolvedCategory2Id": 1,
+                "resolvedCategory2Name": 1,
+                "resolvedCategory2Source": 1,
+                "supplierName": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "sap": 1,
+                "amount": 1,
+                "tax": 1,
+            },
+        )
+    )
+
+    supplier_rules = list(
+        db.supplierCategory2Rules.find(
+            {"isActive": {"$ne": False}},
+            {
+                "supplierKey": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "supplierName": 1,
+                "category2Id": 1,
+                "category2Name": 1,
+            },
+        )
+    )
+    supplier_rule_indexes = build_supplier_rule_indexes(supplier_rules)
+    supplier_rules_by_key = supplier_rule_indexes.get("by_key", {})
 
     totals_by_category = {}
     for tx in transactions:
-        category_id = tx.get("category_id")
+        category_manual_code = normalize_non_empty_string(tx.get("categoryManualCode"))
+        category_manual_name = normalize_non_empty_string(tx.get("categoryManualName"))
+        category_hint_code = normalize_non_empty_string(tx.get("categoryHintCode"))
+        category_hint_name = normalize_non_empty_string(tx.get("categoryHintName"))
+        effective = build_effective_category_fields(
+            category_manual_code,
+            category_manual_name,
+            category_hint_code,
+            category_hint_name,
+        )
+        category_effective_code = normalize_non_empty_string(tx.get("categoryEffectiveCode")) or effective.get("categoryEffectiveCode")
+        category_effective_name = normalize_non_empty_string(tx.get("categoryEffectiveName")) or effective.get("categoryEffectiveName")
+        if category_effective_code and not normalize_non_empty_string(tx.get("categoryEffectiveCode")):
+            tx["categoryEffectiveCode"] = category_effective_code
+        if category_effective_name and not normalize_non_empty_string(tx.get("categoryEffectiveName")):
+            tx["categoryEffectiveName"] = category_effective_name
+
+        resolved_category2_id = normalize_non_empty_string(tx.get("resolvedCategory2Id"))
+        resolved_category2_name = normalize_non_empty_string(tx.get("resolvedCategory2Name"))
+        resolved_category2_source = normalize_non_empty_string(tx.get("resolvedCategory2Source"))
+
+        if not resolved_category2_id and not resolved_category2_name:
+            tx.update(
+                resolve_transaction_category2(
+                    tx,
+                    supplier_rules_by_key=supplier_rules_by_key,
+                    supplier_rule_indexes=supplier_rule_indexes,
+                )
+            )
+            resolved_category2_id = normalize_non_empty_string(tx.get("resolvedCategory2Id"))
+            resolved_category2_name = normalize_non_empty_string(tx.get("resolvedCategory2Name"))
+            resolved_category2_source = normalize_non_empty_string(tx.get("resolvedCategory2Source"))
+        category_key = resolved_category2_id or resolved_category2_name or UNRESOLVED_CATEGORY2_ID
+        category_display_name = resolved_category2_name or UNRESOLVED_CATEGORY2_NAME
+
         amount_value = float(tx.get("amount") or 0)
         movement_amount = amount_value if include_iva else compute_monto_sin_iva(tx)
-        totals_by_category[category_id] = round(totals_by_category.get(category_id, 0.0) + movement_amount, 2)
+        if category_key not in totals_by_category:
+            totals_by_category[category_key] = {
+                "amount": 0.0,
+                "display_name": category_display_name,
+                "resolved_category2_source": resolved_category2_source,
+            }
 
-    rows = [{"_id": category_id, "amount": amount} for category_id, amount in totals_by_category.items()]
+        totals_by_category[category_key]["amount"] = round(totals_by_category[category_key]["amount"] + movement_amount, 2)
+        if not totals_by_category[category_key].get("display_name") and category_display_name:
+            totals_by_category[category_key]["display_name"] = category_display_name
+        if not totals_by_category[category_key].get("resolved_category2_source") and resolved_category2_source:
+            totals_by_category[category_key]["resolved_category2_source"] = resolved_category2_source
+
+    rows = [
+        {
+            "_id": category_id,
+            "amount": values.get("amount", 0.0),
+            "display_name": values.get("display_name"),
+            "resolved_category2_source": values.get("resolved_category2_source"),
+        }
+        for category_id, values in totals_by_category.items()
+    ]
     rows.sort(key=lambda row: row["amount"], reverse=True)
     total = round(sum(float(r["amount"]) for r in rows), 2) if rows else 0.0
 
@@ -6320,9 +9821,10 @@ def spend_by_category(
         out.append(
             {
                 "category_id": cid,
-                "category_name": cats.get(cid, "(Sin categoría)"),
+                "category_name": r.get("display_name") or cats.get(cid, "(Sin categoría)"),
                 "amount": round(amt, 2),
                 "percent": round((amt / total * 100.0), 2) if total > 0 else 0.0,
+                "resolvedCategory2Source": r.get("resolved_category2_source"),
             }
         )
     return {"total_expenses": round(total, 2), "rows": out}
@@ -6331,3 +9833,4 @@ def spend_by_category(
 if os.getenv("SKIP_STARTUP_INIT") != "1":
     ensure_indexes()
     ensure_default_users()
+    ensure_telegram_admin_user()

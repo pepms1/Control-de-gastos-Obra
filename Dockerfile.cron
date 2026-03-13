@@ -1,9 +1,15 @@
 FROM python:3.11-slim
+
 WORKDIR /app
 
-COPY api/requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
 
-COPY scripts/render_cron_trigger.py scripts/render_cron_trigger.py
+COPY api/requirements.txt /app/api/requirements.txt
+RUN pip install --no-cache-dir -r /app/api/requirements.txt
 
-CMD ["python","-u","scripts/render_cron_trigger.py"]
+COPY api /app/api
+COPY scripts /app/scripts
+
+CMD ["python", "scripts/render_cron_import_sbo_v2.py"]

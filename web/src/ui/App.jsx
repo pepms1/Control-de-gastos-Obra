@@ -1,15 +1,60 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
-import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
+import { isSapSboTransaction } from '../transactions/helpers.js';
+import { ImportSapScreen, SuspiciousProjectResolutionScreen } from './ImportAndAdminScreens.jsx';
+import { SearchTransactionsV2 } from './SearchTransactionsV2.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
+import { isAdmin as isAdminRole, isSuperAdmin, isViewer, normalizeRole } from './roles.js';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
-const HACK_OVERLAY_DURATION_MS = 8000;
 
 const moneyFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
+
+const CATEGORY2_UNCLASSIFIED_ID = 'trabajos_especiales_unclassified';
+const CATEGORY2_UNCLASSIFIED_NAME = 'Trabajos Especiales sin clasificar';
+
+function resolveTransactionCategory2(transaction, catMap = {}) {
+  const resolvedName = String(transaction?.resolvedCategory2Name || '').trim();
+  const resolvedId = String(transaction?.resolvedCategory2Id || '').trim();
+  if (resolvedName || resolvedId) {
+    return {
+      id: resolvedId || resolvedName,
+      name: resolvedName || catMap[resolvedId] || resolvedId,
+    };
+  }
+
+  const fallbackName = String(
+    transaction?.categoryEffectiveName
+    || transaction?.categoryManualName
+    || transaction?.categoryName
+    || transaction?.category_hint_name
+    || transaction?.category
+    || '',
+  ).trim();
+  const fallbackId = String(
+    transaction?.categoryEffectiveCode
+    || transaction?.categoryCode
+    || transaction?.categoryHintCode
+    || transaction?.category_id
+    || transaction?.categoryId
+    || '',
+  ).trim();
+
+  if (fallbackName || fallbackId) {
+    return {
+      id: fallbackId || fallbackName,
+      name: fallbackName || catMap[fallbackId] || fallbackId,
+    };
+  }
+
+  return {
+    id: CATEGORY2_UNCLASSIFIED_ID,
+    name: CATEGORY2_UNCLASSIFIED_NAME,
+  };
+}
 
 function formatMoney(value) {
   const amount = Number(value);
@@ -22,83 +67,244 @@ function parseMoneyInput(value) {
   return Number(value.replace(/,/g, '').trim());
 }
 
-function getCategoryHintName(transaction) {
-  return (
-    transaction?.categoryHintName
-    || transaction?.category_hint_name
-    || transaction?.CategoryHintName
-    || ''
-  ).trim();
-}
-
-function getCategoryHintCode(transaction) {
-  return (
-    transaction?.categoryHintCode
-    || transaction?.category_hint_code
-    || transaction?.CategoryHintCode
-    || ''
-  ).trim();
-}
-
-function getCategory2Label(transaction) {
-  return (
-    transaction?.categoryManualName
-    || transaction?.categoryManualCode
-    || ''
-  ).trim();
-}
-
-function getSapCategoryLabel(transaction) {
-  return (
-    transaction?.categoryHintName
-    || transaction?.category_hint_name
-    || transaction?.categoryHintCode
-    || transaction?.category_hint_code
-    || ''
-  ).trim();
-}
-
 function getTransactionCategoryLabel(transaction, catMap) {
-  const effectiveName = (transaction?.categoryEffectiveName || '').trim();
-  if (effectiveName) return effectiveName;
-
-  const effectiveCode = (transaction?.categoryEffectiveCode || '').trim();
-  if (effectiveCode) {
-    const mappedCategory = (catMap[effectiveCode] || '').trim();
-    if (mappedCategory) return mappedCategory;
-    return effectiveCode;
-  }
-
-  const legacyCategory = (transaction?.category_name || transaction?.category || '').trim();
-  if (legacyCategory) return legacyCategory;
-
-  const hintName = getCategoryHintName(transaction);
-  if (hintName) return hintName;
-
-  return 'Sin categoría';
+  const category2 = resolveTransactionCategory2(transaction, catMap);
+  return category2.name || 'Sin categoría 2';
 }
 
-function normalizeSlug(value) {
-  return String(value || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^a-z0-9-]/g, '');
+function getTransactionTotalValue(transaction) {
+  if (Number.isFinite(transaction?.amount)) return transaction.amount;
+  if (Number.isFinite(transaction?.totalFactura)) return transaction.totalFactura;
+  if (Number.isFinite(transaction?.subtotal)) return transaction.subtotal;
+  return 0;
 }
 
-function normalizeS3Prefix(value, slug = '') {
-  let normalized = String(value || '').trim();
-  const cleanSlug = normalizeSlug(slug);
-  if (!normalized) return normalized;
-  if (cleanSlug && (normalized === cleanSlug || normalized === `${cleanSlug}/`)) {
-    normalized = `exports/${cleanSlug}`;
-  }
-  normalized = normalized.replace(/\/+$/, '');
-  return normalized;
+function matchesDateRange(value, from, to) {
+  const date = String(value || '').slice(0, 10);
+  if (!date) return false;
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
 }
 
 function isMongoObjectId(value) {
   return /^[a-fA-F0-9]{24}$/.test(String(value || '').trim());
+}
+
+function getProjectDisplayName(project) {
+  return project?.displayName || project?.name || 'Sin nombre';
+}
+
+function getAdminPersonalizedProjects(projects, session) {
+  const normalizedRole = normalizeRole(session?.role);
+  if (!isAdminRole(normalizedRole)) return Array.isArray(projects) ? projects : [];
+
+  const hiddenIds = new Set(
+    Array.isArray(session?.uiPrefs?.hiddenProjectIds)
+      ? session.uiPrefs.hiddenProjectIds.map((id) => String(id || '').trim()).filter(Boolean)
+      : [],
+  );
+  return (Array.isArray(projects) ? projects : []).filter((project) => !hiddenIds.has(String(project?._id || '')));
+}
+
+function formatCurrency(value) {
+  return `$${formatMoney(value || 0)}`;
+}
+
+function getTransactionSourceLabel(transaction) {
+  return `${transaction?.sapBadgeLabel || transaction?.source || '—'} ${transaction?.sourceSbo || ''}`.trim();
+}
+
+function normalizeSearchText(value) {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function tokenizeSearchQuery(query) {
+  return normalizeSearchText(query)
+    .split(' ')
+    .filter(Boolean);
+}
+
+function buildTransactionSearchHaystack(transaction, catMap) {
+  const category2 = resolveTransactionCategory2(transaction, catMap);
+  const sap = transaction?.sap || {};
+  const sapMeta = transaction?.sapMeta || {};
+  const supplierIdentity = resolveTransactionSupplierIdentity(transaction);
+  const resolvedCategory2Name = String(
+    transaction?.resolvedCategory2Name
+    || transaction?.resolved_category2_name
+    || '',
+  ).trim();
+  const resolvedCategory2Id = String(
+    transaction?.resolvedCategory2Id
+    || transaction?.resolved_category2_id
+    || '',
+  ).trim();
+  const fields = [
+    transaction?.description,
+    transaction?.concept,
+    transaction?.concepto,
+    transaction?.descripcion,
+    transaction?.supplierName,
+    transaction?.supplierId,
+    transaction?.vendor_id,
+    transaction?.proveedor,
+    transaction?.proveedorNombre,
+    supplierIdentity?.name,
+    supplierIdentity?.supplierId,
+    supplierIdentity?.cardCode,
+    supplierIdentity?.businessPartner,
+    category2?.name,
+    category2?.id,
+    resolvedCategory2Name,
+    resolvedCategory2Id,
+    transaction?.categoryName,
+    transaction?.categoryCode,
+    transaction?.categoryHintName,
+    transaction?.categoryHintCode,
+    transaction?.categoryEffectiveName,
+    transaction?.categoryEffectiveCode,
+    transaction?.categoryManualName,
+    transaction?.categoryManualCode,
+    transaction?.category_hint_name,
+    transaction?.category_hint_code,
+    transaction?.category,
+    transaction?.category_id,
+    transaction?.categoryId,
+    transaction?.projectDisplayName,
+    transaction?.projectName,
+    transaction?.projectSlug,
+    transaction?.sourceSbo,
+    transaction?.sourceDb,
+    transaction?.source,
+    sapMeta?.businessPartner,
+    sap?.businessPartner,
+    sapMeta?.cardCode,
+    sap?.cardCode,
+    sapMeta?.invoiceNum,
+    sap?.invoiceNum,
+    sapMeta?.paymentNum,
+    sap?.paymentNum,
+    sapMeta?.externalDocNum,
+    sap?.externalDocNum,
+    sap?.paymentDocEntry,
+    sap?.invoiceDocEntry,
+    sapMeta?.sourceSbo,
+    sapMeta?.sourceDb,
+  ];
+  return normalizeSearchText(fields.filter(Boolean).join(' '));
+}
+
+function resolveTransactionSupplierIdentity(transaction) {
+  const sap = transaction?.sap || {};
+  const supplierId = String(transaction?.supplierId || transaction?.vendor_id || '').trim();
+  const supplierName = String(
+    transaction?.supplierName
+    || transaction?.proveedorNombre
+    || sap?.businessPartner
+    || '',
+  ).trim();
+  const cardCode = String(transaction?.supplierCardCode || sap?.cardCode || '').trim();
+  const businessPartner = String(sap?.businessPartner || transaction?.businessPartner || '').trim();
+
+  if (supplierId) {
+    return {
+      key: `id:${supplierId}`,
+      supplierId,
+      name: supplierName || supplierId,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  if (businessPartner && cardCode) {
+    return {
+      key: `bpcc:${normalizeSearchText(businessPartner)}|${normalizeSearchText(cardCode)}`,
+      supplierId: '',
+      name: supplierName || businessPartner,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  if (businessPartner) {
+    return {
+      key: `bp:${normalizeSearchText(businessPartner)}`,
+      supplierId: '',
+      name: supplierName || businessPartner,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  if (cardCode) {
+    return {
+      key: `card:${normalizeSearchText(cardCode)}`,
+      supplierId: '',
+      name: supplierName || cardCode,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  if (supplierName) {
+    return {
+      key: `name:${normalizeSearchText(supplierName)}`,
+      supplierId: '',
+      name: supplierName,
+      cardCode,
+      businessPartner,
+    };
+  }
+
+  return {
+    key: '',
+    supplierId: '',
+    name: '',
+    cardCode: '',
+    businessPartner: '',
+  };
+}
+
+function decodeSupplierFilterSearchTerm(filterValue) {
+  const raw = String(filterValue || '').trim();
+  if (!raw || raw === 'ALL' || raw.startsWith('id:')) return '';
+  const normalized = raw
+    .replace(/^bpcc:/, '')
+    .replace(/^bp:/, '')
+    .replace(/^card:/, '')
+    .replace(/^name:/, '')
+    .replace('|', ' ')
+    .trim();
+  return normalized;
+}
+
+function matchesTransactionSearch(transaction, query, catMap) {
+  const tokens = tokenizeSearchQuery(query);
+  if (!tokens.length) return true;
+  const haystack = buildTransactionSearchHaystack(transaction, catMap);
+  return tokens.every((token) => haystack.includes(token));
+}
+
+function SourceBadges({ transaction }) {
+  const sourceLabel = transaction?.sapBadgeLabel || 'SAP/SBO';
+  const sourceSbo = String(transaction?.sourceSbo || '').trim();
+
+  if (isSapSboTransaction(transaction)) {
+    return (
+      <span className="badge-row">
+        <span className="badge badge-source">{sourceLabel}</span>
+        {sourceSbo && <span className="badge badge-sbo">{sourceSbo}</span>}
+      </span>
+    );
+  }
+
+  return <span className="small">{transaction?.source || '—'}</span>;
 }
 
 /* ================= NAV ================= */
@@ -115,12 +321,20 @@ function Nav({
   selectedProjectId,
   onProjectChange,
 }) {
-  const canSeeSettings = role !== 'VIEWER';
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const normalizedRole = normalizeRole(role);
+  const canSeeSettings = !isViewer(normalizedRole);
+  const canSeeTransactionsAdmin = isSuperAdmin(normalizedRole);
+  const showTransactionsAdminNav = false;
   const items = [
     ['dashboard', 'Dashboard', true],
-    ['transactions', 'Movimientos', true],
     ['search', 'Buscar', true],
-    ['retro', 'Vista Retro', true],
+    ['transactions', 'Editar movimientos', canSeeTransactionsAdmin && showTransactionsAdminNav],
+    ['settings', 'Ajustes', canSeeSettings],
+  ];
+  const mobileBottomItems = [
+    ['dashboard', 'Dashboard', true],
+    ['search', 'Buscar', true],
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
@@ -130,62 +344,100 @@ function Nav({
     padding: 0,
     cursor: 'pointer',
     textAlign: 'left',
-    font: 'inherit',
+    fontFamily: 'inherit',
     color: 'inherit',
     opacity: active ? 1 : 0.85,
     fontWeight: active ? 800 : 600,
   });
 
   return (
-    <div className="nav">
-      <div className="nav-header">
-        <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="nav-logo" />
-        <div className="nav-title-wrap">
-          <div className="nav-title">Grupo MDI</div>
-          <div className="nav-subtitle">Control de Gastos de Obra</div>
+    <>
+      <div className="nav">
+        <div className="nav-header">
+          <img
+            src="/LOGO%20GRUPO%20MDI.jpg"
+            alt="Logo Grupo MDI"
+            className="nav-logo"
+            onError={(event) => {
+              event.currentTarget.onerror = null;
+              event.currentTarget.src = '/logo-grupo-mdi.svg';
+            }}
+          />
+          <div className="nav-title-wrap">
+            <div className="nav-title">Control de Gastos V2</div>
+            <div className="nav-subtitle">Grupo MDI</div>
+          </div>
+
+          <button className="secondary nav-profile-trigger" type="button" onClick={() => setProfileMenuOpen((prev) => !prev)}>
+            ☰
+          </button>
         </div>
-      </div>
 
-      <div className="nav-items">
-        <div className="small" style={{ marginBottom: 6 }}>Proyecto</div>
-        <select value={selectedProjectId} onChange={(e) => onProjectChange(e.target.value)} disabled={!projects.length}>
-          {!projects.length && <option value="">Sin proyectos</option>}
-          {projects.map((project) => (
-            <option key={project._id} value={project._id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
+        <div className="nav-items">
+          <div className="small nav-project-label">Proyecto activo</div>
+          <select value={selectedProjectId} onChange={(e) => onProjectChange(e.target.value)} disabled={!projects.length}>
+            {!projects.length && <option value="">Sin proyectos</option>}
+            {projects.map((project) => (
+              <option key={project._id} value={project._id}>
+                {getProjectDisplayName(project)}
+              </option>
+            ))}
+          </select>
 
-        {items
-          .filter(([, , show]) => show)
-          .map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              className={tab === k ? 'active' : ''}
-              onClick={() => setTab(k)}
-              style={linkStyle(tab === k)}
-            >
-              {label}
+          <div className="nav-links-desktop">
+            {items
+              .filter(([, , show]) => show)
+              .map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  className={tab === k ? 'active' : ''}
+                  onClick={() => setTab(k)}
+                  style={linkStyle(tab === k)}
+                >
+                  {label}
+                </button>
+              ))}
+          </div>
+        </div>
+
+        <div className={`nav-user-actions ${profileMenuOpen ? 'open' : ''}`}>
+          <button className="secondary theme-toggle" type="button" onClick={onToggleTheme}>
+            {isDarkMode ? '☀️ Modo día' : '🌙 Modo noche'}
+          </button>
+
+          <div className="small nav-user">
+            {displayName || username} ({role})
+          </div>
+
+          {canSeeSettings && (
+            <button className="secondary" type="button" onClick={() => { setTab('settings'); setProfileMenuOpen(false); }}>
+              Ajustes
             </button>
-          ))}
-      </div>
+          )}
 
-      <div className="nav-user-actions">
-        <button className="secondary theme-toggle" type="button" onClick={onToggleTheme}>
-          {isDarkMode ? '☀️ Modo día' : '🌙 Modo noche'}
-        </button>
-
-        <div className="small nav-user">
-          {displayName || username} ({role})
+          <button className="secondary" type="button" onClick={onLogout}>
+            Salir
+          </button>
         </div>
-
-        <button className="secondary" type="button" onClick={onLogout}>
-          Salir
-        </button>
       </div>
-    </div>
+
+      <div className="mobile-bottom-nav">
+        {mobileBottomItems.filter(([, , show]) => show).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            className={tab === key ? 'active' : ''}
+            onClick={() => {
+              setProfileMenuOpen(false);
+              setTab(key);
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -215,7 +467,15 @@ function Login({ onLogin }) {
     <div className="container login-container">
       <div className="card">
         <div className="login-brand">
-          <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="login-brand-image" />
+          <img
+            src="/LOGO%20GRUPO%20MDI.jpg"
+            alt="Logo Grupo MDI"
+            className="login-brand-image"
+            onError={(event) => {
+              event.currentTarget.onerror = null;
+              event.currentTarget.src = '/logo-grupo-mdi.svg';
+            }}
+          />
           <h1>Grupo MDI</h1>
           <p>control de obra</p>
         </div>
@@ -240,11 +500,13 @@ function Login({ onLogin }) {
 /* ================= APP ================= */
 export default function App() {
   const [tab, setTab] = useState('dashboard');
+  const [dashboardType, setDashboardType] = useState('expenses');
   const [cats, setCats] = useState([]);
   const [vendors, setVendors] = useState([]);
   const [toast, setToast] = useState('');
   const [session, setSession] = useState(getSession());
   const [projects, setProjects] = useState([]);
+  const personalizedProjects = useMemo(() => getAdminPersonalizedProjects(projects, session), [projects, session]);
   const [selectedProjectId, setSelectedProjectId] = useState(localStorage.getItem(SELECTED_PROJECT_KEY) || '');
   const [dataVersion, setDataVersion] = useState(0);
   const [themePreference, setThemePreference] = useState(() => {
@@ -252,24 +514,13 @@ export default function App() {
     if (storedPreference === 'dark') return 'dark';
     return 'light';
   });
-  const [showHackOverlay, setShowHackOverlay] = useState(false);
-
-  const isAdmin = session.role === 'ADMIN';
+  const userRole = normalizeRole(session.role);
+  const isSuperAdminUser = isSuperAdmin(userRole);
+  const isViewerUser = isViewer(userRole);
+  const isAdminUser = isAdminRole(userRole);
+  const canUseAdminPreferences = isAdminUser || isSuperAdminUser;
+  const isAdmin = isSuperAdminUser;
   const isDarkMode = themePreference === 'dark';
-
-  useEffect(() => {
-    if (!session.token) {
-      setShowHackOverlay(false);
-      return;
-    }
-
-    setShowHackOverlay(true);
-    const timeoutId = window.setTimeout(() => {
-      setShowHackOverlay(false);
-    }, HACK_OVERLAY_DURATION_MS);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [session.token]);
 
   useEffect(() => {
     document.body.classList.toggle('theme-dark', isDarkMode);
@@ -288,16 +539,20 @@ export default function App() {
     const list = Array.isArray(data) ? data : [];
     setProjects(list);
 
-    if (!list.length) {
+    const selectableList = getAdminPersonalizedProjects(list, session);
+
+    if (!selectableList.length) {
       setSelectedProjectId('');
       localStorage.removeItem(SELECTED_PROJECT_KEY);
       return;
     }
 
     const currentProjectId = localStorage.getItem(SELECTED_PROJECT_KEY) || '';
-    const exists = list.some((project) => project._id === currentProjectId);
-    const fallbackProjectId = list[0]?._id || '';
-    const nextProjectId = exists ? currentProjectId : fallbackProjectId;
+    const preferredProjectId = String(session?.uiPrefs?.defaultProjectId || '').trim();
+    const exists = selectableList.some((project) => project._id === currentProjectId);
+    const preferredExists = selectableList.some((project) => String(project?._id || '') === preferredProjectId);
+    const fallbackProjectId = selectableList[0]?._id || '';
+    const nextProjectId = exists ? currentProjectId : (preferredExists ? preferredProjectId : fallbackProjectId);
 
     setSelectedProjectId(nextProjectId);
     if (nextProjectId) localStorage.setItem(SELECTED_PROJECT_KEY, nextProjectId);
@@ -318,12 +573,16 @@ export default function App() {
     if (!session.token) return;
 
     api.me()
-      .then((me) =>
-        setSession((prev) => ({
-          ...prev,
-          ...me, // conserva token
-        }))
-      )
+      .then((me) => {
+        const nextSession = {
+          ...getSession(),
+          ...me,
+          role: normalizeRole(me?.role || session.role),
+          displayName: me?.name || me?.displayName || session.displayName,
+        };
+        saveSession(nextSession);
+        setSession(nextSession);
+      })
       .catch(() => {
         clearSession();
         setSession(getSession());
@@ -362,34 +621,58 @@ export default function App() {
     setTab('dashboard');
   }
 
+  useEffect(() => {
+    if (!session.token) return;
+    const current = String(selectedProjectId || '');
+    const exists = personalizedProjects.some((project) => String(project?._id || '') === current);
+    if (exists) return;
+    const fallbackProjectId = personalizedProjects[0]?._id || '';
+    setSelectedProjectId(fallbackProjectId);
+    if (fallbackProjectId) localStorage.setItem(SELECTED_PROJECT_KEY, fallbackProjectId);
+    else localStorage.removeItem(SELECTED_PROJECT_KEY);
+  }, [session.token, personalizedProjects, selectedProjectId]);
+
+  useEffect(() => {
+    if (!isSuperAdminUser && tab === 'transactions') {
+      setTab('search');
+    }
+    if (isViewerUser && tab === 'settings') {
+      setTab('dashboard');
+    }
+  }, [isSuperAdminUser, isViewerUser, tab]);
+
   if (!session.token) return <Login onLogin={setSession} />;
 
   return (
     <>
-      {showHackOverlay && <HackIntroOverlay />}
-
       <Nav
         tab={tab}
         setTab={setTab}
-        role={session.role}
+        role={userRole}
         username={session.username}
         displayName={session.displayName}
         onLogout={logout}
         isDarkMode={isDarkMode}
         onToggleTheme={toggleTheme}
-        projects={projects}
+        projects={personalizedProjects}
         selectedProjectId={selectedProjectId}
         onProjectChange={handleProjectChange}
       />
 
-      <div className="container grid" style={{ gap: 14 }}>
+      <div className="container app-content grid" style={{ gap: 14 }}>
         {toast && <div className="card">{toast}</div>}
 
         {tab === 'dashboard' && (
-          <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={dataVersion} />
+          <DashboardSection
+            dashboardType={dashboardType}
+            onDashboardTypeChange={setDashboardType}
+            isAdmin={isAdmin}
+            selectedProjectId={selectedProjectId}
+            refreshKey={dataVersion}
+          />
         )}
 
-        {tab === 'transactions' && (
+        {tab === 'transactions' && isSuperAdminUser && (
           <Transactions
             isAdmin={isAdmin}
             cats={cats}
@@ -401,24 +684,27 @@ export default function App() {
         )}
 
         {tab === 'search' && (
-          <SearchTransactions
+          <SearchTransactionsV2
             cats={cats}
             vendors={vendors}
-            projects={projects}
             selectedProjectId={selectedProjectId}
           />
         )}
 
-        {tab === 'retro' && <RetroConsole cats={cats} vendors={vendors} />}
-
-        {tab === 'settings' && (
+        {tab === 'settings' && !isViewerUser && (
           <Settings
             isAdmin={isAdmin}
+            isSuperAdmin={isSuperAdminUser}
             cats={cats}
             vendors={vendors}
-            projects={projects}
+            projects={personalizedProjects}
+            allProjects={projects}
+            session={session}
+            canUseAdminPreferences={canUseAdminPreferences}
             selectedProjectId={selectedProjectId}
             onProjectCreated={loadProjects}
+            onSessionUpdated={setSession}
+            onSelectedProjectSaved={setSelectedProjectId}
             onCatalogChanged={async () => {
               await refreshCatalog();
               setToast('Catálogo actualizado');
@@ -430,171 +716,35 @@ export default function App() {
   );
 }
 
-function HackIntroOverlay() {
-  const lines = [
-    'Microsoft(R) Windows DOS Session',
-    'Copyright (C) Microsoft Corp 1981-1998.',
-    '',
-    'C:\\USERS\\OBRA> net user /active:1',
-    'Escalando privilegios...',
-    'Acceso total concedido.',
-    '',
-    'C:\\USERS\\OBRA> echo hackeado por José Luis Ortiz',
-    'hackeado por José Luis Ortiz',
-    '',
-    'C:\\USERS\\OBRA> exit',
-  ];
-
-  return (
-    <div className="hack-overlay" role="status" aria-live="assertive" aria-label="Animación retro de bienvenida">
-      <div className="hack-window">
-        <div className="hack-window-title">C:\\WINDOWS\\system32\\cmd.exe</div>
-        <div className="hack-terminal">
-          {lines.map((line, index) => (
-            <div key={`${line}-${index}`} className="hack-line" style={{ animationDelay: `${index * 0.2}s` }}>
-              {line || '\u00A0'}
-            </div>
-          ))}
-          <span className="hack-cursor" aria-hidden="true">_</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RetroConsole({ cats, vendors }) {
-  const [command, setCommand] = useState('');
-  const [logs, setLogs] = useState([
-    'MDI Retro v0.1',
-    'Escribe un comando numérico y presiona Enter.',
-    '7 para ayuda rápida.',
-  ]);
-
-  const print = (...lines) => {
-    setLogs((prev) => [...prev, ...lines]);
-  };
-
-  function runRetroCommand(rawCommand) {
-    const clean = rawCommand.trim();
-    if (!clean) return;
-
-    print(`C:\\OBRA> ${clean}`);
-    const [option, ...rest] = clean.split(' ');
-    const term = rest.join(' ').trim().toLowerCase();
-
-    if (option === '1') {
-      if (!vendors.length) return print('No hay proveedores cargados.');
-      return print(
-        `Proveedores (${vendors.length}):`,
-        ...vendors.slice(0, 50).map((vendor, idx) => `${idx + 1}. ${vendor.name || 'Sin nombre'}`),
-        vendors.length > 50 ? '...resultado truncado a 50 filas' : 'Fin de lista.',
-      );
-    }
-
-    if (option === '2') {
-      if (!cats.length) return print('No hay categorías cargadas.');
-      return print(
-        `Categorías (${cats.length}):`,
-        ...cats.slice(0, 50).map((category, idx) => `${idx + 1}. ${category.displayLabel || category.name || 'Sin nombre'}`),
-        cats.length > 50 ? '...resultado truncado a 50 filas' : 'Fin de lista.',
-      );
-    }
-
-    if (option === '3') {
-      if (!term) return print('Uso: 3 <texto>. Ejemplo: 3 concreto');
-      const matches = vendors.filter((vendor) => String(vendor.name || '').toLowerCase().includes(term));
-      if (!matches.length) return print('Sin resultados de proveedores.');
-      return print(
-        `Proveedores que contienen "${term}" (${matches.length}):`,
-        ...matches.slice(0, 30).map((vendor, idx) => `${idx + 1}. ${vendor.name || 'Sin nombre'}`),
-      );
-    }
-
-    if (option === '4') {
-      if (!term) return print('Uso: 4 <texto>. Ejemplo: 4 acero');
-      const matches = cats.filter((category) => {
-        const label = `${category.displayLabel || ''} ${category.name || ''}`.toLowerCase();
-        return label.includes(term);
-      });
-      if (!matches.length) return print('Sin resultados de categorías.');
-      return print(
-        `Categorías que contienen "${term}" (${matches.length}):`,
-        ...matches.slice(0, 30).map((category, idx) => `${idx + 1}. ${category.displayLabel || category.name || 'Sin nombre'}`),
-      );
-    }
-
-    if (option === '5') {
-      setLogs((prev) => prev.slice(0, 3));
-      return;
-    }
-
-    if (option === '6') {
-      return print(`Estado: ${vendors.length} proveedores | ${cats.length} categorías`);
-    }
-
-    if (option === '7' || option.toLowerCase() === 'help') {
-      return print(
-        'Comandos disponibles:',
-        '1 = Listar proveedores',
-        '2 = Listar categorías',
-        '3 <texto> = Buscar proveedor',
-        '4 <texto> = Buscar categoría',
-        '5 = Limpiar consola',
-        '6 = Resumen rápido',
-        '7 o HELP = Ayuda',
-      );
-    }
-
-    return print('Comando no reconocido. Usa 7 para ver las opciones.');
-  }
-
-  function submitCommand(e) {
-    e.preventDefault();
-    runRetroCommand(command);
-    setCommand('');
-  }
-
-  return (
-    <div className="card retro-console-card">
-      <h2 style={{ marginTop: 0 }}>Vista Retro</h2>
-      <div className="small">Modo consola para consultar catálogo con comandos numéricos.</div>
-
-      <div className="retro-help-grid">
-        <span>1 proveedores</span>
-        <span>2 categorías</span>
-        <span>3 &lt;texto&gt; proveedor</span>
-        <span>4 &lt;texto&gt; categoría</span>
-        <span>5 limpiar</span>
-        <span>6 resumen</span>
-      </div>
-
-      <div className="retro-screen" role="log" aria-live="polite">
-        {logs.map((line, idx) => (
-          <div key={`${line}-${idx}`}>{line}</div>
-        ))}
-      </div>
-
-      <form className="retro-form" onSubmit={submitCommand}>
-        <span className="retro-prompt">C:\\OBRA&gt;</span>
-        <input
-          className="retro-input"
-          value={command}
-          onChange={(e) => setCommand(e.target.value)}
-          placeholder="Ej. 3 cemento"
-          aria-label="Comando retro"
-        />
-        <button type="submit">Ejecutar</button>
-      </form>
-    </div>
-  );
-}
-
-function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatalogChanged, onProjectCreated }) {
+function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects, session, canUseAdminPreferences, selectedProjectId, onCatalogChanged, onProjectCreated, onSessionUpdated, onSelectedProjectSaved }) {
   const [section, setSection] = useState('catalog');
 
   return (
     <div className="grid" style={{ gap: 14 }}>
       <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        {canUseAdminPreferences && (
+          <button type="button" className={section === 'my-project-visibility' ? '' : 'secondary'} onClick={() => setSection('my-project-visibility')}>
+            Mi visualización de proyectos
+          </button>
+        )}
+        {isSuperAdmin && (
+          <button
+            type="button"
+            className={section === 'users-access' ? '' : 'secondary'}
+            onClick={() => setSection('users-access')}
+          >
+            Usuarios y accesos
+          </button>
+        )}
+        {isSuperAdmin && (
+          <button
+            type="button"
+            className={section === 'projects-visibility' ? '' : 'secondary'}
+            onClick={() => setSection('projects-visibility')}
+          >
+            Visibilidad de proyectos
+          </button>
+        )}
         <button type="button" className={section === 'catalog' ? '' : 'secondary'} onClick={() => setSection('catalog')}>
           Catálogo
         </button>
@@ -602,8 +752,8 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
           type="button"
           className={section === 'import-sap' ? '' : 'secondary'}
           onClick={() => setSection('import-sap')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+          disabled={!isSuperAdmin}
+          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
         >
           Subir CSV
         </button>
@@ -611,94 +761,892 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
           type="button"
           className={section === 'sap-latest' ? '' : 'secondary'}
           onClick={() => setSection('sap-latest')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+          disabled={!isSuperAdmin}
+          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
         >
           SAP Import
         </button>
-        <button
-          type="button"
-          className={section === 'supplier-category2' ? '' : 'secondary'}
-          onClick={() => setSection('supplier-category2')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
-        >
-          Proveedor → Categoría 2
-        </button>
-        {isAdmin && (
+        {isSuperAdmin && (
           <button
             type="button"
-            className={section === 'projects' ? '' : 'secondary'}
-            onClick={() => setSection('projects')}
+            className={section === 'special-work-suppliers' ? '' : 'secondary'}
+            onClick={() => setSection('special-work-suppliers')}
           >
-            Agregar proyecto
+            Proveedores de Trabajos Especiales
           </button>
         )}
-        {isAdmin && (
+        {isSuperAdmin && (
           <button
             type="button"
-            className={section === 's3-prefix' ? '' : 'secondary'}
-            onClick={() => setSection('s3-prefix')}
+            className={section === 'projects-unmatched' ? '' : 'secondary'}
+            onClick={() => setSection('projects-unmatched')}
           >
-            Crear carpeta S3
+            Proyectos unmatched
+          </button>
+        )}
+        {isSuperAdmin && (
+          <button
+            type="button"
+            className={section === 'suspicious-project-resolutions' ? '' : 'secondary'}
+            onClick={() => setSection('suspicious-project-resolutions')}
+          >
+            Resolución de sospechosos
           </button>
         )}
         <button
           type="button"
           className={section === 'raw-data' ? '' : 'secondary'}
           onClick={() => setSection('raw-data')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
+          disabled={!isSuperAdmin}
+          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
         >
           Raw data
         </button>
       </div>
 
+      {section === 'my-project-visibility' && canUseAdminPreferences && (
+        <MyProjectVisibilitySection
+          allProjects={allProjects}
+          session={session}
+          selectedProjectId={selectedProjectId}
+          onSessionUpdated={onSessionUpdated}
+          onSelectedProjectSaved={onSelectedProjectSaved}
+        />
+      )}
+
       {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
 
       {section === 'import-sap' &&
-        (isAdmin ? (
+        (isSuperAdmin ? (
           <ImportSapScreen />
         ) : (
-          <div className="card">Solo los administradores pueden importar pagos SAP.</div>
+          <div className="card">Solo los superadministradores pueden importar pagos SAP.</div>
         ))}
 
       {section === 'sap-latest' &&
-        (isAdmin ? (
+        (isSuperAdmin ? (
           <SapLatestImportSection projects={projects} selectedProjectId={selectedProjectId} />
         ) : (
-          <div className="card">Solo los administradores pueden ejecutar el import SAP latest.</div>
+          <div className="card">Solo los superadministradores pueden ejecutar el import SAP latest.</div>
         ))}
 
-      {section === 'supplier-category2' &&
-        (isAdmin ? (
-          <SupplierCategory2Assignment cats={cats} selectedProjectId={selectedProjectId} />
+      {section === 'special-work-suppliers' &&
+        (isSuperAdmin ? (
+          <SpecialWorkSuppliersReviewSection />
         ) : (
-          <div className="card">Solo los administradores pueden asignar categoría por proveedor.</div>
+          <div className="card">Solo los superadministradores pueden revisar proveedores de trabajos especiales.</div>
         ))}
 
-      {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
+      {section === 'projects-unmatched' && isSuperAdmin && <AdminProjectsFromUnmatchedSection onProjectCreated={onProjectCreated} />}
 
-      {section === 's3-prefix' && isAdmin && <AdminS3PrefixCreateSection />}
+      {section === 'suspicious-project-resolutions' && isSuperAdmin && <SuspiciousProjectResolutionScreen />}
+
+      {section === 'projects-visibility' && isSuperAdmin && <AdminProjectVisibilitySection onProjectUpdated={onProjectCreated} />}
+
+      {section === 'users-access' && isSuperAdmin && <AdminUsersAccessSection />}
 
       {section === 'raw-data' &&
-        (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
+        (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los superadministradores pueden ver raw data.</div>)}
+    </div>
+  );
+}
+
+
+function MyProjectVisibilitySection({ allProjects, session, selectedProjectId, onSessionUpdated, onSelectedProjectSaved }) {
+  const initialHiddenProjectIds = useMemo(
+    () => (Array.isArray(session?.uiPrefs?.hiddenProjectIds)
+      ? session.uiPrefs.hiddenProjectIds.map(String)
+      : []),
+    [session?.uiPrefs?.hiddenProjectIds],
+  );
+  const [hiddenProjectIds, setHiddenProjectIds] = useState(() => (
+    initialHiddenProjectIds
+  ));
+  const initialDefaultProjectId = useMemo(() => String(session?.uiPrefs?.defaultProjectId || '').trim(), [session?.uiPrefs?.defaultProjectId]);
+  const [defaultProjectId, setDefaultProjectId] = useState(() => initialDefaultProjectId);
+  const [search, setSearch] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const visibleProjects = useMemo(
+    () => (Array.isArray(allProjects) ? allProjects.filter((project) => project?.visibleInFrontend !== false) : []),
+    [allProjects],
+  );
+
+  useEffect(() => {
+    setHiddenProjectIds(initialHiddenProjectIds);
+  }, [initialHiddenProjectIds]);
+
+  useEffect(() => {
+    setDefaultProjectId(initialDefaultProjectId);
+  }, [initialDefaultProjectId]);
+
+  const visibleProjectIds = useMemo(
+    () => visibleProjects.map((project) => String(project?._id || '')).filter(Boolean),
+    [visibleProjects],
+  );
+
+  const visibleProjectIdSet = useMemo(() => new Set(visibleProjectIds), [visibleProjectIds]);
+
+  const selectableDefaultProjectIds = useMemo(
+    () => visibleProjects
+      .filter((project) => isVisibleForMe(project?._id))
+      .map((project) => String(project?._id || ''))
+      .filter(Boolean),
+    [visibleProjects, hiddenProjectIds],
+  );
+
+  useEffect(() => {
+    if (!defaultProjectId) return;
+    if (selectableDefaultProjectIds.includes(defaultProjectId)) return;
+    setDefaultProjectId('');
+  }, [defaultProjectId, selectableDefaultProjectIds]);
+
+  const projectCounts = useMemo(() => {
+    const hiddenInVisibleCount = visibleProjectIds.filter((projectId) => hiddenProjectIds.includes(projectId)).length;
+    return {
+      visible: visibleProjectIds.length - hiddenInVisibleCount,
+      hidden: hiddenInVisibleCount,
+      total: visibleProjectIds.length,
+    };
+  }, [hiddenProjectIds, visibleProjectIds]);
+
+  const filteredVisibleProjects = useMemo(() => {
+    const normalizedQuery = normalizeSearchText(search);
+    if (!normalizedQuery) return visibleProjects;
+    return visibleProjects.filter((project) => {
+      const haystack = normalizeSearchText([
+        project?.displayName,
+        project?.slug,
+        project?.sap?.sourceSbo,
+      ].join(' '));
+      return haystack.includes(normalizedQuery);
+    });
+  }, [search, visibleProjects]);
+
+  function isVisibleForMe(projectId) {
+    return !hiddenProjectIds.includes(String(projectId || ''));
+  }
+
+  function toggleProject(projectId) {
+    const key = String(projectId || '');
+    setHiddenProjectIds((prev) => (
+      prev.includes(key) ? prev.filter((id) => id !== key) : [...prev, key]
+    ));
+    setMessage('');
+  }
+
+  function showAllProjects() {
+    setHiddenProjectIds((prev) => prev.filter((id) => !visibleProjectIdSet.has(id)));
+    setMessage('');
+  }
+
+  function hideAllProjects() {
+    setHiddenProjectIds((prev) => {
+      const next = new Set(prev);
+      visibleProjectIds.forEach((projectId) => next.add(projectId));
+      return Array.from(next);
+    });
+    setMessage('');
+  }
+
+  function resetMyView() {
+    setHiddenProjectIds(initialHiddenProjectIds);
+    setDefaultProjectId(initialDefaultProjectId);
+    setMessage('Preferencias restablecidas sin guardar.');
+  }
+
+  async function savePreferences() {
+    setSaving(true);
+    setMessage('');
+    try {
+      const response = await api.updateMyPreferences({ uiPrefs: { hiddenProjectIds, defaultProjectId } });
+      const nextUiPrefs = response?.uiPrefs || { hiddenProjectIds: [], defaultProjectId: '' };
+      const nextSession = { ...getSession(), ...session, uiPrefs: nextUiPrefs };
+      saveSession(nextSession);
+      onSessionUpdated(nextSession);
+
+      const savedDefaultProjectId = String(nextUiPrefs?.defaultProjectId || '').trim();
+      setDefaultProjectId(savedDefaultProjectId);
+      if (savedDefaultProjectId) {
+        localStorage.setItem(SELECTED_PROJECT_KEY, savedDefaultProjectId);
+      } else {
+        localStorage.removeItem(SELECTED_PROJECT_KEY);
+      }
+      if (typeof onSelectedProjectSaved === 'function') {
+        onSelectedProjectSaved(savedDefaultProjectId);
+      }
+
+      if (savedDefaultProjectId && String(savedDefaultProjectId) !== String(selectedProjectId || '')) {
+        setMessage('Preferencias guardadas. Proyecto por defecto actualizado.');
+      } else {
+        setMessage('Preferencias guardadas.');
+      }
+    } catch (error) {
+      setMessage(error.message || 'No se pudieron guardar las preferencias.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="card grid" style={{ gap: 12 }}>
+      <div>
+        <h3 style={{ margin: 0 }}>Mi visualización de proyectos</h3>
+        <div className="small">El estado es personal: visible para mí u oculto para mí. No cambia la publicación global ni el acceso de otros usuarios.</div>
+      </div>
+
+      {!visibleProjects.length && <div className="small">No hay proyectos publicados para configurar.</div>}
+
+      {!!visibleProjects.length && (
+        <div className="grid" style={{ gap: 8 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <span className="small">
+              {projectCounts.visible} visibles · {projectCounts.hidden} ocultos
+            </span>
+            <button type="button" className="secondary" onClick={showAllProjects}>Mostrar todos</button>
+            <button type="button" className="secondary" onClick={hideAllProjects}>Ocultar todos</button>
+            <button type="button" className="secondary" onClick={resetMyView}>Restablecer mi vista</button>
+          </div>
+
+          <label className="small" style={{ display: 'grid', gap: 6 }}>
+            Proyecto por defecto al entrar
+            <select
+              value={defaultProjectId}
+              onChange={(e) => { setDefaultProjectId(e.target.value); setMessage(''); }}
+            >
+              <option value="">Sin proyecto por defecto</option>
+              {visibleProjects
+                .filter((project) => selectableDefaultProjectIds.includes(String(project?._id || '')))
+                .map((project) => {
+                  const projectId = String(project?._id || '');
+                  return (
+                    <option key={`default-${projectId}`} value={projectId}>
+                      {getProjectDisplayName(project)}
+                    </option>
+                  );
+                })}
+            </select>
+          </label>
+
+          <input
+            type="search"
+            placeholder="Buscar por displayName, slug o sourceSbo"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+
+          {!filteredVisibleProjects.length && (
+            <div className="small">No hay coincidencias para “{search.trim()}”.</div>
+          )}
+
+          {filteredVisibleProjects.map((project) => {
+            const projectId = String(project?._id || '');
+            const visibleForMe = isVisibleForMe(projectId);
+            const sourceSbo = String(project?.sap?.sourceSbo || '').trim();
+            return (
+              <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={visibleForMe}
+                  onChange={() => toggleProject(projectId)}
+                />
+                <span>
+                  {getProjectDisplayName(project)}
+                  <span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `· ${sourceSbo}` : ''}</span>
+                  <span className="small" style={{ marginLeft: 6 }}>
+                    {visibleForMe ? '· Visible para mí' : '· Oculto para mí'}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <button type="button" onClick={savePreferences} disabled={saving}>
+          {saving ? 'Guardando...' : 'Guardar'}
+        </button>
+        {message && <span className="small">{message}</span>}
+      </div>
+    </div>
+  );
+}
+
+function AdminUsersAccessSection() {
+  const [users, setUsers] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [roleFilter, setRoleFilter] = useState('ALL');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [editingUserId, setEditingUserId] = useState('');
+  const [draftProjectIds, setDraftProjectIds] = useState([]);
+  const [draftRoleByUserId, setDraftRoleByUserId] = useState({});
+  const [savingRoleUserId, setSavingRoleUserId] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createForm, setCreateForm] = useState({
+    displayName: '',
+    username: '',
+    password: '',
+    email: '',
+    role: 'VIEWER',
+    allowedProjectIds: [],
+  });
+  const [editingNameUserId, setEditingNameUserId] = useState('');
+  const [draftDisplayName, setDraftDisplayName] = useState('');
+
+  const projectMap = useMemo(() => {
+    const map = new Map();
+    projects.forEach((project) => map.set(String(project?._id || ''), project));
+    return map;
+  }, [projects]);
+
+  const summary = useMemo(() => {
+    const counters = { total: users.length, active: 0, inactive: 0, SUPERADMIN: 0, ADMIN: 0, VIEWER: 0 };
+    users.forEach((user) => {
+      const role = normalizeRole(user?.role);
+      counters[role] = (counters[role] || 0) + 1;
+      if (user?.isActive === false) counters.inactive += 1;
+      else counters.active += 1;
+    });
+    return counters;
+  }, [users]);
+
+  const filteredUsers = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    return users.filter((user) => {
+      const role = normalizeRole(user?.role);
+      if (roleFilter !== 'ALL' && role !== roleFilter) return false;
+      if (!query) return true;
+      const candidates = [user?.displayName, user?.name, user?.username, user?.email].filter(Boolean).map((value) => String(value).toLowerCase());
+      return candidates.some((value) => value.includes(query));
+    });
+  }, [users, searchTerm, roleFilter]);
+
+  async function loadData() {
+    setLoading(true);
+    setError('');
+    try {
+      const [usersData, projectsData] = await Promise.all([api.adminUsers(), api.adminProjects()]);
+      setUsers(Array.isArray(usersData) ? usersData : []);
+      setProjects(Array.isArray(projectsData) ? projectsData : []);
+    } catch (e) {
+      setError(e.message || 'No se pudo cargar usuarios/proyectos.');
+      setUsers([]);
+      setProjects([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { loadData(); }, []);
+
+  function startEdit(user) {
+    const nextId = String(user?.id || user?._id || '');
+    setEditingUserId(nextId);
+    setDraftProjectIds(Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds.map(String) : []);
+  }
+
+  function startEditName(user) {
+    const userId = String(user?.id || user?._id || '');
+    setEditingNameUserId(userId);
+    setDraftDisplayName(String(user?.displayName || user?.name || user?.username || ''));
+  }
+
+  async function saveDisplayName(user) {
+    const userId = String(user?.id || user?._id || '');
+    if (!userId) return;
+    const nextDisplayName = draftDisplayName.trim();
+    if (!nextDisplayName) {
+      setError('El nombre visible no puede estar vacío.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await api.updateAdminUser(userId, { displayName: nextDisplayName });
+      setUsers((prev) => prev.map((row) => (String(row?.id || row?._id || '') === userId ? { ...row, ...updated } : row)));
+      setEditingNameUserId('');
+      setDraftDisplayName('');
+    } catch (e) {
+      setError(e.message || 'No se pudo actualizar el nombre visible.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function toggleCreateProject(projectId) {
+    const key = String(projectId || '');
+    setCreateForm((prev) => ({
+      ...prev,
+      allowedProjectIds: prev.allowedProjectIds.includes(key) ? prev.allowedProjectIds.filter((id) => id !== key) : [...prev.allowedProjectIds, key],
+    }));
+  }
+
+  async function handleCreateUser() {
+    const payload = {
+      displayName: createForm.displayName,
+      username: createForm.username,
+      password: createForm.password,
+      email: createForm.email,
+      role: createForm.role,
+      allowedProjectIds: createForm.role === 'VIEWER' ? createForm.allowedProjectIds : [],
+    };
+    setCreating(true);
+    setError('');
+    try {
+      const created = await api.createAdminUser(payload);
+      setUsers((prev) => [created, ...prev]);
+      setShowCreateForm(false);
+      setCreateForm({ displayName: '', username: '', password: '', email: '', role: 'VIEWER', allowedProjectIds: [] });
+    } catch (e) {
+      setError(e.message || 'No se pudo crear el usuario.');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  function handleRoleDraft(userId, role) {
+    const key = String(userId || '');
+    if (!key) return;
+    setDraftRoleByUserId((prev) => ({ ...prev, [key]: normalizeRole(role) }));
+  }
+
+  async function saveRole(user) {
+    const userId = String(user?.id || user?._id || '');
+    if (!userId) return;
+    const nextRole = normalizeRole(draftRoleByUserId[userId] || user?.role);
+    const currentRole = normalizeRole(user?.role);
+    if (nextRole === currentRole) return;
+
+    setSavingRoleUserId(userId);
+    setError('');
+    try {
+      const updated = await api.updateAdminUser(userId, { role: nextRole });
+      setUsers((prev) => prev.map((row) => (String(row?.id || row?._id || '') === userId ? { ...row, ...updated } : row)));
+    } catch (e) {
+      setError(e.message || 'No se pudo cambiar el rol del usuario.');
+    } finally {
+      setSavingRoleUserId('');
+    }
+  }
+
+  function cancelEdit() {
+    setEditingUserId('');
+    setDraftProjectIds([]);
+  }
+
+  function toggleProject(projectId) {
+    const key = String(projectId || '');
+    setDraftProjectIds((prev) => (prev.includes(key) ? prev.filter((id) => id !== key) : [...prev, key]));
+  }
+
+  async function saveViewerAccess(user) {
+    const userId = String(user?.id || user?._id || '');
+    if (!userId) return;
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await api.updateAdminUser(userId, { allowedProjectIds: draftProjectIds });
+      setUsers((prev) => prev.map((row) => (String(row?.id || row?._id || '') === userId ? { ...row, ...updated } : row)));
+      cancelEdit();
+    } catch (e) {
+      setError(e.message || 'No se pudo guardar accesos del usuario.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function renderAllowedProjects(user) {
+    const ids = Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds : [];
+    if (!ids.length) return 'Sin proyectos asignados';
+    return ids.map((id) => {
+      const project = projectMap.get(String(id));
+      return project ? getProjectDisplayName(project) : String(id);
+    }).join(', ');
+  }
+
+  function getViewerProjectsLabel(user) {
+    const count = Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds.length : 0;
+    return `${count} ${count === 1 ? 'proyecto asignado' : 'proyectos asignados'}`;
+  }
+
+  function getRoleHelp(role) {
+    if (role === 'SUPERADMIN') return 'Acceso total';
+    if (role === 'ADMIN') return 'Operación general';
+    return 'Solo verá proyectos asignados';
+  }
+
+  return (
+    <div className="card grid" style={{ gap: 12 }}>
+      <div>
+        <h3 style={{ margin: 0 }}>Usuarios y accesos</h3>
+        <div className="small">SUPERADMIN = acceso total · ADMIN = operación general · VIEWER = solo proyectos asignados.</div>
+        <div className="small">Username = login · Nombre visible = cómo se muestra en el sistema.</div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <span className="badge">{summary.SUPERADMIN} superadmins</span>
+        <span className="badge">{summary.ADMIN} admins</span>
+        <span className="badge">{summary.VIEWER} viewers</span>
+        <button type="button" onClick={() => setShowCreateForm((prev) => !prev)}>{showCreateForm ? 'Cerrar' : 'Agregar usuario'}</button>
+      </div>
+
+      {showCreateForm && (
+        <div className="card" style={{ margin: 0 }}>
+          <div className="small" style={{ marginBottom: 8 }}>Crear usuario nuevo</div>
+          <div style={{ display: 'grid', gap: 8 }}>
+            <label className="small">Nombre visible
+              <input value={createForm.displayName} onChange={(e) => setCreateForm((prev) => ({ ...prev, displayName: e.target.value }))} placeholder="Ej: Juan Pérez" />
+            </label>
+            <label className="small">Username (login)
+              <input value={createForm.username} onChange={(e) => setCreateForm((prev) => ({ ...prev, username: e.target.value }))} placeholder="usuario_login" />
+            </label>
+            <label className="small">Password inicial
+              <input type="password" value={createForm.password} onChange={(e) => setCreateForm((prev) => ({ ...prev, password: e.target.value }))} />
+            </label>
+            <label className="small">Email (opcional)
+              <input value={createForm.email} onChange={(e) => setCreateForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="usuario@empresa.com" />
+            </label>
+            <label className="small">Rol
+              <select value={createForm.role} onChange={(e) => setCreateForm((prev) => ({ ...prev, role: normalizeRole(e.target.value), allowedProjectIds: normalizeRole(e.target.value) === 'VIEWER' ? prev.allowedProjectIds : [] }))}>
+                <option value="SUPERADMIN">SUPERADMIN</option>
+                <option value="ADMIN">ADMIN</option>
+                <option value="VIEWER">VIEWER</option>
+              </select>
+            </label>
+            {createForm.role === 'VIEWER' && (
+              <div>
+                <div className="small" style={{ marginBottom: 6 }}>Proyectos permitidos (el VIEWER solo verá estos proyectos)</div>
+                <div style={{ display: 'grid', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
+                  {projects.map((project) => {
+                    const projectId = String(project?._id || '');
+                    return (
+                      <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input type="checkbox" checked={createForm.allowedProjectIds.includes(projectId)} onChange={() => toggleCreateProject(projectId)} />
+                        <span>{getProjectDisplayName(project)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={handleCreateUser} disabled={creating}>{creating ? 'Creando...' : 'Crear usuario'}</button>
+              <button type="button" className="secondary" onClick={() => setShowCreateForm(false)} disabled={creating}>Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Buscar por nombre, usuario o email" />
+          <label className="small">Rol
+            <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
+              <option value="ALL">Todos</option>
+              <option value="SUPERADMIN">SUPERADMIN</option>
+              <option value="ADMIN">ADMIN</option>
+              <option value="VIEWER">VIEWER</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      {loading && <div className="small">Cargando usuarios...</div>}
+      {error && <div className="small" style={{ color: '#b00020' }}>{error}</div>}
+
+      {!loading && (
+        <div style={{ overflowX: 'auto' }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Nombre y usuario</th>
+                <th>Email</th>
+                <th>Rol</th>
+                <th>Estado</th>
+                <th>Proyectos permitidos (VIEWER)</th>
+                <th>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!filteredUsers.length && <tr><td colSpan={6} className="small">No hay usuarios que coincidan con la búsqueda/filtro.</td></tr>}
+              {filteredUsers.map((user) => {
+                const userId = String(user?.id || user?._id || '');
+                const role = normalizeRole(user?.role);
+                const viewer = role === 'VIEWER';
+                const isEditing = editingUserId === userId;
+                const isEditingName = editingNameUserId === userId;
+                const draftRole = normalizeRole(draftRoleByUserId[userId] || user?.role);
+                const roleDirty = draftRole !== normalizeRole(user?.role);
+                const savingRole = savingRoleUserId === userId;
+                return (
+                  <React.Fragment key={userId || user?.username}>
+                    <tr>
+                      <td>
+                        {isEditingName ? (
+                          <div style={{ display: 'grid', gap: 6 }}>
+                            <input value={draftDisplayName} onChange={(e) => setDraftDisplayName(e.target.value)} />
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button type="button" onClick={() => saveDisplayName(user)} disabled={saving}>{saving ? 'Guardando...' : 'Guardar nombre'}</button>
+                              <button type="button" className="secondary" onClick={() => setEditingNameUserId('')} disabled={saving}>Cancelar</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div>{user?.displayName || user?.name || user?.username || 'Sin nombre'}</div>
+                            <div className="small">@{user?.username || '—'}</div>
+                            <button type="button" className="secondary" onClick={() => startEditName(user)} disabled={saving} style={{ marginTop: 6 }}>Editar nombre visible</button>
+                          </>
+                        )}
+                      </td>
+                      <td>{user?.email || '—'}</td>
+                      <td>
+                        <div style={{ display: 'grid', gap: 6 }}>
+                          <select value={draftRole} onChange={(e) => handleRoleDraft(userId, e.target.value)} disabled={savingRole || saving}>
+                            <option value="SUPERADMIN">SUPERADMIN</option>
+                            <option value="ADMIN">ADMIN</option>
+                            <option value="VIEWER">VIEWER</option>
+                          </select>
+                          <div><button type="button" className="secondary" onClick={() => saveRole(user)} disabled={!roleDirty || savingRole || saving}>{savingRole ? 'Guardando rol...' : 'Guardar rol'}</button></div>
+                          <div className="small">{getRoleHelp(role)}</div>
+                        </div>
+                      </td>
+                      <td><span className="badge">{user?.isActive === false ? 'Inactivo' : 'Activo'}</span></td>
+                      <td className="small">{viewer ? <div style={{ display: 'grid', gap: 4 }}><strong style={{ fontSize: 12 }}>{getViewerProjectsLabel(user)}</strong><span>{renderAllowedProjects(user)}</span></div> : 'No aplica'}</td>
+                      <td>{viewer ? <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>Editar accesos</button> : <span className="small">No editable</span>}</td>
+                    </tr>
+                    {viewer && isEditing && (
+                      <tr>
+                        <td colSpan={6}>
+                          <div className="card" style={{ margin: 0 }}>
+                            <div className="small" style={{ marginBottom: 8 }}>Selecciona proyectos permitidos para este VIEWER (solo verá estos proyectos):</div>
+                            <div style={{ display: 'grid', gap: 6, maxHeight: 240, overflowY: 'auto' }}>
+                              {projects.map((project) => {
+                                const projectId = String(project?._id || '');
+                                const checked = draftProjectIds.includes(projectId);
+                                const sourceSbo = project?.sap?.sourceSbo || '';
+                                return (
+                                  <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                    <input type="checkbox" checked={checked} onChange={() => toggleProject(projectId)} disabled={saving} />
+                                    <span>{getProjectDisplayName(project)}<span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `· ${sourceSbo}` : ''}</span></span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                              <button type="button" onClick={() => saveViewerAccess(user)} disabled={saving}>{saving ? 'Guardando...' : 'Guardar accesos'}</button>
+                              <button type="button" className="secondary" onClick={cancelEdit} disabled={saving}>Cancelar</button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminProjectVisibilitySection({ onProjectUpdated }) {
+  const [projects, setProjects] = useState([]);
+  const [query, setQuery] = useState('');
+  const [visibilityFilter, setVisibilityFilter] = useState('all');
+  const [loading, setLoading] = useState(false);
+  const [savingId, setSavingId] = useState('');
+  const [error, setError] = useState('');
+
+  async function loadProjects() {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.adminProjects();
+      setProjects(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setError(e.message || 'No se pudieron cargar los proyectos');
+      setProjects([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadProjects();
+  }, []);
+
+  async function onToggleVisibility(projectId, nextVisible) {
+    setSavingId(projectId);
+    setError('');
+    const previous = projects;
+    setProjects((prev) => prev.map((row) => (row._id === projectId ? { ...row, visibleInFrontend: nextVisible } : row)));
+    try {
+      await api.updateAdminProjectVisibility(projectId, nextVisible);
+      await onProjectUpdated?.();
+    } catch (e) {
+      setProjects(previous);
+      setError(e.message || 'No se pudo actualizar la visibilidad');
+    } finally {
+      setSavingId('');
+    }
+  }
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = projects.filter((row) => {
+    const isVisible = row?.visibleInFrontend !== false;
+    if (visibilityFilter === 'visible' && !isVisible) return false;
+    if (visibilityFilter === 'hidden' && isVisible) return false;
+
+    if (!normalizedQuery) return true;
+    const sourceSbo = row?.sap?.sourceSbo || '';
+    const rawProjectName = row?.sap?.rawProjectName || '';
+    const haystack = `${row?.displayName || ''} ${row?.slug || ''} ${rawProjectName} ${sourceSbo}`.toLowerCase();
+    return haystack.includes(normalizedQuery);
+  });
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Visibilidad de proyectos</h3>
+      <div className="grid" style={{ gap: 10, marginBottom: 10 }}>
+        <div>
+          <label>Buscar</label>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="displayName, slug o rawProjectName"
+          />
+        </div>
+        <div>
+          <label>Filtro</label>
+          <select value={visibilityFilter} onChange={(e) => setVisibilityFilter(e.target.value)}>
+            <option value="all">Todos</option>
+            <option value="visible">Visibles</option>
+            <option value="hidden">Ocultos</option>
+          </select>
+        </div>
+      </div>
+
+      {error && <div style={{ marginBottom: 10 }}>{error}</div>}
+
+      <table>
+        <thead>
+          <tr>
+            <th>displayName</th>
+            <th>slug</th>
+            <th>sourceSbo</th>
+            <th>rawProjectName</th>
+            <th>visibleInFrontend</th>
+          </tr>
+        </thead>
+        <tbody>
+          {filtered.map((row) => {
+            const isVisible = row?.visibleInFrontend !== false;
+            const rowId = String(row?._id || '');
+            return (
+              <tr key={rowId}>
+                <td>{row?.displayName || row?.name || ''}</td>
+                <td>{row?.slug || ''}</td>
+                <td>{row?.sap?.sourceSbo || ''}</td>
+                <td>{row?.sap?.rawProjectName || ''}</td>
+                <td>
+                  <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={isVisible}
+                      disabled={savingId === rowId}
+                      onChange={(e) => onToggleVisibility(rowId, e.target.checked)}
+                    />
+                    <span className={isVisible ? 'badge badge-visible' : 'badge badge-hidden'}>{isVisible ? 'Visible' : 'Oculto'}</span>
+                  </label>
+                </td>
+              </tr>
+            );
+          })}
+
+          {!loading && filtered.length === 0 && (
+            <tr>
+              <td colSpan={5} className="small">Sin proyectos para mostrar.</td>
+            </tr>
+          )}
+          {loading && (
+            <tr>
+              <td colSpan={5} className="small">Cargando proyectos...</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AdminProjectsFromUnmatchedSection({ onProjectCreated }) {
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  async function onCreateFromUnmatched() {
+    setRunning(true);
+    setError('');
+    setResult(null);
+    try {
+      const response = await api.createProjectsFromUnmatchedAdmin();
+      setResult(response);
+      await onProjectCreated?.();
+    } catch (e) {
+      setError(e.message || 'No se pudieron crear proyectos desde unmatched');
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>Proyectos desde unmatched</h3>
+      <div className="small" style={{ marginBottom: 10 }}>
+        Crea proyectos automáticamente desde <code>unmatched_projects</code>. Los nuevos quedan ocultos del frontend.
+      </div>
+      <button type="button" onClick={onCreateFromUnmatched} disabled={running}>
+        {running ? 'Creando...' : 'Crear proyectos desde unmatched'}
+      </button>
+      {error && <div style={{ marginTop: 10 }}>{error}</div>}
+      {result && (
+        <div style={{ marginTop: 10 }}>
+          <div>createdCount: <strong>{result?.createdCount ?? 0}</strong></div>
+          <div>skippedExistingCount: <strong>{result?.skippedExistingCount ?? 0}</strong></div>
+        </div>
+      )}
     </div>
   );
 }
 
 function SapLatestImportSection({ projects, selectedProjectId }) {
+  const ALL_SBO_OPTION = 'TODAS';
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
-  const [sources, setSources] = useState({ IVA: false, EFECTIVO: false });
+  const [sbo, setSbo] = useState(ALL_SBO_OPTION);
+  const [mode, setMode] = useState('latest');
+  const [forceReimport, setForceReimport] = useState(false);
   const selectedProject =
     projects.find((project) => String(project?._id || '') === String(selectedProjectId || '')) || null;
-  const destinationProjectName = selectedProject?.name || 'Sin proyecto seleccionado';
-
-  function toggleSource(sourceKey) {
-    setSources((prev) => ({ ...prev, [sourceKey]: !prev[sourceKey] }));
-  }
+  const destinationProjectName = selectedProject ? getProjectDisplayName(selectedProject) : 'Sin proyecto seleccionado';
+  const sboOptions = [
+    'SBO_Rafael',
+    'SBO_GMDI',
+    'SBOCitySur',
+    'SBO_CPSantaFE',
+    'SBO_Mazatlan',
+    'SBOIndiana',
+    'SBO_Colima334',
+  ];
 
   async function onImportNow() {
     setError('');
@@ -708,347 +1656,372 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
       return;
     }
 
-    const selectedSources = Object.entries(sources)
-      .filter(([, value]) => Boolean(value))
-      .map(([key]) => key);
-
-    const sourceLabel = selectedSources.length ? selectedSources.join(', ') : 'TODAS';
     const accepted = window.confirm(
-      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nFuentes: ${sourceLabel}.\n\n¿Deseas continuar?`
+      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nSBO: ${sbo}.\nModo: ${mode}.\nForzar reimportación: ${forceReimport ? 'Sí' : 'No'}.\n\n¿Deseas continuar?`
     );
     if (!accepted) return;
 
     setImporting(true);
     try {
-      const response = await api.adminImportSapLatest({
-        projectId: selectedProjectId,
-        sources: selectedSources,
+      const targetSboList = sbo === ALL_SBO_OPTION ? sboOptions : [sbo];
+      const runs = [];
+
+      for (const targetSbo of targetSboList) {
+        try {
+          const response = await api.importSapMovementsBySbo({ sbo: targetSbo, mode, force: forceReimport });
+          runs.push({ sbo: targetSbo, ok: true, response });
+        } catch (runError) {
+          const errorStatus = runError?.status ? `HTTP ${runError.status}` : 'HTTP desconocido';
+          const errorBody = runError?.body ? JSON.stringify(runError.body) : (runError?.message || 'Sin body');
+          runs.push({
+            sbo: targetSbo,
+            ok: false,
+            error: `No se pudo ejecutar el import SAP ${mode}. ${errorStatus}. Body: ${errorBody}`,
+          });
+        }
+      }
+
+      const failedRuns = runs.filter((run) => !run.ok);
+      if (failedRuns.length > 0) {
+        setError(
+          `El import terminó con errores en ${failedRuns.length} SBO: ${failedRuns.map((run) => run.sbo).join(', ')}.`
+        );
+      }
+
+      setResult({
+        mode,
+        forceReimport,
+        selectedSbo: sbo,
+        runs,
       });
-      setResult(response);
     } catch (e) {
-      setError(e.message || 'No se pudo ejecutar el import SAP latest.');
+      const errorStatus = e?.status ? `HTTP ${e.status}` : 'HTTP desconocido';
+      const errorBody = e?.body ? JSON.stringify(e.body) : (e?.message || 'Sin body');
+      setError(`No se pudo ejecutar el import SAP latest. ${errorStatus}. Body: ${errorBody}`);
     } finally {
       setImporting(false);
     }
   }
 
-  const rows = [
-    ['IVA', result?.iva],
-    ['EFECTIVO', result?.efectivo],
-  ];
+  function withFallback(value, fallback = 'N/A') {
+    return value === null || value === undefined || value === '' ? fallback : String(value);
+  }
 
   return (
     <div className="card grid" style={{ gap: 12 }}>
       <div>
         <h3 style={{ margin: 0 }}>SAP Import</h3>
-        <div className="small">Ejecuta manualmente el import de latest CSV (IVA/EFECTIVO).</div>
+        <div className="small">Ejecuta manualmente el import SAP por SBO + modo.</div>
         <div className="small" style={{ marginTop: 4 }}>
           Proyecto destino: <strong>{destinationProjectName}</strong>
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <input type="checkbox" checked={sources.IVA} onChange={() => toggleSource('IVA')} disabled={importing} /> IVA
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>SBO</span>
+          <select value={sbo} onChange={(e) => setSbo(e.target.value)} disabled={importing}>
+            <option value={ALL_SBO_OPTION}>{ALL_SBO_OPTION}</option>
+            {sboOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
         </label>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span>Modo</span>
+          <select value={mode} onChange={(e) => setMode(e.target.value)} disabled={importing}>
+            <option value="latest">latest</option>
+            <option value="backfill">backfill</option>
+          </select>
+        </label>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 28 }}>
           <input
             type="checkbox"
-            checked={sources.EFECTIVO}
-            onChange={() => toggleSource('EFECTIVO')}
+            checked={forceReimport}
+            onChange={(e) => setForceReimport(e.target.checked)}
             disabled={importing}
-          />{' '}
-          EFECTIVO
+          />
+          <span>Forzar reimportación</span>
         </label>
       </div>
 
       <div>
         <button type="button" onClick={onImportNow} disabled={importing || !selectedProjectId}>
-          {importing ? 'Importando...' : 'Importar latest ahora'}
+          {importing ? 'Importando...' : `Importar ${mode} ahora`}
         </button>
       </div>
 
       {error && <div className="small" style={{ color: '#b00020' }}>{error}</div>}
 
       {result && (
-        <div style={{ overflowX: 'auto' }}>
-          <table>
-            <thead>
-              <tr>
-                <th>Fuente</th>
-                <th>already_imported</th>
-                <th>importRunId</th>
-                <th>etag</th>
-                <th>lastModified</th>
-                <th>contentLength</th>
-                <th>rowsOk</th>
-                <th>rowsError</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(([label, bucket]) => (
-                <tr key={label}>
-                  <td>{label}</td>
-                  <td>{String(bucket?.already_imported ?? '')}</td>
-                  <td>{bucket?.importRunId || ''}</td>
-                  <td>{bucket?.etag || ''}</td>
-                  <td>{bucket?.lastModified || ''}</td>
-                  <td>{bucket?.contentLength ?? ''}</td>
-                  <td>{bucket?.rowsOk ?? ''}</td>
-                  <td>{bucket?.rowsError ?? ''}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="card" style={{ margin: 0 }}>
+          <h4 style={{ margin: 0, marginBottom: 8 }}>Resultado</h4>
+          <div className="small">SBO seleccionado: {withFallback(result?.selectedSbo)}</div>
+          <div className="small">Modo: {withFallback(result?.mode)}</div>
+          <div className="small">Forzar reimportación: {result?.forceReimport ? 'Sí' : 'No'}</div>
+          <div className="small">SBO procesados: {withFallback(result?.runs?.length, '0')}</div>
+
+          <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+            {(result?.runs || []).map((run) => (
+              <div key={run.sbo} className="small" style={{ border: '1px solid #e5e7eb', borderRadius: 6, padding: 8 }}>
+                <strong>{run.sbo}</strong>: {run.ok ? 'OK' : 'Error'}
+                {run.ok ? (
+                  <div style={{ marginTop: 4 }}>
+                    status: {withFallback(run?.response?.status)} · rowsTotal: {withFallback(run?.response?.rowsTotal, '0')} · rowsOk: {withFallback(run?.response?.rowsOk, '0')} · imported: {withFallback(run?.response?.imported, '0')} · updated: {withFallback(run?.response?.updated, '0')} · unmatched: {withFallback(run?.response?.unmatched, '0')} · importRunId: {withFallback(run?.response?.importRunId)}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 4, color: '#b00020' }}>{run.error}</div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function SupplierCategory2Assignment({ cats, selectedProjectId }) {
-  const [suppliers, setSuppliers] = useState([]);
-  const [supplierId, setSupplierId] = useState('');
-  const [categoryCode, setCategoryCode] = useState('');
-  const [applyToExisting, setApplyToExisting] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
+function SpecialWorkSuppliersReviewSection() {
+  const [globalCategories, setGlobalCategories] = useState([]);
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [savingKey, setSavingKey] = useState('');
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [saveSuccess, setSaveSuccess] = useState('');
+  const [search, setSearch] = useState('');
+  const [sboFilter, setSboFilter] = useState('all');
+  const [selectedCategoryBySupplier, setSelectedCategoryBySupplier] = useState({});
 
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    setError('');
-    setSuccess('');
-    api.suppliers()
-      .then((rows) => {
-        if (!active) return;
-        const list = Array.isArray(rows) ? rows : [];
-        setSuppliers(list);
-        setSupplierId((prev) => prev || String(list[0]?._id || list[0]?.id || ''));
+  function normalizeGlobalCategories(response) {
+    const rawCategories = Array.isArray(response)
+      ? response
+      : (Array.isArray(response?.items) ? response.items : []);
+
+    return dedupeCategories(rawCategories)
+      .map((category) => {
+        const id = String(category?.id || category?._id || category?.categoryId || category?.code || '').trim();
+        const name = String(category?.name || category?.nombre || category?.label || category?.displayLabel || '').trim();
+        if (!id || !name) return null;
+        return { id, name };
+      })
+      .filter(Boolean);
+  }
+
+  function loadGlobalCategories() {
+    return api.adminGlobalCategories()
+      .then((response) => {
+        setGlobalCategories(normalizeGlobalCategories(response));
       })
       .catch((e) => {
-        if (!active) return;
-        setError(e.message || 'No se pudieron cargar proveedores.');
-      })
-      .finally(() => {
-        if (active) setLoading(false);
+        setGlobalCategories([]);
+        setError(e.message || 'No se pudo cargar el catálogo global de categorías.');
       });
+  }
 
-    return () => {
-      active = false;
-    };
-  }, [selectedProjectId]);
-
-  async function onApply(event) {
-    event.preventDefault();
+  function loadSuppliers() {
+    setLoading(true);
     setError('');
-    setSuccess('');
-    if (!selectedProjectId) return setError('Selecciona un proyecto para continuar.');
-    if (!supplierId || !categoryCode) return setError('Selecciona proveedor y categoría 2.');
-
-    setSaving(true);
-    try {
-      const result = await api.setSupplierCategory2Rule(
-        selectedProjectId,
-        supplierId,
-        categoryCode,
-        applyToExisting,
-      );
-      setSuccess(`Regla guardada. Movimientos actualizados: ${result?.applyToExistingModified ?? 0}.`);
-    } catch (e) {
-      setError(e.message || 'No se pudo aplicar la categoría.');
-    } finally {
-      setSaving(false);
-    }
+    return api.adminTrabajosEspecialesSuppliers()
+      .then((response) => {
+        const nextItems = Array.isArray(response?.items) ? response.items : [];
+        setItems(nextItems);
+        setSelectedCategoryBySupplier((current) => {
+          const next = { ...current };
+          nextItems.forEach((item) => {
+            const key = String(item?.supplierKey || '');
+            if (!key) return;
+            if (!next[key]) {
+              next[key] = String(item?.category2Rule?.category2Id || '');
+            }
+          });
+          return next;
+        });
+      })
+      .catch((e) => {
+        setItems([]);
+        setError(e.message || 'No se pudieron cargar los proveedores de trabajos especiales.');
+      })
+      .finally(() => setLoading(false));
   }
 
-  return (
-    <div className="card">
-      <h3 style={{ marginTop: 0 }}>Asignar categoría 2 manual por proveedor</h3>
-      <div className="small" style={{ marginBottom: 10 }}>
-        Esta acción aplica la categoría 2 seleccionada a todos los egresos del proveedor en el proyecto activo.
-      </div>
-      <form className="grid" onSubmit={onApply}>
-        <div>
-          <label>Proveedor</label>
-          <select value={supplierId} onChange={(e) => setSupplierId(e.target.value)} disabled={loading || !suppliers.length}>
-            {!suppliers.length && <option value="">Sin proveedores</option>}
-            {suppliers.map((supplier) => (
-              <option key={supplier._id || supplier.id} value={supplier._id || supplier.id}>
-                {supplier.name || supplier.nombre || supplier.cardCode || supplier._id}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label>Categoría 2</label>
-          <select value={categoryCode} onChange={(e) => setCategoryCode(e.target.value)} disabled={!cats.length}>
-            <option value="">Selecciona una categoría</option>
-            {cats.map((category) => (
-              <option key={category.id || category.code} value={category.code || category.id}>
-                {category.name}
-              </option>
-            ))}
-          </select>
-        </div>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <input
-            type="checkbox"
-            checked={applyToExisting}
-            onChange={(e) => setApplyToExisting(e.target.checked)}
-          />
-          Aplicar a existentes (solo donde no hay manual)
-        </label>
-        {error && <div>{error}</div>}
-        {success && <div>{success}</div>}
-        <button type="submit" disabled={saving || loading || !suppliers.length || !cats.length}>
-          {saving ? 'Guardando...' : 'Guardar regla de categoría 2'}
-        </button>
-      </form>
-    </div>
-  );
-}
+  useEffect(() => {
+    loadGlobalCategories().catch(() => undefined);
+    loadSuppliers().catch(() => undefined);
+  }, []);
 
-function AdminS3PrefixCreateSection() {
-  const [slug, setSlug] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [createdPath, setCreatedPath] = useState('');
+  const sboOptions = useMemo(() => {
+    const set = new Set();
+    items.forEach((item) => {
+      (Array.isArray(item?.projects) ? item.projects : []).forEach((project) => {
+        const code = String(project?.sourceSbo || '').trim();
+        if (code) set.add(code);
+      });
+    });
+    return ['all', ...Array.from(set).sort((a, b) => a.localeCompare(b))];
+  }, [items]);
 
-  async function onSubmit(event) {
-    event.preventDefault();
-    setSaving(true);
-    setError('');
-    setCreatedPath('');
-
-    try {
-      const response = await api.createS3PrefixAdmin({ slug });
-      const bucket = response?.bucket || 'calderon-sap-exports';
-      const prefix = response?.prefix || '';
-      setCreatedPath(`s3://${bucket}/${prefix}`);
-      setSlug('');
-    } catch (e) {
-      setError(e.message || 'No se pudo crear la carpeta en S3');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="card">
-      <h3 style={{ marginTop: 0 }}>Crear carpeta S3</h3>
-      <form className="grid" onSubmit={onSubmit}>
-        <div>
-          <label>Slug</label>
-          <input
-            value={slug}
-            onChange={(e) => setSlug(e.target.value)}
-            placeholder="ej. colima"
-            required
-          />
-        </div>
-        {error && <div>{error}</div>}
-        {createdPath && <div>Creado: <code>{createdPath}</code></div>}
-        <button type="submit" disabled={saving}>{saving ? 'Creando...' : 'Crear carpeta en S3'}</button>
-      </form>
-    </div>
-  );
-}
-
-function AdminProjectCreateSection({ onProjectCreated }) {
-  const [name, setName] = useState('');
-  const [slug, setSlug] = useState('');
-  const [s3Prefix, setS3Prefix] = useState('');
-  const [slugTouched, setSlugTouched] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  const [created, setCreated] = useState(null);
-
-  function onNameChange(nextName) {
-    setName(nextName);
-    if (!slugTouched) {
-      const generatedSlug = normalizeSlug(nextName);
-      setSlug(generatedSlug);
-      if (!s3Prefix.trim()) setS3Prefix(generatedSlug ? `exports/${generatedSlug}` : '');
-    }
-  }
-
-  function onSlugChange(nextSlug) {
-    const cleanSlug = normalizeSlug(nextSlug);
-    setSlugTouched(true);
-    setSlug(cleanSlug);
-  }
-
-  function onS3PrefixBlur() {
-    setS3Prefix((current) => normalizeS3Prefix(current, slug));
-  }
-
-  async function onSubmit(event) {
-    event.preventDefault();
-    setSaving(true);
-    setError('');
-    setCreated(null);
-
-    const payload = {
-      name: name.trim(),
-      slug: normalizeSlug(slug),
-      s3Prefix: normalizeS3Prefix(s3Prefix, slug),
-    };
-
-    try {
-      const response = await api.createProjectAdmin(payload);
-      setCreated(response);
-      setName('');
-      setSlug('');
-      setS3Prefix('');
-      setSlugTouched(false);
-      await onProjectCreated?.();
-    } catch (e) {
-      if (e?.status === 409) {
-        setError('Ya existe un proyecto con ese nombre o slug');
-      } else {
-        setError(e.message || 'No se pudo crear el proyecto');
+  const filteredItems = useMemo(() => {
+    const normalizedQuery = normalizeSearchText(search);
+    return items.filter((item) => {
+      const projects = Array.isArray(item?.projects) ? item.projects : [];
+      if (sboFilter !== 'all' && !projects.some((project) => String(project?.sourceSbo || '').trim() === sboFilter)) {
+        return false;
       }
+
+      if (!normalizedQuery) return true;
+      const haystack = normalizeSearchText([
+        item?.supplierName,
+        item?.supplierCardCode,
+        item?.businessPartner,
+        item?.category2Rule?.category2Name,
+        projects.map((project) => project?.projectName).join(' '),
+      ].join(' '));
+      return haystack.includes(normalizedQuery);
+    });
+  }, [items, search, sboFilter]);
+
+  async function saveSupplierCategory2(item) {
+    const supplierKey = String(item?.supplierKey || '').trim();
+    if (!supplierKey) return;
+    const category2Id = String(selectedCategoryBySupplier[supplierKey] || '').trim();
+    if (!category2Id) {
+      setSaveError('Debes seleccionar una Categoría 2 antes de guardar.');
+      return;
+    }
+
+    setSavingKey(supplierKey);
+    setSaveError('');
+    setSaveSuccess('');
+
+    try {
+      await api.upsertAdminTrabajosEspecialesSupplierCategory2Rule({
+        supplierName: item?.supplierName,
+        supplierCardCode: item?.supplierCardCode,
+        businessPartner: item?.businessPartner,
+        category2Id,
+        isActive: true,
+      });
+      setSaveSuccess(`Categoría 2 guardada para ${item?.supplierName || supplierKey}.`);
+      await loadSuppliers();
+    } catch (e) {
+      setSaveError(e.message || 'No se pudo guardar la regla global de Categoría 2.');
     } finally {
-      setSaving(false);
+      setSavingKey('');
     }
   }
 
   return (
-    <div className="card">
-      <h3 style={{ marginTop: 0 }}>Agregar proyecto</h3>
-      <form className="grid" onSubmit={onSubmit}>
-        <div>
-          <label>Nombre</label>
-          <input value={name} onChange={(e) => onNameChange(e.target.value)} required />
-        </div>
-        <div>
-          <label>Slug</label>
-          <input value={slug} onChange={(e) => onSlugChange(e.target.value)} required />
-        </div>
-        <div>
-          <label>S3 Prefix</label>
-          <input
-            placeholder="exports/&lt;slug&gt;"
-            value={s3Prefix}
-            onChange={(e) => setS3Prefix(e.target.value)}
-            onBlur={onS3PrefixBlur}
-            required
-          />
-        </div>
-        {error && <div>{error}</div>}
-        {created?.projectId && (
-          <div>
-            Proyecto creado. ID: <code>{created.projectId}</code>
-          </div>
-        )}
-        <button type="submit" disabled={saving}>{saving ? 'Creando...' : 'Crear proyecto'}</button>
-      </form>
+    <div className="card" style={{ overflowX: 'auto' }}>
+      <h3 style={{ marginTop: 0 }}>Proveedores de Trabajos Especiales</h3>
+      <div className="small" style={{ marginBottom: 10 }}>
+        Clasificación interna derivada: la Categoría 1 original del movimiento no se modifica.
+        Aquí asignas una regla global por proveedor para resolver Categoría 2 en lectura.
+      </div>
+      <div className="small" style={{ marginBottom: 10 }}>
+        El selector de Categoría 2 usa el catálogo global de categorías (no depende del proyecto activo).
+      </div>
+
+      <div className="row" style={{ gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar por proveedor, cardCode, businessPartner o proyecto"
+          style={{ minWidth: 320 }}
+        />
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span className="small">SBO</span>
+          <select value={sboFilter} onChange={(e) => setSboFilter(e.target.value)}>
+            {sboOptions.map((option) => (
+              <option key={option} value={option}>{option === 'all' ? 'Todos' : option}</option>
+            ))}
+          </select>
+        </label>
+        <span className="small">{filteredItems.length} proveedores</span>
+      </div>
+
+      {error && <div className="small" style={{ color: '#b00020', marginBottom: 8 }}>{error}</div>}
+      {saveError && <div className="small" style={{ color: '#b00020', marginBottom: 8 }}>{saveError}</div>}
+      {saveSuccess && <div className="small" style={{ color: '#0a7a31', marginBottom: 8 }}>{saveSuccess}</div>}
+
+      {loading ? (
+        <div className="small">Cargando proveedores...</div>
+      ) : !filteredItems.length ? (
+        <div className="small">No se encontraron proveedores para el prefijo “trabajos especiales” con los filtros actuales.</div>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Proveedor</th>
+              <th>CardCode</th>
+              <th>Business Partner</th>
+              <th>Movimientos detectados</th>
+              <th>Proyectos</th>
+              <th>Categoría 2 asignada</th>
+              <th>Estado</th>
+              <th>Acción</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredItems.map((item) => {
+              const projects = Array.isArray(item?.projects) ? item.projects : [];
+              const supplierKey = String(item?.supplierKey || '');
+              const currentCategory2Name = item?.category2Rule?.category2Name || 'Trabajos Especiales sin clasificar';
+              const status = item?.category2Rule?.status === 'assigned' ? 'Asignado' : 'Sin clasificar / sin asignar';
+              return (
+                <tr key={supplierKey || item?.supplierName}>
+                  <td>{item?.supplierName || 'Sin proveedor'}</td>
+                  <td>{item?.supplierCardCode || '—'}</td>
+                  <td>{item?.businessPartner || '—'}</td>
+                  <td>{item?.transactionCount || 0}</td>
+                  <td>
+                    <div className="small">{item?.projectCount || projects.length || 0} proyecto(s)</div>
+                    <div className="small">{projects.map((project) => project?.projectName || project?.projectId).filter(Boolean).join(', ') || '—'}</div>
+                  </td>
+                  <td>
+                    <div className="small" style={{ marginBottom: 6 }}>{currentCategory2Name}</div>
+                    <select
+                      value={selectedCategoryBySupplier[supplierKey] || ''}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setSelectedCategoryBySupplier((prev) => ({ ...prev, [supplierKey]: value }));
+                      }}
+                    >
+                      <option value="">Selecciona Categoría 2</option>
+                      {globalCategories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>{status}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => saveSupplierCategory2(item)}
+                      disabled={!supplierKey || !selectedCategoryBySupplier[supplierKey] || savingKey === supplierKey}
+                    >
+                      {savingKey === supplierKey
+                        ? 'Guardando...'
+                        : item?.category2Rule?.status === 'assigned'
+                          ? 'Editar'
+                          : 'Asignar Categoría 2'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
+
 
 function RawDataAdmin() {
   const [collections, setCollections] = useState([]);
@@ -1201,16 +2174,50 @@ function RawDataAdmin() {
   );
 }
 
+
+function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selectedProjectId, refreshKey }) {
+  const isIncome = dashboardType === 'income';
+
+  return (
+    <div className="grid" style={{ gap: 10 }}>
+      <div className="dashboard-primary-switch">
+        <button
+          type="button"
+          className={isIncome ? 'secondary' : ''}
+          onClick={() => onDashboardTypeChange('expenses')}
+        >
+          Egresos
+        </button>
+        <button
+          type="button"
+          className={isIncome ? '' : 'secondary'}
+          onClick={() => onDashboardTypeChange('income')}
+        >
+          Ingresos
+        </button>
+      </div>
+
+      {isIncome ? (
+        <DashboardIngresos selectedProjectId={selectedProjectId} refreshKey={refreshKey} />
+      ) : (
+        <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={refreshKey} />
+      )}
+    </div>
+  );
+}
+
 /* ================= DASHBOARD ================= */
 function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
-  const [viewMode, setViewMode] = useState('experimental');
+  const [viewMode, setViewMode] = useState('summary');
   const [showCategoryIva, setShowCategoryIva] = useState(false);
   const [showSupplierIva, setShowSupplierIva] = useState(false);
   const [supplierSortMode, setSupplierSortMode] = useState('alpha');
+  const [projectBalance, setProjectBalance] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [recentTransactions, setRecentTransactions] = useState([]);
 
   useEffect(() => {
     let ok = true;
@@ -1219,7 +2226,9 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
     Promise.allSettled([
       api.spendByCategory({ include_iva: showCategoryIva ? 'true' : 'false' }),
       api.expensesSummaryBySupplier({ include_iva: showSupplierIva ? 'true' : 'false' }),
-    ]).then(([categoryResult, supplierResult]) => {
+      fetchTransactionsTotalByType('EXPENSE', showCategoryIva),
+      fetchTransactionsTotalByType('INCOME', showCategoryIva),
+    ]).then(([categoryResult, supplierResult, expenseTotalResult, incomeTotalResult]) => {
       if (!ok) return;
 
       if (categoryResult.status === 'fulfilled') {
@@ -1233,10 +2242,25 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
         setSupplierSummaryError('');
       } else {
         setSupplierSummary([]);
-        setSupplierSummaryError(supplierResult.reason?.message || 'No se pudo cargar la vista por proveedor.');
+        setSupplierSummaryError(supplierResult.reason?.message || 'No se pudo cargar el resumen por proveedor.');
       }
 
-      setLoading(false);
+      const expensesTotal = expenseTotalResult.status === 'fulfilled' ? Number(expenseTotalResult.value) || 0 : 0;
+      const incomeTotal = incomeTotalResult.status === 'fulfilled' ? Number(incomeTotalResult.value) || 0 : 0;
+      setProjectBalance(Number((incomeTotal - expensesTotal).toFixed(2)));
+
+      api.transactions({ type: 'EXPENSE', page: '1', limit: '5' })
+        .then((response) => {
+          if (!ok) return;
+          setRecentTransactions(Array.isArray(response?.items) ? response.items : []);
+        })
+        .catch(() => {
+          if (!ok) return;
+          setRecentTransactions([]);
+        })
+        .finally(() => {
+          if (ok) setLoading(false);
+        });
     });
 
     return () => {
@@ -1257,6 +2281,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
 
     return rows.sort((a, b) => (a.supplierName || '').localeCompare(b.supplierName || '', 'es'));
   }, [supplierSummary, supplierSortMode]);
+
   const categoryRows = Array.isArray(stats?.rows) ? stats.rows : [];
   const topCategories = useMemo(
     () => [...categoryRows].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0)).slice(0, 6),
@@ -1274,7 +2299,8 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       })
       .join(' ');
   }, [categoryRows]);
-  const biggestCategory = topCategories[0];
+
+  const biggestCategory = topCategories[0] || null;
   const allocatedPercent = Math.min(
     100,
     Math.max(0, topCategories.reduce((acc, row) => acc + (Number(row.percent) || 0), 0))
@@ -1282,237 +2308,656 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
 
   const subtitle =
     viewMode === 'supplier'
-      ? 'Totales agrupados por proveedor (SAP).'
-      : viewMode === 'experimental'
-        ? 'Vista visual experimental de categorías.'
-        : 'Porcentaje = gasto de la categoría / total de egresos';
+      ? 'Resumen operativo de egresos SAP/SBO por proveedor.'
+      : viewMode === 'summary'
+        ? 'KPIs y visuales de Categoría 2 para seguimiento diario.'
+        : 'Detalle por Categoría 2 con proporción sobre el total de egresos.';
 
-  const renderCategorySummaryHeader = () => (
-    <div className="row" style={{ justifyContent: 'space-between' }}>
-      <div className="badge">Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(stats.total_expenses || 0)}</div>
-      {isAdmin && (
-        <button
-          className="secondary"
-          onClick={async () => {
-            const confirmed = window.confirm('Esto solo agrega faltantes, no borra');
-            if (!confirmed) return;
-            try {
-              await api.seed();
-              location.reload();
-            } catch (_) {
-              // Intencionalmente silencioso para mantener el comportamiento previo.
-            }
-          }}
-        >
-          Seed categorías
-        </button>
-      )}
-    </div>
-  );
-
-  let dashboardContent = <div style={{ padding: '12px 0' }}>No hay egresos aún. Registra uno para ver el dashboard.</div>;
-
-  if (loading) {
-    dashboardContent = <div style={{ padding: '12px 0' }}>Cargando...</div>;
-  } else if (viewMode === 'supplier') {
-    if (supplierSummaryError) {
-      dashboardContent = <div style={{ padding: '12px 0' }}>Error: {supplierSummaryError}</div>;
-    } else if (supplierSummary.length) {
-      dashboardContent = (
-        <div style={{ marginTop: 12 }} className="grid">
-          <div className="badge">Total egresos SAP {showSupplierIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(supplierTotal)}</div>
-          <div style={{ overflowX: 'auto' }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Proveedor</th>
-                  <th>Movimientos</th>
-                  <th>Subtotal</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedSupplierSummary.map((row) => (
-                  <tr key={row.supplierId || row.supplierName}>
-                    <td>{row.supplierName || '(Sin proveedor)'}</td>
-                    <td>{row.count}</td>
-                    <td>${formatMoney(row.totalAmount)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      );
-    } else {
-      dashboardContent = <div style={{ padding: '12px 0' }}>No hay egresos SAP agrupados por proveedor para mostrar.</div>;
-    }
-  } else if (stats?.error) {
-    dashboardContent = <div style={{ padding: '12px 0' }}>Error: {stats.error}</div>;
-  } else if (categoryRows.length) {
-    if (viewMode === 'experimental') {
-      dashboardContent = (
-        <div style={{ marginTop: 12 }} className="dashboard-experimental">
-          <div className="dashboard-kpi-grid">
-            <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">💰</div>
-              <strong>${formatMoney(stats.total_expenses || 0)}</strong>
-              <span>Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}</span>
-            </div>
-            <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">📊</div>
-              <strong>{categoryRows.length}</strong>
-              <span>Categorías con movimiento</span>
-            </div>
-            <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">🏷️</div>
-              <strong>{biggestCategory?.category_name || 'Sin datos'}</strong>
-              <span>Mayor categoría (${formatMoney(biggestCategory?.amount || 0)})</span>
-            </div>
-          </div>
-
-          <div className="dashboard-experimental-grid">
-            <section className="dashboard-panel">
-              <h3>Comportamiento por categoría</h3>
-              <svg
-                viewBox="0 0 100 100"
-                preserveAspectRatio="none"
-                className="dashboard-line-chart"
-                role="img"
-                aria-label="Tendencia de categorías por monto"
-              >
-                <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
-              </svg>
-              <div className="small">Visual experimental para comparar magnitudes entre categorías.</div>
-            </section>
-
-            <section className="dashboard-panel dashboard-gauge-panel">
-              <h3>Distribución top categorías</h3>
-              <div
-                className="dashboard-gauge"
-                style={{
-                  background: `conic-gradient(#1f4d96 0deg ${(allocatedPercent / 100) * 360}deg, #e2e8f0 ${(allocatedPercent / 100) * 360}deg 360deg)`,
-                }}
-              >
-                <span>{allocatedPercent.toFixed(1)}%</span>
-              </div>
-              <div className="small">Participación acumulada de las 6 categorías principales.</div>
-            </section>
-
-            <section className="dashboard-panel">
-              <h3>Avance por categoría</h3>
-              <div className="grid">
-                {topCategories.map((r) => {
-                  const percent = Number(r.percent) || 0;
-                  const fillWidth = Math.max(0, Math.min(100, percent));
-                  return (
-                    <div key={r.category_id} style={{ display: 'grid', gap: 4 }}>
-                      <div className="row" style={{ justifyContent: 'space-between' }}>
-                        <div style={{ fontWeight: 700 }}>{r.category_name}</div>
-                        <div className="small">{percent.toFixed(2)}%</div>
-                      </div>
-                      <div className="bar" aria-label={`Barra de avance de ${r.category_name}`}>
-                        <div style={{ width: fillWidth + '%' }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            <section className="dashboard-panel">
-              <h3>Montos principales</h3>
-              <div className="dashboard-column-chart">
-                {topCategories.slice(0, 5).map((r) => {
-                  const amount = Number(r.amount) || 0;
-                  const maxAmount = Number(biggestCategory?.amount) || 1;
-                  return (
-                    <div key={`column-${r.category_id}`} className="dashboard-column-item">
-                      <div className="dashboard-column-value">${formatMoney(amount)}</div>
-                      <div className="dashboard-column-track">
-                        <div className="dashboard-column-fill" style={{ height: `${Math.max(12, (amount / maxAmount) * 100)}%` }} />
-                      </div>
-                      <div className="dashboard-column-label">{r.category_name}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          </div>
-
-          {renderCategorySummaryHeader()}
-        </div>
-      );
-    } else {
-      dashboardContent = (
-        <div style={{ marginTop: 12 }} className="grid">
-          {renderCategorySummaryHeader()}
-          {categoryRows.map((r) => {
-            const percent = Number(r.percent) || 0;
-            const fillWidth = Math.max(0, Math.min(100, percent));
-
-            return (
-              <div key={r.category_id} style={{ display: 'grid', gap: 6 }}>
-                <div className="row" style={{ justifyContent: 'space-between' }}>
-                  <div style={{ fontWeight: 700 }}>{r.category_name}</div>
-                  <div>
-                    ${formatMoney(r.amount)} <span className="small">({percent.toFixed(2)}%)</span>
-                  </div>
-                </div>
-                <div className="bar" aria-label={`Barra de avance de ${r.category_name}`}>
-                  <div style={{ width: fillWidth + '%' }}>
-                    <span>{percent.toFixed(2)}%</span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      );
-    }
-  }
+  const dashboardTotals = [
+    {
+      label: 'Total mes',
+      value: formatCurrency(stats?.total_expenses || 0),
+      helper: showCategoryIva ? 'Egresos con IVA' : 'Egresos sin IVA',
+    },
+    {
+      label: 'Movimientos',
+      value: String(categoryRows.length),
+      helper: 'Categorías activas',
+    },
+    {
+      label: 'Proveedores',
+      value: String(supplierSummary.length),
+      helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+    {
+      label: 'Última importación SAP',
+      value: recentTransactions[0]?.date ? String(recentTransactions[0].date).slice(0, 10) : 'Sin datos',
+      helper: recentTransactions[0]?.sourceSbo ? `SBO ${recentTransactions[0].sourceSbo}` : 'Pendiente',
+    },
+  ];
 
   return (
-    <div className="card">
-      <h2 style={{ margin: '0 0 8px' }}>Dashboard de egresos</h2>
-      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
-        <button className={viewMode === 'experimental' ? '' : 'secondary'} onClick={() => setViewMode('experimental')}>
-          Vista experimental
+    <div className="card dashboard-shell">
+      <div className="dashboard-header">
+        <div>
+          <h2 style={{ margin: 0 }}>Dashboard de egresos</h2>
+          <div className="small" style={{ marginTop: 2 }}>{subtitle}</div>
+        </div>
+      </div>
+
+      <div className="dashboard-tabs">
+        <button className={viewMode === 'summary' ? '' : 'secondary'} onClick={() => setViewMode('summary')}>
+          Resumen
         </button>
         <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
-          Por categoría
+          Por Categoría 2
         </button>
         <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
           Por proveedor
         </button>
       </div>
-      <div className="small">{subtitle}</div>
 
-      {viewMode === 'supplier' ? (
-        <div className="row" style={{ marginTop: 8 }}>
-          <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
+      <div className="dashboard-controls">
+        {viewMode === 'supplier' ? (
+          <>
+            <label className="small dashboard-checkbox">
+              <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
+              Mostrar IVA
+            </label>
+            <label className="small dashboard-checkbox">
+              <input
+                type="checkbox"
+                checked={supplierSortMode === 'amount'}
+                onChange={(e) => setSupplierSortMode(e.target.checked ? 'amount' : 'alpha')}
+              />
+              Ordenar por monto (mayor a menor)
+            </label>
+          </>
+        ) : (
+          <label className="small dashboard-checkbox">
+            <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
             Mostrar IVA
           </label>
-          <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <input
-              type="checkbox"
-              checked={supplierSortMode === 'amount'}
-              onChange={(e) => setSupplierSortMode(e.target.checked ? 'amount' : 'alpha')}
-            />
-            Ordenar por monto (mayor a menor)
-          </label>
-        </div>
-      ) : (
-        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
-          Mostrar IVA
-        </label>
-      )}
+        )}
+      </div>
 
-      {dashboardContent}
+      {loading ? (
+        <div className="dashboard-state">Cargando indicadores del dashboard...</div>
+      ) : stats?.error ? (
+        <div className="dashboard-state dashboard-state-error">Error al cargar categorías: {stats.error}</div>
+      ) : (
+        <>
+          <div className="dashboard-kpi-grid">
+            {dashboardTotals.map((item) => (
+              <div key={item.label} className="dashboard-kpi-card">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <div className="small">{item.helper}</div>
+              </div>
+            ))}
+          </div>
+
+          {viewMode === 'supplier' ? (
+            supplierSummaryError ? (
+              <div className="dashboard-state dashboard-state-error">Error al cargar proveedores: {supplierSummaryError}</div>
+            ) : !sortedSupplierSummary.length ? (
+              <div className="dashboard-state">No hay egresos SAP/SBO agrupados por proveedor para este proyecto.</div>
+            ) : (
+              <div className="dashboard-panel" style={{ marginTop: 4 }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <h3 style={{ margin: 0 }}>Resumen por proveedor</h3>
+                  <span className="badge">Total del resumen: {formatCurrency(supplierTotal)}</span>
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Proveedor</th>
+                        <th>Movimientos</th>
+                        <th>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedSupplierSummary.map((row) => (
+                        <tr key={row.supplierId || row.supplierName}>
+                          <td>{row.supplierName || '(Sin proveedor)'}</td>
+                          <td>{row.count || 0}</td>
+                          <td>{formatCurrency(row.totalAmount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          ) : !categoryRows.length ? (
+            <div className="dashboard-state">No hay egresos registrados para mostrar en Categoría 2.</div>
+          ) : viewMode === 'summary' ? (
+            <div className="dashboard-summary">
+              <div className="dashboard-summary-grid">
+                <section className="dashboard-panel">
+                  <h3>Comportamiento por Categoría 2</h3>
+                  <svg
+                    viewBox="0 0 100 100"
+                    preserveAspectRatio="none"
+                    className="dashboard-line-chart"
+                    role="img"
+                    aria-label="Tendencia de categorías por monto"
+                  >
+                    <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
+                  </svg>
+                  <div className="small">Comparativo visual de montos entre categorías 2 principales.</div>
+                </section>
+
+                <section className="dashboard-panel dashboard-gauge-panel">
+                  <h3>Peso del top de Categoría 2</h3>
+                  <div
+                    className="dashboard-gauge"
+                    style={{
+                      background: `conic-gradient(#1f4d96 0deg ${(allocatedPercent / 100) * 360}deg, #e2e8f0 ${(allocatedPercent / 100) * 360}deg 360deg)`,
+                    }}
+                  >
+                    <span>{allocatedPercent.toFixed(1)}%</span>
+                  </div>
+                  <div className="small">Participación acumulada de las 6 categorías 2 principales.</div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Categorías 2 principales</h3>
+                  <div className="grid">
+                    {topCategories.map((row) => {
+                      const percent = Number(row.percent) || 0;
+                      const fillWidth = Math.max(0, Math.min(100, percent));
+                      return (
+                        <div key={row.category_id} style={{ display: 'grid', gap: 4 }}>
+                          <div className="row" style={{ justifyContent: 'space-between' }}>
+                            <strong>{row.category_name}</strong>
+                            <span className="small">{percent.toFixed(2)}%</span>
+                          </div>
+                          <div className="bar" aria-label={`Barra de avance de ${row.category_name}`}>
+                            <div style={{ width: `${fillWidth}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Actividad reciente</h3>
+                  <div className="dashboard-recent-list">
+                    {recentTransactions.length ? recentTransactions.slice(0, 4).map((tx) => (
+                      <div key={tx.id || tx._id || `${tx.date}-${tx.description}`} className="dashboard-recent-item">
+                        <div>
+                          <strong>{tx.description || tx.concepto || 'Movimiento sin descripción'}</strong>
+                          <div className="small">{String(tx.date || '').slice(0, 10)} · {tx.supplierName || tx.sapMeta?.businessPartner || 'Sin proveedor'}</div>
+                        </div>
+                        <strong>{formatCurrency(showCategoryIva ? tx.amount : tx.subtotal)}</strong>
+                      </div>
+                    )) : <div className="small">No hay movimientos recientes para mostrar.</div>}
+                  </div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Montos principales</h3>
+                  <div className="dashboard-column-chart">
+                    {topCategories.slice(0, 5).map((row) => {
+                      const amount = Number(row.amount) || 0;
+                      const maxAmount = Number(biggestCategory?.amount) || 1;
+                      return (
+                        <div key={`column-${row.category_id}`} className="dashboard-column-item">
+                          <div className="dashboard-column-value">{formatCurrency(amount)}</div>
+                          <div className="dashboard-column-track">
+                            <div className="dashboard-column-fill" style={{ height: `${Math.max(12, (amount / maxAmount) * 100)}%` }} />
+                          </div>
+                          <div className="dashboard-column-label">{row.category_name}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            </div>
+          ) : (
+            <div className="dashboard-panel" style={{ marginTop: 4 }}>
+              <h3 style={{ margin: 0 }}>Resumen por Categoría 2</h3>
+              <div className="grid" style={{ marginTop: 8 }}>
+                {categoryRows.map((row) => {
+                  const percent = Number(row.percent) || 0;
+                  const fillWidth = Math.max(0, Math.min(100, percent));
+
+                  return (
+                    <div key={row.category_id} style={{ display: 'grid', gap: 6 }}>
+                      <div className="row" style={{ justifyContent: 'space-between' }}>
+                        <strong>{row.category_name}</strong>
+                        <div>
+                          {formatCurrency(row.amount)} <span className="small">({percent.toFixed(2)}%)</span>
+                        </div>
+                      </div>
+                      <div className="bar" aria-label={`Barra de avance de ${row.category_name}`}>
+                        <div style={{ width: `${fillWidth}%` }}>
+                          <span>{percent.toFixed(2)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
+
+
+function summarizeTransactionsByCategory(transactions, includeIva = false) {
+  const totalsByCategory = new Map();
+  let total = 0;
+
+  transactions.forEach((tx) => {
+    const category2 = resolveTransactionCategory2(tx);
+    const categoryId = String(category2.id || 'SIN_CATEGORIA_2');
+    const categoryName = String(category2.name || 'Sin categoría 2');
+    const amount = Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
+    total += amount;
+
+    const current = totalsByCategory.get(categoryId) || { category_id: categoryId, category_name: categoryName, amount: 0 };
+    current.amount += amount;
+    if (!current.category_name && categoryName) current.category_name = categoryName;
+    totalsByCategory.set(categoryId, current);
+  });
+
+  const safeTotal = total || 0;
+  const rows = [...totalsByCategory.values()]
+    .map((row) => ({
+      ...row,
+      amount: Number(row.amount.toFixed(2)),
+      percent: safeTotal > 0 ? Number(((row.amount / safeTotal) * 100).toFixed(2)) : 0,
+    }))
+    .sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0));
+
+  return {
+    rows,
+    total_expenses: Number(safeTotal.toFixed(2)),
+  };
+}
+
+function summarizeTransactionsBySupplier(transactions, includeIva = false) {
+  const totalsBySupplier = new Map();
+
+  transactions.forEach((tx) => {
+    const supplierName = String(tx?.supplierName || tx?.sapMeta?.businessPartner || '(Sin proveedor)');
+    const supplierId = String(tx?.supplierId || tx?.supplier_id || tx?.vendor_id || supplierName);
+    const amount = Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
+
+    const current = totalsBySupplier.get(supplierId) || {
+      supplierId,
+      supplierName,
+      totalAmount: 0,
+      count: 0,
+    };
+    current.totalAmount += amount;
+    current.count += 1;
+    if (!current.supplierName && supplierName) current.supplierName = supplierName;
+    totalsBySupplier.set(supplierId, current);
+  });
+
+  return [...totalsBySupplier.values()].map((row) => ({
+    ...row,
+    totalAmount: Number(row.totalAmount.toFixed(2)),
+  }));
+}
+
+async function fetchTransactionsTotalByType(type, includeIva = false) {
+  const PAGE_LIMIT = 500;
+  let page = 1;
+  let totalCount = 0;
+  let total = 0;
+
+  do {
+    const response = await api.transactions({
+      type,
+      page: String(page),
+      limit: String(PAGE_LIMIT),
+    });
+    const chunk = Array.isArray(response?.items) ? response.items : [];
+    chunk.forEach((tx) => {
+      total += Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
+    });
+    totalCount = Number(response?.totalCount) || 0;
+    page += 1;
+    if (!chunk.length) break;
+  } while ((page - 1) * PAGE_LIMIT < totalCount);
+
+  return Number(total.toFixed(2));
+}
+
+function DashboardIngresos({ selectedProjectId, refreshKey }) {
+  const [stats, setStats] = useState(null);
+  const [supplierSummary, setSupplierSummary] = useState([]);
+  const [supplierSummaryError, setSupplierSummaryError] = useState('');
+  const [viewMode, setViewMode] = useState('summary');
+  const [showCategoryIva, setShowCategoryIva] = useState(false);
+  const [showSupplierIva, setShowSupplierIva] = useState(false);
+  const [supplierSortMode, setSupplierSortMode] = useState('alpha');
+  const [projectBalance, setProjectBalance] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let ok = true;
+    const PAGE_LIMIT = 500;
+
+    async function loadIncomeDashboard() {
+      setLoading(true);
+      setSupplierSummaryError('');
+      try {
+        let page = 1;
+        let totalCount = 0;
+        let items = [];
+
+        do {
+          const response = await api.transactions({
+            type: 'INCOME',
+            page: String(page),
+            limit: String(PAGE_LIMIT),
+          });
+          const chunk = Array.isArray(response?.items) ? response.items : [];
+          items = items.concat(chunk);
+          totalCount = Number(response?.totalCount) || items.length;
+          page += 1;
+          if (!chunk.length) break;
+        } while (items.length < totalCount);
+
+        if (!ok) return;
+
+        const incomeByCategory = summarizeTransactionsByCategory(items, showCategoryIva);
+        setStats(incomeByCategory);
+        setSupplierSummary(summarizeTransactionsBySupplier(items, showSupplierIva));
+
+        const expenseTotal = await fetchTransactionsTotalByType('EXPENSE', showCategoryIva);
+        if (!ok) return;
+        const incomeTotal = Number(incomeByCategory.total_expenses) || 0;
+        setProjectBalance(Number((incomeTotal - expenseTotal).toFixed(2)));
+      } catch (error) {
+        if (!ok) return;
+        setStats({ error: error?.message || 'No se pudo cargar el dashboard de ingresos.' });
+        setSupplierSummary([]);
+        setSupplierSummaryError(error?.message || 'No se pudo cargar el resumen por proveedor de ingresos.');
+      } finally {
+        if (ok) setLoading(false);
+      }
+    }
+
+    loadIncomeDashboard();
+    return () => {
+      ok = false;
+    };
+  }, [showCategoryIva, showSupplierIva, selectedProjectId, refreshKey]);
+
+  const supplierTotal = supplierSummary.reduce((acc, row) => acc + (Number(row.totalAmount) || 0), 0);
+  const sortedSupplierSummary = useMemo(() => {
+    const rows = [...supplierSummary];
+    if (supplierSortMode === 'amount') {
+      return rows.sort((a, b) => {
+        const amountDiff = (Number(b.totalAmount) || 0) - (Number(a.totalAmount) || 0);
+        if (amountDiff !== 0) return amountDiff;
+        return (a.supplierName || '').localeCompare(b.supplierName || '', 'es');
+      });
+    }
+
+    return rows.sort((a, b) => (a.supplierName || '').localeCompare(b.supplierName || '', 'es'));
+  }, [supplierSummary, supplierSortMode]);
+
+  const categoryRows = Array.isArray(stats?.rows) ? stats.rows : [];
+  const topCategories = useMemo(
+    () => [...categoryRows].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0)).slice(0, 6),
+    [categoryRows]
+  );
+  const chartPoints = useMemo(() => {
+    if (!categoryRows.length) return '';
+    const sorted = [...categoryRows].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0)).slice(0, 10);
+    const maxAmount = Math.max(...sorted.map((row) => Number(row.amount) || 0), 1);
+    return sorted
+      .map((row, index) => {
+        const x = sorted.length === 1 ? 0 : (index / (sorted.length - 1)) * 100;
+        const y = 100 - ((Number(row.amount) || 0) / maxAmount) * 80;
+        return `${x},${Math.max(4, y)}`;
+      })
+      .join(' ');
+  }, [categoryRows]);
+
+  const biggestCategory = topCategories[0] || null;
+  const allocatedPercent = Math.min(
+    100,
+    Math.max(0, topCategories.reduce((acc, row) => acc + (Number(row.percent) || 0), 0))
+  );
+
+  const subtitle =
+    viewMode === 'supplier'
+      ? 'Resumen operativo de ingresos por proveedor.'
+      : viewMode === 'summary'
+        ? 'KPIs y visuales de Categoría 2 para seguimiento diario de ingresos.'
+        : 'Detalle por Categoría 2 con proporción sobre el total de ingresos.';
+
+  const dashboardTotals = [
+    {
+      label: 'Total mes',
+      value: formatCurrency(stats?.total_expenses || 0),
+      helper: showCategoryIva ? 'Ingresos con IVA' : 'Ingresos sin IVA',
+    },
+    {
+      label: 'Movimientos',
+      value: String(categoryRows.length),
+      helper: 'Categorías activas',
+    },
+    {
+      label: 'Proveedores',
+      value: String(supplierSummary.length),
+      helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+    {
+      label: 'Balance proyecto',
+      value: formatCurrency(projectBalance),
+      helper: 'Ingresos menos egresos',
+    },
+  ];
+
+  return (
+    <div className="card dashboard-shell">
+      <div className="dashboard-header">
+        <div>
+          <h2 style={{ margin: 0 }}>Dashboard ingresos</h2>
+          <div className="small" style={{ marginTop: 4 }}>{subtitle}</div>
+        </div>
+      </div>
+
+      <div className="dashboard-tabs">
+        <button className={viewMode === 'summary' ? '' : 'secondary'} onClick={() => setViewMode('summary')}>
+          Resumen
+        </button>
+        <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
+          Por Categoría 2
+        </button>
+        <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
+          Por proveedor
+        </button>
+      </div>
+
+      <div className="dashboard-controls">
+        {viewMode === 'supplier' ? (
+          <>
+            <label className="small dashboard-checkbox">
+              <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
+              Mostrar IVA
+            </label>
+            <label className="small dashboard-checkbox">
+              <input
+                type="checkbox"
+                checked={supplierSortMode === 'amount'}
+                onChange={(e) => setSupplierSortMode(e.target.checked ? 'amount' : 'alpha')}
+              />
+              Ordenar por monto (mayor a menor)
+            </label>
+          </>
+        ) : (
+          <label className="small dashboard-checkbox">
+            <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
+            Mostrar IVA
+          </label>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="dashboard-state">Cargando indicadores del dashboard de ingresos...</div>
+      ) : stats?.error ? (
+        <div className="dashboard-state dashboard-state-error">Error al cargar categorías: {stats.error}</div>
+      ) : (
+        <>
+          <div className="dashboard-kpi-grid">
+            {dashboardTotals.map((item) => (
+              <div key={item.label} className="dashboard-kpi-card">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <div className="small">{item.helper}</div>
+              </div>
+            ))}
+          </div>
+
+          {viewMode === 'supplier' ? (
+            supplierSummaryError ? (
+              <div className="dashboard-state dashboard-state-error">Error al cargar proveedores: {supplierSummaryError}</div>
+            ) : !sortedSupplierSummary.length ? (
+              <div className="dashboard-state">No hay ingresos agrupados por proveedor para este proyecto.</div>
+            ) : (
+              <div className="dashboard-panel" style={{ marginTop: 4 }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <h3 style={{ margin: 0 }}>Resumen por proveedor</h3>
+                  <span className="badge">Total del resumen: {formatCurrency(supplierTotal)}</span>
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Proveedor</th>
+                        <th>Movimientos</th>
+                        <th>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedSupplierSummary.map((row) => (
+                        <tr key={row.supplierId || row.supplierName}>
+                          <td>{row.supplierName || '(Sin proveedor)'}</td>
+                          <td>{row.count || 0}</td>
+                          <td>{formatCurrency(row.totalAmount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )
+          ) : !categoryRows.length ? (
+            <div className="dashboard-state">No hay ingresos registrados para mostrar en Categoría 2.</div>
+          ) : viewMode === 'summary' ? (
+            <div className="dashboard-summary">
+              <div className="dashboard-summary-grid">
+                <section className="dashboard-panel">
+                  <h3>Comportamiento por Categoría 2</h3>
+                  <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="dashboard-line-chart" role="img" aria-label="Tendencia de categorías por monto">
+                    <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
+                  </svg>
+                  <div className="small">Comparativo visual de montos entre categorías 2 principales.</div>
+                </section>
+
+                <section className="dashboard-panel dashboard-gauge-panel">
+                  <h3>Peso del top de Categoría 2</h3>
+                  <div
+                    className="dashboard-gauge"
+                    style={{
+                      background: `conic-gradient(#1f4d96 0deg ${(allocatedPercent / 100) * 360}deg, #e2e8f0 ${(allocatedPercent / 100) * 360}deg 360deg)`,
+                    }}
+                  >
+                    <span>{allocatedPercent.toFixed(1)}%</span>
+                  </div>
+                  <div className="small">Participación acumulada de las 6 categorías 2 principales.</div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Categorías 2 principales</h3>
+                  <div className="grid">
+                    {topCategories.map((row) => {
+                      const percent = Number(row.percent) || 0;
+                      const fillWidth = Math.max(0, Math.min(100, percent));
+                      return (
+                        <div key={row.category_id} style={{ display: 'grid', gap: 4 }}>
+                          <div className="row" style={{ justifyContent: 'space-between' }}>
+                            <strong>{row.category_name}</strong>
+                            <span className="small">{percent.toFixed(2)}%</span>
+                          </div>
+                          <div className="bar" aria-label={`Barra de avance de ${row.category_name}`}>
+                            <div style={{ width: `${fillWidth}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <section className="dashboard-panel">
+                  <h3>Montos principales</h3>
+                  <div className="dashboard-column-chart">
+                    {topCategories.slice(0, 5).map((row) => {
+                      const amount = Number(row.amount) || 0;
+                      const maxAmount = Number(biggestCategory?.amount) || 1;
+                      return (
+                        <div key={`column-${row.category_id}`} className="dashboard-column-item">
+                          <div className="dashboard-column-value">{formatCurrency(amount)}</div>
+                          <div className="dashboard-column-track">
+                            <div className="dashboard-column-fill" style={{ height: `${Math.max(12, (amount / maxAmount) * 100)}%` }} />
+                          </div>
+                          <div className="dashboard-column-label">{row.category_name}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              </div>
+            </div>
+          ) : (
+            <div className="dashboard-panel" style={{ marginTop: 4 }}>
+              <h3 style={{ margin: 0 }}>Resumen por Categoría 2</h3>
+              <div className="grid" style={{ marginTop: 8 }}>
+                {categoryRows.map((row) => {
+                  const percent = Number(row.percent) || 0;
+                  const fillWidth = Math.max(0, Math.min(100, percent));
+
+                  return (
+                    <div key={row.category_id} style={{ display: 'grid', gap: 6 }}>
+                      <div className="row" style={{ justifyContent: 'space-between' }}>
+                        <strong>{row.category_name}</strong>
+                        <div>
+                          {formatCurrency(row.amount)} <span className="small">({percent.toFixed(2)}%)</span>
+                        </div>
+                      </div>
+                      <div className="bar" aria-label={`Barra de avance de ${row.category_name}`}>
+                        <div style={{ width: `${fillWidth}%` }}>
+                          <span>{percent.toFixed(2)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 
 
 const ADD_NEW_VENDOR_VALUE = '__add_new_vendor__';
@@ -1647,7 +3092,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
       </form>
 
       <div className="small" style={{ marginTop: 10 }}>
-        Nota: si no ves categorías/proveedores, ve a “Catálogo” o presiona “Seed categorías” en Dashboard.
+        Nota: si no ves categorías/proveedores, ve a “Ajustes” → “Catálogo”.
       </div>
     </div>
   );
@@ -1676,18 +3121,20 @@ function EditModal({ title, children, onClose, onSave }) {
 /* ================= TRANSACTIONS ================= */
 function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactionsChanged, selectedProjectId }) {
   const UNCATEGORIZED_FILTER = '__UNCATEGORIZED__';
+  const getVendorIdentity = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
+  const getVendorSupplierId = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
   const getTransactionStableKey = (tx) =>
-    tx?._id ?? tx?.id ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sap?.pagoNum || ''}|${tx?.sap?.facturaNum || ''}|${tx?.sap?.montoAplicado || ''}`;
+    tx?._id
+    ?? tx?.id
+    ?? `${tx?.sourceDb || tx?.source || ''}|${tx?.sapMeta?.paymentNum || ''}|${tx?.sapMeta?.invoiceNum || ''}|${tx?.amount || ''}`;
   const dedupeTransactions = (items) => Array.from(new Map((Array.isArray(items) ? items : []).map((tx) => [getTransactionStableKey(tx), tx])).values());
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
-  const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
 
   const [rows, setRows] = useState([]);
   const [serverTotals, setServerTotals] = useState(null);
   const [editing, setEditing] = useState(null);
   const [filter, setFilter] = useState('ALL');
   const [categoryFilter, setCategoryFilter] = useState('ALL');
-  const [sapCategoryFilter, setSapCategoryFilter] = useState('ALL');
   const [supplierFilter, setSupplierFilter] = useState('ALL');
   const [sourceDbFilter, setSourceDbFilter] = useState('ALL');
   const [searchFilter, setSearchFilter] = useState('');
@@ -1714,17 +3161,28 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setLoading(true);
     setErr('');
     try {
-      const response = await api.transactions({
+      const selectedVendor = vendors.find((vendor) => {
+        const vendorId = getVendorIdentity(vendor);
+        return vendorId && vendorId === supplierFilter;
+      }) || null;
+
+      const supplierIdParam = supplierFilter === 'ALL'
+        ? ''
+        : String(getVendorSupplierId(selectedVendor) || supplierFilter || '').trim();
+
+      const requestParams = {
         page: String(targetPage),
         limit: String(limit),
         type: filter === 'ALL' ? '' : filter,
         category_id: '',
-        supplierId: supplierFilter === 'ALL' ? '' : supplierFilter,
+        supplierId: supplierIdParam,
+        projectId: String(selectedProjectId || ''),
         sourceDb: sourceDbFilter === 'ALL' ? '' : sourceDbFilter,
         q: searchFilter.trim(),
         from: dateFrom,
         to: dateTo,
-      });
+      };
+      const response = await api.transactions(requestParams);
 
       setRows(dedupeTransactions(response?.items));
       setServerTotals(response?.totals || null);
@@ -1741,7 +3199,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setPage(1);
     setRows([]);
     load(1);
-  }, [filter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId]);
+  }, [filter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId, vendors]);
 
   useEffect(() => {
     setSelectedRows([]);
@@ -1751,7 +3209,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     const byVendorId = new Map();
 
     vendors.forEach((vendor) => {
-      const value = String(vendor?._id || vendor?.id || '').trim();
+      const value = getVendorIdentity(vendor);
       if (!value || byVendorId.has(value)) return;
       const name = String(vendor?.name || '').trim().replace(/\s+/g, ' ');
       if (!name) return;
@@ -1767,23 +3225,6 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setSupplierFilter('ALL');
   }, [selectedProjectId]);
 
-  const sapCategoryOptions = useMemo(() => {
-    const map = new Map();
-    cats
-      .filter((c) => c?.source === 'sap')
-      .forEach((c) => {
-        const value = String(c?.code || c?.name || '').trim();
-        if (!value || map.has(value)) return;
-        map.set(value, c?.displayLabel || c?.name || value);
-      });
-    rows.forEach((row) => {
-      const value = String(row?.categoryHintCode || row?.categoryHintName || '').trim();
-      if (!value || map.has(value)) return;
-      map.set(value, row?.categoryHintName || row?.categoryHintCode || value);
-    });
-    return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es', { sensitivity: 'base' }));
-  }, [cats, rows]);
-
   const shown = rows
     .filter((row) => {
       if (categoryFilter === 'ALL') return true;
@@ -1795,12 +3236,11 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       if (!query) return true;
       const searchableFields = [
         row.description,
-        row.concept,
-        row.proveedorNombre,
         row.supplierName,
-        row.proveedor?.name,
+        row.projectDisplayName,
         getTransactionCategoryLabel(row, catMap),
-        getCategoryHintCode(row),
+        row.categoryCode,
+        row.sourceSbo,
       ];
       return searchableFields.some((field) => String(field || '').toLowerCase().includes(query));
     })
@@ -1810,22 +3250,26 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       const bCreatedAt = b.created_at || '';
       if (aCreatedAt !== bCreatedAt) return bCreatedAt.localeCompare(aCreatedAt);
 
-      if (a.date === b.date) return 0;
-      return b.date.localeCompare(a.date);
+      const aDate = String(a.date || '');
+      const bDate = String(b.date || '');
+      if (aDate === bDate) return 0;
+      return bDate.localeCompare(aDate);
     }
 
     if (sortBy === 'supplier_asc') {
-      const aSupplier = (a.proveedorNombre || a.supplierName || vendorMap[a.vendor_id] || a.proveedor?.name || '').toLowerCase();
-      const bSupplier = (b.proveedorNombre || b.supplierName || vendorMap[b.vendor_id] || b.proveedor?.name || '').toLowerCase();
+      const aSupplier = String(a.supplierName || '').toLowerCase();
+      const bSupplier = String(b.supplierName || '').toLowerCase();
       if (aSupplier !== bSupplier) return aSupplier.localeCompare(bSupplier, 'es');
     }
 
-    if (a.date === b.date) {
+    const aDate = String(a.date || '');
+    const bDate = String(b.date || '');
+    if (aDate === bDate) {
       const aCreatedAt = a.created_at || '';
       const bCreatedAt = b.created_at || '';
       return bCreatedAt.localeCompare(aCreatedAt);
     }
-    return b.date.localeCompare(a.date);
+    return bDate.localeCompare(aDate);
   });
 
   async function saveEdit() {
@@ -1929,7 +3373,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   return (
     <div className="card">
       <div className="row" style={{ justifyContent: 'space-between' }}>
-        <h2 style={{ margin: 0 }}>Movimientos</h2>
+        <h2 style={{ margin: 0 }}>Editar movimientos</h2>
         <div className="row">
           <input
             type="search"
@@ -1980,7 +3424,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             ))}
           </select>
           <select value={sourceDbFilter} onChange={(e) => { setPage(1); setSourceDbFilter(e.target.value); }}>
-            <option value="ALL">Todas las bases</option>
+            <option value="ALL">Todos los orígenes</option>
             <option value="IVA">Base IVA</option>
             <option value="EFECTIVO">Base EFECTIVO</option>
           </select>
@@ -2028,9 +3472,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       )}
 
       <div className="row" style={{ gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
-        <div className="badge">Total egresos sin IVA: ${formatMoney(backendTotals.expensesWithoutTax)}</div>
-        <div className="badge">Total IVA: ${formatMoney(backendTotals.expensesTax)}</div>
-        <div className="badge">Total egresos con IVA: ${formatMoney(backendTotals.expensesGross)}</div>
+        <div className="badge">Total egresos sin IVA: {formatCurrency(backendTotals.expensesWithoutTax)}</div>
+        <div className="badge">Total IVA: {formatCurrency(backendTotals.expensesTax)}</div>
+        <div className="badge">Total egresos con IVA: {formatCurrency(backendTotals.expensesGross)}</div>
       </div>
 
       {loading ? (
@@ -2043,16 +3487,16 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <thead>
               <tr>
                 <th>Fecha</th>
-                <th>Tipo</th>
-                <th>Origen</th>
-                <th>Base</th>
-                <th>Descripción</th>
-                <th>Categoría 2</th>
-                <th>Categoría SAP</th>
+                <th>Proyecto</th>
                 <th>Proveedor</th>
-                <th>Monto</th>
+                <th>Descripción</th>
+                <th>Categoría (actual)</th>
+                <th>Categoría 2</th>
+                <th>Subtotal</th>
                 <th>IVA</th>
-                <th>Total Factura</th>
+                <th>Total</th>
+                <th>Tipo</th>
+                <th>Origen / SBO</th>
                 {isAdmin && <th>Acciones</th>}
                 {isAdmin && <th>Seleccionar</th>}
               </tr>
@@ -2070,22 +3514,38 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
               )}
               {shown.map((r) => {
                 const isSapIva = isSapIvaTransaction(r);
+                const totalValue = getTransactionTotalValue(r);
+                const resolvedCategory2Name = String(
+                  r.resolvedCategory2Name
+                  || cats.find((c) => String(c.code || c.id) === String(r.resolvedCategory2Id || ''))?.name
+                  || 'Trabajos Especiales sin clasificar',
+                ).trim();
+                const resolvedCategory2Source = String(r.resolvedCategory2Source || '').trim();
                 return (
                 <tr key={getTransactionStableKey(r)}>
-                  <td>{r.date}</td>
-                  <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
-                  <td>{r.source === 'sap' ? <span className="badge">SAP</span> : ''}</td>
-                  <td>{r.sourceDb ? <span className="badge">{String(r.sourceDb).toUpperCase()}</span> : 'LEGACY/UNKNOWN'}</td>
-                  <td>{r.description || r.concept || ''}</td>
+                  <td>{r.date || '—'}</td>
+                  <td>{r.projectDisplayName || 'Sin proyecto'}</td>
+                  <td>{r.supplierName || '—'}</td>
+                  <td>{r.description || ''}</td>
                   <td>
                     {getTransactionCategoryLabel(r, catMap)}
-                    {r.categoryManualName && <span className="badge" style={{ marginLeft: 6 }}>Manual</span>}
+                    {r.categoryManualName && <span className="badge badge-manual" style={{ marginLeft: 6 }}>Manual</span>}
                   </td>
-                  <td>{getSapCategoryLabel(r) || '—'}</td>
-                  <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
-                  <td style={{ fontWeight: 800 }}>${formatMoney(r.subtotal ?? r.amount)}</td>
-                  <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
-                  <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.totalFactura ?? 0)}</td>
+                  <td>
+                    {resolvedCategory2Name}
+                    {resolvedCategory2Source && (
+                      <span className="badge" style={{ marginLeft: 6 }} title={`Origen Cat. 2: ${resolvedCategory2Source}`}>
+                        {resolvedCategory2Source}
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ fontWeight: 800 }}>{formatCurrency(r.subtotal ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>{formatCurrency(r.iva ?? 0)}</td>
+                  <td style={{ fontWeight: 700 }}>{formatCurrency(totalValue)}</td>
+                  <td>{r.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
+                  <td>
+                    <SourceBadges transaction={r} />
+                  </td>
                   {isAdmin && (
                     <td>
                       {(r.source !== 'sap' || isSapIva) && (
@@ -2124,13 +3584,13 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             </tbody>
             <tfoot>
               <tr>
-                <td colSpan={7} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (dataset filtrado):</td>
+                <td colSpan={8} style={{ fontWeight: 700, textAlign: 'right' }}>Sumatoria (dataset filtrado):</td>
                 <td style={{ fontWeight: 800 }}>
-                  ${formatMoney(backendTotals.incomeGross)} / ${formatMoney(backendTotals.expensesGross)}
+                  {formatCurrency(backendTotals.incomeGross)} / {formatCurrency(backendTotals.expensesGross)}
                 </td>
                 <td style={{ fontWeight: 700 }}>—</td>
                 <td style={{ fontWeight: 700 }}>—</td>
-                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: ${formatMoney(backendTotals.net)}</td>}
+                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {formatCurrency(backendTotals.net)}</td>}
                 {isAdmin && <td />}
               </tr>
             </tfoot>
@@ -2152,6 +3612,16 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
           onSave={saveEdit}
         >
           <div className="grid">
+            <label>Proyecto</label>
+            <input value={editing.projectDisplayName || ''} disabled />
+            <label>Proveedor</label>
+            <input value={editing.supplierName || ''} disabled />
+            <label>Categoría actual</label>
+            <input value={getTransactionCategoryLabel(editing, catMap)} disabled />
+            <label>Subtotal / IVA / Total</label>
+            <input value={`${formatCurrency(editing.subtotal ?? 0)} / ${formatCurrency(editing.iva ?? 0)} / ${formatCurrency(getTransactionTotalValue(editing))}`} disabled />
+            <label>Origen / SBO</label>
+            <input value={getTransactionSourceLabel(editing)} disabled />
             {!isSapIvaTransaction(editing) && (
               <>
                 <label>Fecha</label>
@@ -2199,34 +3669,70 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
 }
 
 function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
+  const getVendorIdentity = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [supplierFilter, setSupplierFilter] = useState('ALL');
+  const [categoryFilter, setCategoryFilter] = useState('ALL');
+  const [typeFilter, setTypeFilter] = useState('ALL');
+  const [sourceSboFilter, setSourceSboFilter] = useState('ALL');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [error, setError] = useState('');
+  const [category2Catalog, setCategory2Catalog] = useState([]);
   const limit = 50;
-  const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
-  const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
+  const catMap = useMemo(() => {
+    const source = new Map();
+    cats.forEach((c) => {
+      const key = String(c?.code || c?.id || '').trim();
+      const label = String(c?.displayLabel || c?.name || '').trim();
+      if (key && label) source.set(key, label);
+    });
+    category2Catalog.forEach((c) => {
+      const key = String(c?.id || c?.code || '').trim();
+      const label = String(c?.name || c?.displayLabel || '').trim();
+      if (key && label) source.set(key, label);
+    });
+    source.set(CATEGORY2_UNCLASSIFIED_ID, CATEGORY2_UNCLASSIFIED_NAME);
+    return Object.fromEntries(source.entries());
+  }, [cats, category2Catalog]);
   const selectedProjectName = useMemo(
-    () => projects.find((project) => String(project?._id || '') === String(selectedProjectId || ''))?.name || 'SIN PROYECTO',
+    () => {
+      const project = projects.find((item) => String(item?._id || '') === String(selectedProjectId || ''));
+      return project ? getProjectDisplayName(project) : 'SIN PROYECTO';
+    },
     [projects, selectedProjectId],
   );
   const reportTitle = `${selectedProjectName} - REPORTE DE EGRESOS`;
 
   useEffect(() => {
     setPage(1);
-  }, [query]);
+  }, [query, supplierFilter, categoryFilter, typeFilter, sourceSboFilter, dateFrom, dateTo, selectedProjectId]);
 
   useEffect(() => {
     setLoading(true);
     setError('');
+    const supplierIdParam = String(supplierFilter || '').startsWith('id:')
+      ? String(supplierFilter).slice(3).trim()
+      : '';
+    const supplierTextParam = decodeSupplierFilterSearchTerm(supplierFilter);
+    const queryParam = String(query || '').trim() || supplierTextParam;
+
     api.transactions({
-      type: 'EXPENSE',
+      type: typeFilter === 'ALL' ? '' : typeFilter,
+      category_id: categoryFilter === 'ALL' ? '' : categoryFilter,
       page: String(page),
       limit: String(limit),
-      q: query.trim(),
+      supplierId: supplierIdParam,
+      q: queryParam,
+      from: dateFrom,
+      to: dateTo,
+      projectId: String(selectedProjectId || ''),
     })
       .then((data) => {
         setRows(Array.isArray(data?.items) ? data.items : []);
@@ -2238,68 +3744,162 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         setError(err?.message || 'No se pudo buscar movimientos');
       })
       .finally(() => setLoading(false));
-  }, [page, query, selectedProjectId]);
+  }, [page, query, supplierFilter, categoryFilter, typeFilter, dateFrom, dateTo, selectedProjectId]);
 
-  const getAmountWithoutIva = (row) => {
-    const totalAmount = Number(row.amount) || 0;
-    const ivaAmount = Number(row.tax?.iva ?? row.iva);
-    const subtotalAmount = Number(row.tax?.subtotal);
+  useEffect(() => {
+    let isMounted = true;
+    api.supplierCategories()
+      .then((response) => {
+        if (!isMounted) return;
+        setCategory2Catalog(Array.isArray(response) ? response : []);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setCategory2Catalog([]);
+      });
 
-    if (Number.isFinite(subtotalAmount)) return subtotalAmount;
-    if (Number.isFinite(ivaAmount)) return totalAmount - ivaAmount;
-    return totalAmount;
-  };
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const shown = useMemo(
+    () => rows
+      .filter((row) => {
+        if (supplierFilter === 'ALL') return true;
+        const supplier = resolveTransactionSupplierIdentity(row);
+        return supplier.key === supplierFilter;
+      })
+      .filter((row) => {
+        if (categoryFilter === 'ALL') return true;
+        const resolvedCategory2Id = String(row?.resolvedCategory2Id || row?.resolved_category2_id || '').trim();
+        const resolvedCategory2Name = String(row?.resolvedCategory2Name || row?.resolved_category2_name || '').trim();
+        const category2 = resolveTransactionCategory2(row, catMap);
+        const normalizedFilter = String(categoryFilter || '').trim();
+        return (
+          resolvedCategory2Id === normalizedFilter
+          || category2.id === normalizedFilter
+          || resolvedCategory2Name === normalizedFilter
+          || category2.name === normalizedFilter
+        );
+      })
+      .filter((row) => {
+        if (sourceSboFilter === 'ALL') return true;
+        return String(row?.sourceSbo || '').trim() === sourceSboFilter;
+      })
+      .filter((row) => {
+        if (!dateFrom && !dateTo) return true;
+        return matchesDateRange(row?.date, dateFrom, dateTo);
+      })
+      .filter((row) => {
+        if (!query) return true;
+        return matchesTransactionSearch(row, query, catMap);
+      }),
+    [rows, supplierFilter, categoryFilter, sourceSboFilter, dateFrom, dateTo, query, catMap],
+  );
+
+  const supplierOptions = useMemo(() => {
+    const source = new Map();
+    vendors.forEach((vendor) => {
+      const supplierId = getVendorIdentity(vendor);
+      const value = supplierId ? `id:${supplierId}` : '';
+      const name = String(vendor?.name || '').trim();
+      if (!value || !name || source.has(value)) return;
+      const cardCode = String(vendor?.supplierCardCode || vendor?.externalIds?.sapCardCode || '').trim();
+      source.set(value, `${name} (${cardCode || 'Sin CardCode'})`);
+    });
+    rows.forEach((row) => {
+      const supplier = resolveTransactionSupplierIdentity(row);
+      if (!supplier.key || source.has(supplier.key)) return;
+      const labelName = supplier.name || 'Proveedor sin nombre';
+      const detail = supplier.cardCode || supplier.businessPartner || 'sin vínculo catálogo';
+      source.set(supplier.key, `${labelName} (${detail})`);
+    });
+    return Array.from(source.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
+  }, [vendors, rows]);
+
+  const categoryOptions = useMemo(() => {
+    const source = new Map();
+    category2Catalog.forEach((category) => {
+      const key = String(category?.id || category?.code || '').trim();
+      if (!key) return;
+      source.set(key, category?.displayLabel || category?.name || key);
+    });
+    rows.forEach((row) => {
+      const resolvedCategory2Id = String(row?.resolvedCategory2Id || row?.resolved_category2_id || '').trim();
+      const resolvedCategory2Name = String(row?.resolvedCategory2Name || row?.resolved_category2_name || '').trim();
+      const category2 = resolveTransactionCategory2(row, catMap);
+      const key = String(resolvedCategory2Id || category2.id || '').trim();
+      const label = String(resolvedCategory2Name || category2.name || key).trim();
+      if (!key || source.has(key)) return;
+      source.set(key, label || key);
+      if (!resolvedCategory2Id && resolvedCategory2Name && !source.has(resolvedCategory2Name)) {
+        source.set(resolvedCategory2Name, resolvedCategory2Name);
+      }
+    });
+    source.set(CATEGORY2_UNCLASSIFIED_ID, CATEGORY2_UNCLASSIFIED_NAME);
+    return Array.from(source.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
+  }, [rows, category2Catalog, catMap]);
+
+  const sourceSboOptions = useMemo(() => {
+    const source = new Set();
+    rows.forEach((row) => {
+      const value = String(row?.sourceSbo || '').trim();
+      if (value) source.add(value);
+    });
+    return Array.from(source).sort((a, b) => a.localeCompare(b, 'es'));
+  }, [rows]);
 
   const filteredTotal = useMemo(
-    () => rows.reduce((acc, r) => acc + getAmountWithoutIva(r), 0),
-    [rows],
+    () => shown.reduce((acc, row) => acc + getTransactionTotalValue(row), 0),
+    [shown],
   );
+  const pdfFilteredTotalWithoutTax = useMemo(
+    () => shown.reduce((acc, row) => {
+      const toPdfNumber = (value) => {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'string') {
+          const normalized = value.replace(/\s+/g, '').replace(',', '.');
+          const parsed = Number(normalized);
+          return Number.isFinite(parsed) ? parsed : 0;
+        }
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+
+      const subtotalRaw = row?.subtotal;
+      const hasSubtotal = subtotalRaw !== null && subtotalRaw !== undefined && String(subtotalRaw).trim() !== '';
+      if (hasSubtotal) return acc + toPdfNumber(subtotalRaw);
+      return acc + (toPdfNumber(row?.total) - toPdfNumber(row?.iva));
+    }, 0),
+    [shown],
+  );
+  const pdfFilteredTotalWithTax = filteredTotal;
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * limit + 1;
   const rangeEnd = Math.min(page * limit, totalCount);
 
   function exportSearchResultsToPdf() {
-    if (!rows.length) return;
+    if (!shown.length) return;
     setExportingPdf(true);
 
     try {
-      let filteredTotalWithoutIva = 0;
-
-      const printableRows = rows
-        .map((r) => {
-          const provider = r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—';
-          const concept = r.description || r.concept || '—';
-          const category = getTransactionCategoryLabel(r, catMap) || '—';
-          const ivaAmount = Number(r.tax?.iva ?? r.iva);
-          const hasIva = Number.isFinite(ivaAmount) && Math.abs(ivaAmount) > 0;
-          const totalAmount = Number(r.amount) || 0;
-          const safeSubtotal = getAmountWithoutIva(r);
-
-          filteredTotalWithoutIva += safeSubtotal;
-
-          const ivaBreakdown = hasIva
-            ? `Subtotal: $${formatMoney(safeSubtotal)} + IVA: $${formatMoney(ivaAmount)}`
-            : '—';
-
-          return `
+      const printableRows = shown
+        .map((row) => `
             <tr>
-              <td>${r.date || '—'}</td>
-              <td>${provider}</td>
-              <td>${concept}</td>
-              <td>${category}</td>
-              <td>${ivaBreakdown}</td>
-              <td class="amount">$${formatMoney(safeSubtotal)}</td>
-            </tr>`;
-        })
+              <td>${row.date || '—'}</td>
+              <td>${row.projectDisplayName || 'Sin proyecto'}</td>
+              <td>${row.supplierName || '—'}</td>
+              <td>${row.description || '—'}</td>
+              <td>${getTransactionCategoryLabel(row, catMap) || '—'}</td>
+              <td class="amount">$${formatMoney(row.subtotal ?? 0)}</td>
+              <td class="amount">$${formatMoney(row.iva ?? 0)}</td>
+              <td class="amount">$${formatMoney(getTransactionTotalValue(row))}</td>
+              <td>${row.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
+              <td>${getTransactionSourceLabel(row)}</td>
+            </tr>`)
         .join('');
 
-      const amountSummaryCards = `
-                <div class="summary-card"><div class="label">MONTO SIN IVA</div><div class="value">$${formatMoney(filteredTotalWithoutIva)}</div></div>
-          `;
-
-      const footerTotalLabel = 'Total filtrado sin IVA';
-      const footerTotalAmount = filteredTotalWithoutIva;
-
-      const popup = window.open('', '_blank', 'width=1200,height=800');
+      const popup = window.open('', '_blank', 'width=1400,height=800');
       if (!popup) return;
 
       popup.document.write(`
@@ -2317,19 +3917,15 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
               .header h1 { margin: 0; font-size: 26px; letter-spacing: .02em; }
               .header p { margin: 8px 0 0; font-size: 13px; opacity: .95; }
               .summary { display: flex; gap: 12px; flex-wrap: wrap; padding: 16px 24px; background: var(--soft); border-bottom: 1px solid var(--line); }
-              .summary-card { background: #fff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 10px 14px; min-width: 200px; }
+              .summary-card { background: #fff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 10px 14px; min-width: 220px; }
               .summary-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #64748b; }
               .summary-card .value { margin-top: 4px; font-size: 18px; font-weight: 700; color: var(--primary-dark); }
               .table-wrap { padding: 14px 24px 24px; }
               table { width: 100%; border-collapse: collapse; }
-              th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; }
+              th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; font-size: 12px; }
               thead th { background: #f1f5f9; color: var(--primary-dark); font-weight: 700; }
               .amount { text-align: right; font-weight: 700; color: var(--primary-dark); }
               .footer-total { text-align: right; padding: 14px 24px 22px; font-size: 18px; font-weight: 800; color: var(--primary-dark); }
-              @media print {
-                body { background: #fff; }
-                .sheet { margin: 0; border: 0; border-radius: 0; }
-              }
             </style>
           </head>
           <body>
@@ -2339,19 +3935,23 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
                 <p>Generado: ${new Date().toLocaleString('es-MX')} · Consulta: ${query.trim() || 'Sin filtro de texto'}</p>
               </header>
               <div class="summary">
-                <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${rows.length}</div></div>
+                <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${shown.length}</div></div>
                 <div class="summary-card"><div class="label">Resultados totales</div><div class="value">${totalCount}</div></div>
-                ${amountSummaryCards}
+                <div class="summary-card"><div class="label">TOTAL VISIBLE SIN IVA</div><div class="value">$${formatMoney(pdfFilteredTotalWithoutTax)}</div></div>
+                <div class="summary-card"><div class="label">TOTAL VISIBLE CON IVA</div><div class="value">$${formatMoney(pdfFilteredTotalWithTax)}</div></div>
               </div>
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Desglose IVA</th><th style="text-align:right">Monto</th></tr>
+                    <tr><th>Fecha</th><th>Proyecto</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th style="text-align:right">Subtotal</th><th style="text-align:right">IVA</th><th style="text-align:right">Total</th><th>Tipo</th><th>Origen / SBO</th></tr>
                   </thead>
                   <tbody>${printableRows}</tbody>
                 </table>
               </div>
-              <div class="footer-total">${footerTotalLabel}: $${formatMoney(footerTotalAmount)}</div>
+              <div class="footer-total">
+                <div>Total visible sin IVA: $${formatMoney(pdfFilteredTotalWithoutTax)}</div>
+                <div>Total visible con IVA: $${formatMoney(pdfFilteredTotalWithTax)}</div>
+              </div>
             </section>
           </body>
         </html>
@@ -2364,50 +3964,98 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
     }
   }
 
-
   return (
     <div className="card">
       <h2 style={{ marginTop: 0 }}>Buscar movimientos</h2>
-      <div className="search-toolbar">
+      <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
         <input
-          placeholder="Buscar por proveedor, concepto o categoría"
+          placeholder="Buscar por descripción, proveedor, categoría 2, proyecto o SBO"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          style={{ maxWidth: 420 }}
+          style={{ minWidth: 320 }}
         />
-        <button type="button" onClick={exportSearchResultsToPdf} disabled={loading || exportingPdf || !rows.length}>
+        <button type="button" className="secondary" onClick={() => setShowAdvancedFilters((prev) => !prev)}>
+          {showAdvancedFilters ? 'Ocultar filtros' : 'Mostrar filtros'}
+        </button>
+        <button type="button" onClick={exportSearchResultsToPdf} disabled={loading || exportingPdf || !shown.length}>
           {exportingPdf ? 'Exportando...' : 'Exportar PDF'}
         </button>
       </div>
+      {showAdvancedFilters && (
+        <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
+          <select value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
+            <option value="ALL">Todos los proveedores</option>
+            {supplierOptions.map(([supplierValue, supplierLabel]) => (
+              <option key={supplierValue} value={supplierValue}>{supplierLabel}</option>
+            ))}
+          </select>
+          <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+            <option value="ALL">Todas las categorías 2</option>
+            {categoryOptions.map(([categoryCode, categoryLabel]) => (
+              <option key={categoryCode} value={categoryCode}>{categoryLabel}</option>
+            ))}
+          </select>
+          <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+            <option value="ALL">Todos los tipos</option>
+            <option value="EXPENSE">Egreso</option>
+            <option value="INCOME">Ingreso</option>
+          </select>
+          <select value={sourceSboFilter} onChange={(e) => setSourceSboFilter(e.target.value)}>
+            <option value="ALL">Todos los SBO</option>
+            {sourceSboOptions.map((sourceSbo) => (
+              <option key={sourceSbo} value={sourceSbo}>{sourceSbo}</option>
+            ))}
+          </select>
+          <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="Fecha desde" />
+          <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} aria-label="Fecha hasta" />
+        </div>
+      )}
       <div className="small" style={{ marginTop: 8 }}>
-        {loading ? 'Buscando...' : `${totalCount} resultados en egresos${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''}`}
+        {loading ? 'Buscando...' : `${totalCount} resultados${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''} · ${shown.length} visibles tras filtros`}
       </div>
       {!!error && <div className="small" style={{ marginTop: 8, color: '#b91c1c' }}>{error}</div>}
       <div style={{ overflowX: 'auto', marginTop: 10 }}>
         <table>
           <thead>
             <tr>
-              <th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Monto sin IVA</th>
+              <th>Fecha</th>
+              <th>Proyecto</th>
+              <th>Proveedor</th>
+              <th>Descripción</th>
+              <th>Categoría 2</th>
+              <th>Subtotal</th>
+              <th>IVA</th>
+              <th>Total</th>
+              <th>Tipo</th>
+              <th>Origen / SBO</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td>{r.date}</td>
-                <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
-                <td>{r.description || r.concept || ''}</td>
-                <td>{getTransactionCategoryLabel(r, catMap)}</td>
-                <td>${formatMoney(getAmountWithoutIva(r))}</td>
+            {shown.map((row) => (
+              <tr key={row.id}>
+                <td>{row.date || '—'}</td>
+                <td>{row.projectDisplayName || 'Sin proyecto'}</td>
+                <td>{row.supplierName || '—'}</td>
+                <td>{row.description || '—'}</td>
+                <td>{getTransactionCategoryLabel(row, catMap)}</td>
+                <td>{formatCurrency(row.subtotal ?? 0)}</td>
+                <td>{formatCurrency(row.iva ?? 0)}</td>
+                <td>{formatCurrency(getTransactionTotalValue(row))}</td>
+                <td>{row.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</td>
+                <td>
+                  <SourceBadges transaction={row} />
+                </td>
               </tr>
             ))}
-            {!rows.length && !loading && (
-              <tr><td colSpan={5} className="small">Sin resultados</td></tr>
+            {!shown.length && !loading && (
+              <tr><td colSpan={10} className="small">Sin resultados</td></tr>
             )}
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} style={{ textAlign: 'right', fontWeight: 700 }}>Total filtrado sin IVA</td>
-              <td style={{ fontWeight: 700 }}>${formatMoney(filteredTotal)}</td>
+              <td colSpan={7} style={{ textAlign: 'right', fontWeight: 700 }}>Total visible</td>
+              <td style={{ fontWeight: 700 }}>{formatCurrency(filteredTotal)}</td>
+              <td colSpan={2} />
             </tr>
           </tfoot>
         </table>
@@ -2449,7 +4097,22 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
   return (
     <div className="grid grid2">
       <div className="card">
-        <h2 style={{ margin: '0 0 8px' }}>Categorías</h2>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <h2 style={{ margin: 0 }}>Categorías</h2>
+          {isAdmin && (
+            <button
+              className="secondary"
+              onClick={async () => {
+                const confirmed = window.confirm('Esto solo agrega faltantes, no borra datos existentes.');
+                if (!confirmed) return;
+                await api.seed();
+                onChanged();
+              }}
+            >
+              Seed categorías
+            </button>
+          )}
+        </div>
 
         {isAdmin && (
           <form onSubmit={addCat} className="row">
@@ -2492,7 +4155,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
               )}
             </div>
           ))}
-          {!cats.length && <div className="small">No hay categorías. Puedes presionar “Seed categorías” en Dashboard.</div>}
+          {!cats.length && <div className="small">No hay categorías. Puedes presionar “Seed categorías” aquí.</div>}
         </div>
       </div>
 

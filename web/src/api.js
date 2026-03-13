@@ -1,3 +1,5 @@
+import { normalizeTransaction } from './transactions/normalizeTransaction.js';
+
 const RAW_API_URL =
   (import.meta.env?.VITE_API_URL && import.meta.env.VITE_API_URL.trim()) ||
   'https://control-de-gastos-obra.onrender.com';
@@ -13,6 +15,10 @@ const TOKEN_KEY = 'obra_token';
 const ROLE_KEY = 'obra_role';
 const USER_KEY = 'obra_user';
 const DISPLAY_NAME_KEY = 'obra_display_name';
+const USER_ID_KEY = 'obra_user_id';
+const USER_EMAIL_KEY = 'obra_user_email';
+const USER_ACTIVE_KEY = 'obra_user_is_active';
+const USER_UI_PREFS_KEY = 'obra_user_ui_prefs';
 export const SELECTED_PROJECT_KEY = 'selectedProjectId';
 
 function getSelectedProjectId() {
@@ -57,14 +63,29 @@ export function getSession() {
     role: localStorage.getItem(ROLE_KEY) || '',
     username: localStorage.getItem(USER_KEY) || '',
     displayName: localStorage.getItem(DISPLAY_NAME_KEY) || '',
+    id: localStorage.getItem(USER_ID_KEY) || '',
+    email: localStorage.getItem(USER_EMAIL_KEY) || '',
+    isActive: localStorage.getItem(USER_ACTIVE_KEY) !== 'false',
+    uiPrefs: (() => {
+      try {
+        const raw = localStorage.getItem(USER_UI_PREFS_KEY);
+        return raw ? JSON.parse(raw) : { hiddenProjectIds: [], defaultProjectId: '' };
+      } catch {
+        return { hiddenProjectIds: [], defaultProjectId: '' };
+      }
+    })(),
   };
 }
 
-export function saveSession({ access_token, token, role, username, displayName }) {
+export function saveSession({ access_token, token, role, username, displayName, id, email, isActive, name, uiPrefs }) {
   localStorage.setItem(TOKEN_KEY, access_token || token || '');
   localStorage.setItem(ROLE_KEY, role || '');
   localStorage.setItem(USER_KEY, username || '');
-  localStorage.setItem(DISPLAY_NAME_KEY, displayName || username || '');
+  localStorage.setItem(DISPLAY_NAME_KEY, displayName || name || username || '');
+  localStorage.setItem(USER_ID_KEY, id || '');
+  localStorage.setItem(USER_EMAIL_KEY, email || '');
+  localStorage.setItem(USER_ACTIVE_KEY, String(isActive !== false));
+  localStorage.setItem(USER_UI_PREFS_KEY, JSON.stringify(uiPrefs && typeof uiPrefs === 'object' ? uiPrefs : { hiddenProjectIds: [], defaultProjectId: '' }));
 }
 
 export function clearSession() {
@@ -72,6 +93,10 @@ export function clearSession() {
   localStorage.removeItem(ROLE_KEY);
   localStorage.removeItem(USER_KEY);
   localStorage.removeItem(DISPLAY_NAME_KEY);
+  localStorage.removeItem(USER_ID_KEY);
+  localStorage.removeItem(USER_EMAIL_KEY);
+  localStorage.removeItem(USER_ACTIVE_KEY);
+  localStorage.removeItem(USER_UI_PREFS_KEY);
 }
 
 async function request(baseUrl, path, opts = {}) {
@@ -84,7 +109,7 @@ async function request(baseUrl, path, opts = {}) {
     selectedProjectId
       && !cleanPathname.startsWith('/auth/')
       && cleanPathname !== '/api/projects'
-      && cleanPathname !== '/api/admin/projects'
+      && !cleanPathname.startsWith('/api/admin/projects')
       && cleanPathname !== '/auth'
   );
   const isFormData = opts.body instanceof FormData;
@@ -133,42 +158,37 @@ async function backendReq(path, opts = {}) {
   return request(BACKEND_URL, path, opts);
 }
 
-/**
- * @typedef {Object} TransactionDTO
- * @property {string=} category_hint_code
- * @property {string=} category_hint_name
- * @property {string=} CategoryHintCode
- * @property {string=} CategoryHintName
- */
+function normalizeSapMovementsBySboResponse(payload) {
+  const candidates = [
+    payload,
+    payload?.data,
+    payload?.result,
+    payload?.data?.result,
+    payload?.result?.data,
+  ].filter(Boolean);
 
-export function normalizeTransaction(transaction) {
-  if (!transaction || typeof transaction !== 'object') return transaction;
-
-  const categoryHintName = transaction.categoryHintName
-    || transaction.category_hint_name
-    || transaction.CategoryHintName
-    || transaction.categorySapName
-    || '';
-  const categoryHintCode = transaction.categoryHintCode
-    || transaction.category_hint_code
-    || transaction.CategoryHintCode
-    || transaction.categorySapCode
-    || '';
-  const categoryManualName = transaction.categoryManualName || '';
-  const categoryManualCode = transaction.categoryManualCode || '';
-  const categoryEffectiveName = transaction.categoryEffectiveName || categoryManualName || categoryHintName || '';
-  const categoryEffectiveCode = transaction.categoryEffectiveCode || categoryManualCode || categoryHintCode || '';
+  const normalized = candidates.find(
+    (item) => item && typeof item === 'object' && (
+      'status' in item
+      || 'rowsTotal' in item
+      || 'rowsOk' in item
+      || 'imported' in item
+      || 'updated' in item
+      || 'unmatched' in item
+      || 'importRunId' in item
+      || 'already_imported' in item
+    )
+  ) || payload;
 
   return {
-    ...transaction,
-    categoryHintName,
-    categoryHintCode,
-    categoryManualName,
-    categoryManualCode,
-    categoryEffectiveName,
-    categoryEffectiveCode,
-    category_hint_name: transaction.category_hint_name || categoryHintName,
-    category_hint_code: transaction.category_hint_code || categoryHintCode,
+    status: normalized?.status ?? null,
+    rowsTotal: normalized?.rowsTotal ?? null,
+    rowsOk: normalized?.rowsOk ?? null,
+    imported: normalized?.imported ?? null,
+    updated: normalized?.updated ?? null,
+    unmatched: normalized?.unmatched ?? null,
+    importRunId: normalized?.importRunId ?? null,
+    already_imported: normalized?.already_imported ?? null,
   };
 }
 
@@ -181,7 +201,13 @@ export const api = {
       body: JSON.stringify({ username, password }),
     }),
 
-  me: () => req('/auth/me'),
+  me: () => req('/api/me'),
+
+  updateMyPreferences: (payload) =>
+    req('/api/me/preferences', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
 
   seed: () =>
     req('/seed', {
@@ -222,11 +248,16 @@ export const api = {
 
   transactions: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
-    return req(`/transactions${qs ? `?${qs}` : ''}`).then((response) => {
+    const path = `/transactions${qs ? `?${qs}` : ''}`;
+
+    return req(path).then((response) => {
       if (!response || typeof response !== 'object') return response;
+      const items = Array.isArray(response.items)
+        ? response.items
+        : (Array.isArray(response.rows) ? response.rows : []);
       return {
         ...response,
-        items: Array.isArray(response.items) ? response.items.map(normalizeTransaction) : [],
+        items: items.map(normalizeTransaction),
       };
     });
   },
@@ -260,13 +291,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-
-  setSupplierCategory2Rule: (projectId, supplierId, categoryId, applyToExisting = false) =>
-    backendReq(`/api/projects/${projectId}/suppliers/${supplierId}/category2`, {
-      method: 'PUT',
-      body: JSON.stringify({ categoryId, applyToExisting }),
-    }),
-
   projectSupplierCategories: (projectId) => backendReq(`/api/projects/${projectId}/supplier-categories`),
 
   deleteTransaction: (id) =>
@@ -303,6 +327,15 @@ export const api = {
       body: JSON.stringify({ projectId, sources }),
     }),
 
+  importSapMovementsBySbo: ({ sbo, mode, force = false }) => {
+    const qs = new URLSearchParams({ sbo, mode });
+    if (force) qs.set('force', '1');
+    return backendReq(`/api/cron/import/sap-movements-by-sbo?${qs}`, {
+      method: 'POST',
+      headers: { 'X-Trigger-Source': 'frontend' },
+    }).then((response) => normalizeSapMovementsBySboResponse(response));
+  },
+
   supplierCategories: () => backendReq('/api/supplier-categories'),
 
   createSupplierCategory: (name) =>
@@ -314,6 +347,22 @@ export const api = {
   unclassifiedSuppliers: () => backendReq('/api/suppliers?uncategorized=1'),
 
   suppliers: () => backendReq('/api/suppliers'),
+
+  adminTrabajosEspecialesSuppliers: () => backendReq('/api/admin/trabajos-especiales/suppliers'),
+
+  adminTrabajosEspecialesSupplierCategory2Rules: () => backendReq('/api/admin/trabajos-especiales/supplier-category2-rules'),
+  adminGlobalCategories: () => backendReq('/api/admin/categories/global'),
+
+  upsertAdminTrabajosEspecialesSupplierCategory2Rule: (payload) =>
+    backendReq('/api/admin/trabajos-especiales/supplier-category2-rules', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
+  deactivateAdminTrabajosEspecialesSupplierCategory2Rule: (supplierKey) =>
+    backendReq(`/api/admin/trabajos-especiales/supplier-category2-rules/${encodeURIComponent(supplierKey)}`, {
+      method: 'DELETE',
+    }),
 
   updateSupplierCategory: (id, categoryId) =>
     backendReq(`/api/suppliers/${id}`, {
@@ -334,15 +383,56 @@ export const api = {
       body: JSON.stringify({ changes }),
     }),
 
-  createProjectAdmin: ({ name, slug, s3Prefix }) =>
-    backendReq('/api/admin/projects', {
+  createProjectsFromUnmatchedAdmin: () =>
+    backendReq('/api/admin/projects/create-from-unmatched', {
       method: 'POST',
-      body: JSON.stringify({ name, slug, s3Prefix }),
     }),
 
-  createS3PrefixAdmin: ({ slug }) =>
-    backendReq('/api/admin/s3/create-prefix', {
+  listSuspiciousProjectResolutions: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/admin/suspicious-project-resolutions${qs ? `?${qs}` : ''}`);
+  },
+
+  getSuspiciousProjectResolution: (transactionId) =>
+    backendReq(`/api/admin/suspicious-project-resolutions/${transactionId}`),
+
+  resolveSuspiciousProjectResolution: (transactionId, payload) =>
+    backendReq(`/api/admin/suspicious-project-resolutions/${transactionId}/resolve`, {
       method: 'POST',
-      body: JSON.stringify({ slug }),
+      body: JSON.stringify(payload),
+    }),
+
+  bulkResolveSuspiciousProjectResolutionToDocument: (transactionIds = [], reason = '') =>
+    backendReq('/api/admin/suspicious-project-resolutions/bulk-resolve-document', {
+      method: 'POST',
+      body: JSON.stringify({ transactionIds, reason }),
+    }),
+
+  bulkResolveSuspiciousProjectResolutionToPayment: (transactionIds = [], reason = '') =>
+    backendReq('/api/admin/suspicious-project-resolutions/bulk-resolve-payment', {
+      method: 'POST',
+      body: JSON.stringify({ transactionIds, reason }),
+    }),
+
+  adminProjects: () => backendReq('/api/admin/projects'),
+
+  adminUsers: () => backendReq('/api/admin/users'),
+
+  createAdminUser: (payload) =>
+    backendReq('/api/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateAdminUser: (userId, payload) =>
+    backendReq(`/api/admin/users/${userId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  updateAdminProjectVisibility: (projectId, visibleInFrontend) =>
+    backendReq(`/api/admin/projects/${projectId}/visibility`, {
+      method: 'PATCH',
+      body: JSON.stringify({ visibleInFrontend: Boolean(visibleInFrontend) }),
     }),
 };
