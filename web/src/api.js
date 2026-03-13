@@ -393,6 +393,11 @@ export const api = {
     return backendReq(`/api/admin/suspicious-project-resolutions${qs ? `?${qs}` : ''}`);
   },
 
+  latestImports: ({ days = 7, limit = 300 } = {}) => {
+    const qs = new URLSearchParams({ days: String(days), limit: String(limit) }).toString();
+    return backendReq(`/api/admin/latest-imports?${qs}`);
+  },
+
   getSuspiciousProjectResolution: (transactionId) =>
     backendReq(`/api/admin/suspicious-project-resolutions/${transactionId}`),
 

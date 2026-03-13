@@ -5223,6 +5223,67 @@ def get_suspicious_project_resolutions_collection():
     return client[db_name][collection_name], db_name, collection_name
 
 
+@app.get("/api/admin/latest-imports")
+def list_admin_latest_imports(
+    days: int = 7,
+    limit: int = 300,
+    _: dict = Depends(require_admin),
+):
+    normalized_days = 14 if int(days) == 14 else 7
+    normalized_limit = min(max(int(limit), 1), 1000)
+    now_utc = datetime.now(timezone.utc)
+    from_utc = now_utc - timedelta(days=normalized_days)
+    from_iso = from_utc.isoformat()
+
+    projection = {
+        "date": 1,
+        "created_at": 1,
+        "supplierName": 1,
+        "sourceDb": 1,
+        "sourceSbo": 1,
+        "projectId": 1,
+        "effectiveProjectName": 1,
+        "sap.rawProjectName": 1,
+        "sap.documentProjectName": 1,
+        "sap.paymentProjectName": 1,
+        "sap.manualResolvedProjectName": 1,
+        "sap.businessPartner": 1,
+        "amount": 1,
+    }
+
+    query = {
+        "created_at": {"$gte": from_iso},
+    }
+
+    cursor = db.transactions.find(query, projection).sort([("created_at", -1), ("_id", -1)]).limit(normalized_limit)
+    items = []
+    for tx in cursor:
+        tx_doc = serialize_transaction_with_supplier(tx)
+        sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+        items.append(
+            {
+                "id": str(tx_doc.get("id") or tx.get("_id")),
+                "createdAt": tx_doc.get("created_at"),
+                "date": tx_doc.get("date"),
+                "project": sap_doc.get("documentProjectName") or sap_doc.get("rawProjectName") or "",
+                "paidBy": tx_doc.get("supplierName") or sap_doc.get("businessPartner") or "",
+                "landedIn": tx_doc.get("effectiveProjectName") or sap_doc.get("manualResolvedProjectName") or sap_doc.get("paymentProjectName") or "",
+                "sourceDb": tx_doc.get("sourceDb") or sap_doc.get("sourceDb"),
+                "sourceSbo": tx_doc.get("sourceSbo") or sap_doc.get("sourceSbo"),
+                "amount": tx_doc.get("amount"),
+            }
+        )
+
+    return {
+        "items": items,
+        "days": normalized_days,
+        "limit": normalized_limit,
+        "from": from_iso,
+        "to": now_utc.isoformat(),
+        "total": len(items),
+    }
+
+
 @app.get("/api/admin/suspicious-project-resolutions")
 def list_admin_suspicious_project_resolutions(
     sourceSbo: str | None = None,
