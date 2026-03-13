@@ -646,6 +646,15 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
         )}
         <button
           type="button"
+          className={section === 'suspicious-resolution' ? '' : 'secondary'}
+          onClick={() => setSection('suspicious-resolution')}
+          disabled={!isAdmin}
+          title={!isAdmin ? 'Solo disponible para superadministradores' : undefined}
+        >
+          Resolución de sospechosos
+        </button>
+        <button
+          type="button"
           className={section === 'raw-data' ? '' : 'secondary'}
           onClick={() => setSection('raw-data')}
           disabled={!isAdmin}
@@ -681,6 +690,9 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
       {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
 
       {section === 's3-prefix' && isAdmin && <AdminS3PrefixCreateSection />}
+
+      {section === 'suspicious-resolution' &&
+        (isAdmin ? <SuspiciousResolutionSection projects={projects} /> : <div className="card">Solo superadmin.</div>)}
 
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
@@ -1047,6 +1059,75 @@ function AdminProjectCreateSection({ onProjectCreated }) {
         )}
         <button type="submit" disabled={saving}>{saving ? 'Creando...' : 'Crear proyecto'}</button>
       </form>
+    </div>
+  );
+}
+
+function SuspiciousResolutionSection({ projects }) {
+  const [status, setStatus] = useState('pending');
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function load() {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await api.adminListSuspiciousProjectResolutions({ status, limit: 300 });
+      setRows(Array.isArray(response?.items) ? response.items : []);
+    } catch (e) {
+      setError(e.message || 'No se pudo cargar la lista.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+  }, [status]);
+
+  async function resolveByPayment(id) {
+    await api.adminResolveSuspiciousByPayment(id);
+    await load();
+  }
+
+  async function resolveByProject(id) {
+    const suggested = projects?.[0]?.name || '';
+    const chosen = window.prompt('Proyecto destino (displayName/name/slug):', suggested);
+    if (!chosen) return;
+    await api.adminResolveSuspiciousByProject(id, chosen);
+    await load();
+  }
+
+  return (
+    <div className="card grid" style={{ gap: 12 }}>
+      <h3 style={{ margin: 0 }}>Resolución de sospechosos</h3>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button type="button" className={status === 'pending' ? '' : 'secondary'} onClick={() => setStatus('pending')}>Pendientes</button>
+        <button type="button" className={status === 'resolved' ? '' : 'secondary'} onClick={() => setStatus('resolved')}>Resueltos</button>
+        <button type="button" className={status === 'all' ? '' : 'secondary'} onClick={() => setStatus('all')}>Todos</button>
+        <button type="button" onClick={load} disabled={loading}>{loading ? 'Cargando...' : 'Refrescar'}</button>
+      </div>
+      {error ? <div className="small" style={{ color: '#b42318' }}>{error}</div> : null}
+      <div style={{ overflowX: 'auto' }}>
+        <table>
+          <thead><tr><th>ID</th><th>Documento</th><th>Pago</th><th>Manual</th><th>Acciones</th></tr></thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id || row._id}>
+                <td className="small">{row.id}</td>
+                <td>{row.documentProjectName || row.documentProjectCode || '-'}</td>
+                <td>{row.paymentProjectName || row.paymentProjectCode || '-'}</td>
+                <td>{row.manualResolvedProjectName || row.manualResolvedProjectId || '-'}</td>
+                <td style={{ display: 'flex', gap: 6 }}>
+                  <button type="button" onClick={() => resolveByPayment(row.id)} disabled={!row.suspicious}>Resolver por pago</button>
+                  <button type="button" className="secondary" onClick={() => resolveByProject(row.id)}>Resolver manual</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
