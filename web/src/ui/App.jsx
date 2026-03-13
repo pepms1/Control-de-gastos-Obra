@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
 import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
+import { computeShownTransactions, getTransactionIdentity, TRACE_TRANSACTION_ID } from './transactionsView.js';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
 const HACK_OVERLAY_DURATION_MS = 8000;
@@ -1726,7 +1727,16 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
         to: dateTo,
       });
 
-      setRows(dedupeTransactions(response?.items));
+      const apiRows = dedupeTransactions(response?.items);
+      const traceInApiRows = apiRows.some((row) => getTransactionIdentity(row) === TRACE_TRANSACTION_ID);
+      console.info('[transactions-trace] API response', {
+        projectId: selectedProjectId,
+        totalRows: apiRows.length,
+        traceTxId: TRACE_TRANSACTION_ID,
+        traceInApiRows,
+      });
+
+      setRows(apiRows);
       setServerTotals(response?.totals || null);
       setTotalCount(Number(response?.totalCount) || 0);
       setPage(Number(response?.page) || targetPage);
@@ -1784,49 +1794,39 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     return Array.from(map.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es', { sensitivity: 'base' }));
   }, [cats, rows]);
 
-  const shown = rows
-    .filter((row) => {
-      if (categoryFilter === 'ALL') return true;
-      if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categoría';
-      return (row.categoryEffectiveCode || row.categoryEffectiveName || row.category_id || row.categoryId) === categoryFilter;
-    })
-    .filter((row) => {
-      const query = searchFilter.trim().toLowerCase();
-      if (!query) return true;
-      const searchableFields = [
-        row.description,
-        row.concept,
-        row.proveedorNombre,
-        row.supplierName,
-        row.proveedor?.name,
-        getTransactionCategoryLabel(row, catMap),
-        getCategoryHintCode(row),
-      ];
-      return searchableFields.some((field) => String(field || '').toLowerCase().includes(query));
-    })
-    .sort((a, b) => {
-    if (sortBy === 'created_desc') {
-      const aCreatedAt = a.created_at || '';
-      const bCreatedAt = b.created_at || '';
-      if (aCreatedAt !== bCreatedAt) return bCreatedAt.localeCompare(aCreatedAt);
+  const { shown, allRows, afterCategory, afterSearch } = useMemo(
+    () => computeShownTransactions({
+      rows,
+      categoryFilter,
+      uncategorizedFilter: UNCATEGORIZED_FILTER,
+      searchFilter,
+      sortBy,
+      catMap,
+      vendorMap,
+      getTransactionCategoryLabel,
+      getCategoryHintCode,
+    }),
+    [rows, categoryFilter, searchFilter, sortBy, catMap, vendorMap],
+  );
 
-      if (a.date === b.date) return 0;
-      return b.date.localeCompare(a.date);
-    }
+  useEffect(() => {
+    const inRows = allRows.some((row) => getTransactionIdentity(row) === TRACE_TRANSACTION_ID);
+    if (!inRows) return;
 
-    if (sortBy === 'supplier_asc') {
-      const aSupplier = (a.proveedorNombre || a.supplierName || vendorMap[a.vendor_id] || a.proveedor?.name || '').toLowerCase();
-      const bSupplier = (b.proveedorNombre || b.supplierName || vendorMap[b.vendor_id] || b.proveedor?.name || '').toLowerCase();
-      if (aSupplier !== bSupplier) return aSupplier.localeCompare(bSupplier, 'es');
-    }
-
-    if (a.date === b.date) {
-      const aCreatedAt = a.created_at || '';
-      const bCreatedAt = b.created_at || '';
-      return bCreatedAt.localeCompare(aCreatedAt);
-    }
-    return b.date.localeCompare(a.date);
-  });
+    const inAfterCategory = afterCategory.some((row) => getTransactionIdentity(row) === TRACE_TRANSACTION_ID);
+    const inAfterSearch = afterSearch.some((row) => getTransactionIdentity(row) === TRACE_TRANSACTION_ID);
+    const inShown = shown.some((row) => getTransactionIdentity(row) === TRACE_TRANSACTION_ID);
+    console.info('[transactions-trace] client pipeline', {
+      projectId: selectedProjectId,
+      traceTxId: TRACE_TRANSACTION_ID,
+      totalRows: allRows.length,
+      inAfterCategory,
+      inAfterSearch,
+      inShown,
+      categoryFilter,
+      searchFilter,
+    });
+  }, [allRows, afterCategory, afterSearch, shown, selectedProjectId, categoryFilter, searchFilter]);
 
   async function saveEdit() {
     setEditErr('');
