@@ -1107,7 +1107,7 @@ def _telegram_build_categories_keyboard(project_id: str, search_text: str, page:
     current_page = _telegram_parse_page(str(page))
     effective_limit = _telegram_parse_limit(str(limit), default=10, maximum=25)
 
-    query: dict = {"projectId": project_id}
+    query: dict = {}
     if clean_search:
         escaped = re.escape(clean_search)
         query = {"$and": [query, {"name": {"$regex": escaped, "$options": "i"}}]}
@@ -1225,7 +1225,7 @@ def _telegram_build_transaction_message(state: dict) -> tuple[str, dict]:
     if not project_id:
         return "Primero selecciona un proyecto con /project", {"inline_keyboard": [[{"text": "Seleccionar proyecto", "callback_data": "projectPicker"}]]}
 
-    query: dict = {"projectId": project_id}
+    query: dict = {}
     title = ""
     if mode == "prov":
         supplier_id = str(state.get("supplierId") or "").strip()
@@ -1242,7 +1242,8 @@ def _telegram_build_transaction_message(state: dict) -> tuple[str, dict]:
 
     skip = (page - 1) * limit
     projection = {"date": 1, "amount": 1, "tax": 1, "concept": 1, "description": 1, "supplierName": 1, "sourceDb": 1}
-    rows = list(db.transactions.find(query, projection).sort([("date", -1), ("_id", -1)]).skip(skip).limit(limit))
+    effective_query = with_effective_project_filter(query, project_id)
+    rows = list(db.transactions.find(effective_query, projection).sort([("date", -1), ("_id", -1)]).skip(skip).limit(limit))
 
     lines = [title, "Listado completo (todos los pagos)", ""]
     if not rows:
@@ -1277,7 +1278,7 @@ def _telegram_compute_total_for_state(state: dict) -> float:
     project_id = str(state.get("projectId") or "").strip()
     if not project_id:
         return 0.0
-    query: dict = {"projectId": project_id}
+    query: dict = {}
     if mode == "prov":
         supplier_id = str(state.get("supplierId") or "").strip()
         query["$or"] = [{"supplierId": supplier_id}, {"supplier_id": supplier_id}]
@@ -1286,7 +1287,8 @@ def _telegram_compute_total_for_state(state: dict) -> float:
         query["$or"] = [{"categoryId": category_id}, {"category_id": category_id}]
 
     total = 0.0
-    for tx in db.transactions.find(query, {"amount": 1, "tax": 1, "sourceDb": 1}):
+    effective_query = with_effective_project_filter(query, project_id)
+    for tx in db.transactions.find(effective_query, {"amount": 1, "tax": 1, "sourceDb": 1}):
         source_db = str(tx.get("sourceDb") or "").strip().upper()
         amount = float(tx.get("amount") or 0)
         tax = tx.get("tax") if isinstance(tx.get("tax"), dict) else {}
@@ -1505,10 +1507,11 @@ def _telegram_sum_expenses(project_id: str, month_token: str, include_iva: bool 
     next_month = 1 if month_int == 12 else month_int + 1
     end_date = f"{next_year:04d}-{next_month:02d}-01"
 
-    movements = db.transactions.find(
-        {"type": "EXPENSE", "projectId": project_id, "date": {"$gte": start_date, "$lt": end_date}},
-        {"amount": 1, "tax": 1},
+    movements_match = with_effective_project_filter(
+        {"type": "EXPENSE", "date": {"$gte": start_date, "$lt": end_date}},
+        project_id,
     )
+    movements = db.transactions.find(movements_match, {"amount": 1, "tax": 1})
 
     total = 0.0
     count = 0
@@ -1865,10 +1868,7 @@ def _telegram_ask_transactions(project_id: str, text: str) -> str:
     )
     category_ids = [str(row.get("_id")) for row in category_matches if row.get("_id") is not None]
 
-    base_match = {
-        "projectId": project_id,
-        "type": "EXPENSE",
-    }
+    base_match = with_effective_project_filter({"type": "EXPENSE"}, project_id)
 
     search_or: list[dict] = [
         {"concept": {"$regex": keyword_regex, "$options": "i"}},
@@ -1879,7 +1879,7 @@ def _telegram_ask_transactions(project_id: str, text: str) -> str:
         search_or.append({"categoryId": {"$in": category_ids}})
         search_or.append({"category_id": {"$in": category_ids}})
 
-    query = {**base_match, "$or": search_or}
+    query = {"$and": [base_match, {"$or": search_or}]}
 
     if action == "top_suppliers":
         pipeline = [
@@ -5293,7 +5293,14 @@ def summary_expenses_by_supplier(
     _: dict = Depends(require_authenticated),
 ):
     project_id = resolve_project_id(projectId or project)
+    trace_tx_id = "69ae6065aae96a6a5bd0529f"
     movements_query = with_effective_project_filter({"type": "EXPENSE"}, project_id)
+    logger.info(
+        "/api/expenses/summary-by-supplier trace projectId_received=%s projectId_resolved=%s mongo_filter=%s",
+        projectId or project,
+        project_id,
+        movements_query,
+    )
     movements = list(
         db.transactions.find(
             movements_query,
@@ -5309,6 +5316,22 @@ def summary_expenses_by_supplier(
                 "tax": 1,
             },
         )
+    )
+    trace_in_input = any(str(tx.get("_id") or "") == trace_tx_id for tx in movements)
+    total_without_trace = round(
+        sum((float(tx.get("amount") or 0) if include_iva else compute_monto_sin_iva(tx)) for tx in movements if str(tx.get("_id") or "") != trace_tx_id),
+        2,
+    )
+    total_with_trace = round(
+        sum(float(tx.get("amount") or 0) if include_iva else compute_monto_sin_iva(tx) for tx in movements),
+        2,
+    )
+    logger.info(
+        "/api/expenses/summary-by-supplier trace includes_%s=%s total_without_trace=%s total_with_trace=%s",
+        trace_tx_id,
+        trace_in_input,
+        total_without_trace,
+        total_with_trace,
     )
 
     supplier_totals = {}
@@ -5662,7 +5685,7 @@ def list_categories(active_only: bool = True, request: FastAPIRequest = None, _:
             "displayLabel": f"{name} ({code})" if code and code != name else name,
         })
 
-    tx_query = {"projectId": active_project_id}
+    tx_query = with_effective_project_filter({}, active_project_id)
     projection = {
         "categoryManualCode": 1,
         "categoryManualName": 1,
@@ -6335,6 +6358,7 @@ def spend_by_category(
     _: dict = Depends(require_authenticated),
 ):
     active_project_id = resolve_project_id(projectId or project)
+    trace_tx_id = "69ae6065aae96a6a5bd0529f"
     match = with_effective_project_filter({"type": "EXPENSE"}, active_project_id)
     if vendor_id:
         match["vendor_id"] = vendor_id
@@ -6345,7 +6369,13 @@ def spend_by_category(
         if date_to:
             match["date"]["$lte"] = date_to
 
-    transactions = list(db.transactions.find(match, {"category_id": 1, "amount": 1, "tax": 1}))
+    logger.info(
+        "/stats/spend-by-category trace projectId_received=%s projectId_resolved=%s mongo_filter=%s",
+        projectId or project,
+        active_project_id,
+        match,
+    )
+    transactions = list(db.transactions.find(match, {"_id": 1, "category_id": 1, "amount": 1, "tax": 1}))
 
     totals_by_category = {}
     for tx in transactions:
@@ -6357,6 +6387,22 @@ def spend_by_category(
     rows = [{"_id": category_id, "amount": amount} for category_id, amount in totals_by_category.items()]
     rows.sort(key=lambda row: row["amount"], reverse=True)
     total = round(sum(float(r["amount"]) for r in rows), 2) if rows else 0.0
+    total_without_trace = round(
+        sum(
+            float(tx.get("amount") or 0) if include_iva else compute_monto_sin_iva(tx)
+            for tx in transactions
+            if str(tx.get("_id") or "") != trace_tx_id
+        ),
+        2,
+    )
+    trace_in_input = any(str(tx.get("_id") or "") == trace_tx_id for tx in transactions)
+    logger.info(
+        "/stats/spend-by-category trace includes_%s=%s total_without_trace=%s total_with_trace=%s",
+        trace_tx_id,
+        trace_in_input,
+        total_without_trace,
+        total,
+    )
 
     cat_object_ids = []
     cat_codes = []
