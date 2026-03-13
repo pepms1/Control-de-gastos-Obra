@@ -384,11 +384,7 @@ export function SuspiciousProjectResolutionScreen() {
         throw new Error('El backend devolvió una resolución incompleta: falta manualResolvedProjectId.');
       }
 
-      if (status === 'pending') {
-        setRows((prev) => prev.filter((candidate) => candidate.id !== row.id));
-      } else {
-        await load();
-      }
+      await load();
       setToast('Resolución guardada correctamente.');
     } catch (err) {
       setError(getErrorMessage(err, 'No se pudo resolver la fila.'));

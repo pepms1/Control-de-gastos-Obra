@@ -14,38 +14,63 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import main  # noqa: E402
 
 
+class FakeCursor:
+    def __init__(self, docs):
+        self.docs = list(docs)
+
+    def sort(self, _spec):
+        return self
+
+    def skip(self, count):
+        self.docs = self.docs[count:]
+        return self
+
+    def limit(self, count):
+        self.docs = self.docs[:count]
+        return self
+
+    def __iter__(self):
+        return iter(self.docs)
+
+
 class FakeTransactions:
     def __init__(self, docs):
         self.docs = {str(doc['_id']): doc for doc in docs}
         self.last_update = None
 
-    def find_one(self, query, projection=None):
+    def _matches_query(self, doc, query):
         target_id = str(query.get('_id')) if query.get('_id') is not None else None
-        doc = self.docs.get(target_id)
-        if not doc:
-            return None
+        if target_id and str(doc.get('_id')) != target_id:
+            return False
+
         source = query.get('source')
         if source and doc.get('source') != source:
-            return None
-        return doc
+            return False
+
+        sap_doc = doc.get('sap') if isinstance(doc.get('sap'), dict) else {}
+        if query.get('sap.isProjectResolutionSuspicious') is True and not sap_doc.get('isProjectResolutionSuspicious'):
+            return False
+
+        manual_id = str(sap_doc.get('manualResolvedProjectId') or '').strip()
+        if '$expr' in query and '$eq' in query['$expr'] and manual_id:
+            return False
+        if '$expr' in query and '$gt' in query['$expr'] and not manual_id:
+            return False
+
+        return True
+
+    def find_one(self, query, projection=None):
+        for doc in self.docs.values():
+            if self._matches_query(doc, query):
+                return doc
+        return None
 
     def find(self, query, projection=None):
-        out = []
-        for doc in self.docs.values():
-            if query.get('source') and doc.get('source') != query.get('source'):
-                continue
-            sap_doc = doc.get('sap') if isinstance(doc.get('sap'), dict) else {}
-            if query.get('sap.isProjectResolutionSuspicious') is True and not sap_doc.get('isProjectResolutionSuspicious'):
-                continue
-            manual_id = str(sap_doc.get('manualResolvedProjectId') or '').strip()
-            has_partial = bool(str(sap_doc.get('manualResolvedProjectName') or '').strip() or str(sap_doc.get('manualResolvedAt') or '').strip())
-            if '$expr' in query and '$eq' in query['$expr']:
-                if manual_id:
-                    continue
-            if '$or' in query and not has_partial:
-                continue
-            out.append(doc)
-        return out
+        out = [doc for doc in self.docs.values() if self._matches_query(doc, query)]
+        return FakeCursor(out)
+
+    def count_documents(self, query):
+        return len([doc for doc in self.docs.values() if self._matches_query(doc, query)])
 
     def update_one(self, query, update):
         target_id = str(query.get('_id')) if query.get('_id') is not None else None
@@ -228,6 +253,51 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
         resolved_expr = resolved_query['$expr']['$gt']
         self.assertEqual(pending_expr[1], 0)
         self.assertEqual(resolved_expr[1], 0)
+
+    def test_pending_and_resolved_lists_use_only_manual_resolved_project_id(self):
+        tx_missing_id = {
+            '_id': ObjectId(),
+            'source': 'sap-sbo',
+            'sap': {
+                'movementType': 'ingreso',
+                'isProjectResolutionSuspicious': True,
+            },
+        }
+        tx_null_id = {
+            '_id': ObjectId(),
+            'source': 'sap-sbo',
+            'sap': {
+                'movementType': 'egreso',
+                'isProjectResolutionSuspicious': True,
+                'manualResolvedProjectId': None,
+            },
+        }
+        tx_resolved = {
+            '_id': ObjectId(),
+            'source': 'sap-sbo',
+            'sap': {
+                'movementType': 'egreso',
+                'isProjectResolutionSuspicious': True,
+                'manualResolvedProjectId': str(ObjectId()),
+            },
+        }
+
+        fake_db = type('FakeDb', (), {'transactions': FakeTransactions([tx_missing_id, tx_null_id, tx_resolved]), 'projects': FakeProjects([])})()
+
+        with patch.object(main, 'db', fake_db):
+            pending = main.list_admin_suspicious_project_resolutions(status='pending', _={'username': 'admin'})
+            resolved = main.list_admin_suspicious_project_resolutions(status='resolved', _={'username': 'admin'})
+
+        pending_ids = {item['id'] for item in pending['items']}
+        resolved_ids = {item['id'] for item in resolved['items']}
+
+        self.assertIn(str(tx_missing_id['_id']), pending_ids)
+        self.assertIn(str(tx_null_id['_id']), pending_ids)
+        self.assertNotIn(str(tx_resolved['_id']), pending_ids)
+
+        self.assertIn(str(tx_resolved['_id']), resolved_ids)
+        self.assertNotIn(str(tx_missing_id['_id']), resolved_ids)
+        self.assertNotIn(str(tx_null_id['_id']), resolved_ids)
 
     def test_repair_backfills_unique_mapping_and_clears_unmapped_partial_fields(self):
         tx_fix_id = ObjectId()
