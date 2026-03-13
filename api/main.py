@@ -4759,7 +4759,6 @@ def build_suspicious_project_resolutions_query(
     query: dict = {
         "source": "sap-sbo",
         "sap.isProjectResolutionSuspicious": True,
-        "sap.movementType": "egreso",
     }
 
     manual_resolved_id_len_expr = {
