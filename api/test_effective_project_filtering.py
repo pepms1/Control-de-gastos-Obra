@@ -8,6 +8,7 @@ os.environ.setdefault('SKIP_STARTUP_INIT', '1')
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main  # noqa: E402
+from bson import ObjectId  # noqa: E402
 
 
 def _matches(document, query):
@@ -33,6 +34,9 @@ def _matches(document, query):
             should_exist = bool(value["$exists"])
             exists = current is not sentinel
             if exists != should_exist:
+                return False
+        elif isinstance(value, dict) and "$in" in value:
+            if current is sentinel or current not in value["$in"]:
                 return False
         elif current is sentinel or current != value:
             return False
@@ -64,6 +68,43 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
 
         self.assertTrue(_matches(tx, pb_filter))
         self.assertFalse(_matches(tx, calderon_filter))
+
+
+    def test_project_id_string_matches_effective_filter(self):
+        tx = {"projectId": "507f1f77bcf86cd799439011", "sap": {}}
+
+        project_filter = main.build_effective_project_filter("507f1f77bcf86cd799439011")
+
+        self.assertTrue(_matches(tx, project_filter))
+
+    def test_project_id_object_id_matches_effective_filter(self):
+        oid = ObjectId("507f1f77bcf86cd799439011")
+        tx = {"projectId": oid, "sap": {}}
+
+        project_filter = main.build_effective_project_filter("507f1f77bcf86cd799439011")
+
+        self.assertTrue(_matches(tx, project_filter))
+
+    def test_manual_resolved_project_id_string_matches_effective_filter(self):
+        tx = {
+            "projectId": "some-other-project",
+            "sap": {"manualResolvedProjectId": "507f1f77bcf86cd799439011"},
+        }
+
+        project_filter = main.build_effective_project_filter("507f1f77bcf86cd799439011")
+
+        self.assertTrue(_matches(tx, project_filter))
+
+    def test_manual_resolved_project_id_object_id_matches_effective_filter(self):
+        oid = ObjectId("507f1f77bcf86cd799439011")
+        tx = {
+            "projectId": "some-other-project",
+            "sap": {"manualResolvedProjectId": oid},
+        }
+
+        project_filter = main.build_effective_project_filter("507f1f77bcf86cd799439011")
+
+        self.assertTrue(_matches(tx, project_filter))
 
 
 if __name__ == '__main__':
