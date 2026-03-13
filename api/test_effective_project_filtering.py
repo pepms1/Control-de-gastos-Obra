@@ -236,6 +236,36 @@ class _FakeTransactionsCollection:
 
 
 class ProjectTransactionsEndpointWiringTests(unittest.TestCase):
+    def test_list_transactions_endpoint_returns_manual_resolved_transaction_id(self):
+        project_calderon = "69acf7a4988149905ed1a3f9"
+        trace_tx_oid = ObjectId("69ae6065aae96a6a5bd0529f")
+        tx_doc = {
+            "_id": trace_tx_oid,
+            "projectId": "PB Y PC INTERIORES",
+            "type": "EXPENSE",
+            "amount": 500.0,
+            "date": "2025-01-20",
+            "sap": {
+                "manualResolvedProjectId": ObjectId(project_calderon),
+                "manualResolvedProjectName": "CALDERON DE LA BARCA",
+            },
+        }
+
+        fake_transactions = _FakeTransactionsCollection([tx_doc])
+        fake_db = SimpleNamespace(
+            transactions=fake_transactions,
+            suppliers=SimpleNamespace(find=lambda *_args, **_kwargs: []),
+            projects=SimpleNamespace(find_one=lambda *_args, **_kwargs: {"_id": ObjectId(project_calderon)}),
+        )
+
+        with patch.object(main, "db", fake_db), patch.object(main, "build_transaction_totals", return_value={}):
+            response = main.list_transactions(project_id=project_calderon, page=1, limit=50, from_date=None, to_date=None, _={"role": "ADMIN"})
+
+        self.assertEqual(response["totalCount"], 1)
+        self.assertEqual(len(response["items"]), 1)
+        self.assertEqual(response["items"][0]["id"], str(trace_tx_oid))
+        self.assertTrue(_matches(tx_doc, fake_transactions.last_find_query))
+
     def test_list_transactions_uses_effective_project_filter_for_count_and_find(self):
         project_calderon = "507f1f77bcf86cd799439011"
         project_pb = "507f191e810c19729de860ea"
