@@ -198,33 +198,3 @@ body.theme-dark .dashboard-column-track{background:#1e293b;}
 }
 
 
-.retro-console-card{display:grid; gap:12px;}
-.retro-help-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:8px; font-size:12px; color:var(--gray-500);} 
-.retro-screen{background:#020617; border:1px solid #1e293b; border-radius:12px; color:#22c55e; font-family:"Courier New", Courier, monospace; min-height:320px; max-height:420px; overflow:auto; padding:12px; line-height:1.4; white-space:pre-wrap;}
-.retro-form{display:flex; gap:8px; align-items:center;}
-.retro-prompt{font-family:"Courier New", Courier, monospace; color:var(--primary-dark); font-weight:700;}
-.retro-input{font-family:"Courier New", Courier, monospace; background:#0b1120; color:#22c55e; border-color:#1e293b;}
-
-body.theme-dark .retro-screen,
-body.theme-dark .retro-input{background:#020617; border-color:#334155; color:#22c55e;}
-
-
-.hack-overlay{position:fixed; inset:0; background:rgba(2,6,23,.88); display:flex; align-items:center; justify-content:center; z-index:3000; padding:16px; animation:hackOverlayFadeOut .5s ease-out 7.5s forwards;}
-.hack-window{width:min(760px,100%); border:1px solid #9ca3af; border-radius:8px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,.5); background:#010409;}
-.hack-window-title{background:linear-gradient(180deg,#f3f4f6,#d1d5db); color:#111827; font-family:"Courier New", Courier, monospace; font-size:13px; padding:7px 10px; border-bottom:1px solid #9ca3af;}
-.hack-terminal{font-family:"Courier New", Courier, monospace; color:#22c55e; background:#010409; min-height:260px; padding:14px 16px; line-height:1.45; font-size:15px;}
-.hack-line{opacity:0; transform:translateY(4px); animation:hackLineIn .25s ease-out forwards;}
-.hack-cursor{display:inline-block; margin-top:4px; animation:hackBlink .8s steps(1,end) infinite;}
-
-@keyframes hackLineIn{
-  to{opacity:1; transform:translateY(0);}
-}
-
-@keyframes hackBlink{
-  0%,49%{opacity:1;}
-  50%,100%{opacity:0;}
-}
-
-@keyframes hackOverlayFadeOut{
-  to{opacity:0; visibility:hidden;}
-}
