@@ -4962,6 +4962,96 @@ def resolve_project_metadata_from_code_or_name(
     return next(iter(matches.values()))
 
 
+def resolve_project_metadata_from_identifiers(
+    identifiers: list[str | None] | tuple[str | None, ...],
+) -> tuple[str | None, str | None, str | None, list[dict]]:
+    normalized_identifiers = [normalize_non_empty_string(value) for value in identifiers]
+    normalized_identifiers = [value for value in normalized_identifiers if value]
+    if not normalized_identifiers:
+        return None, None, None, []
+
+    folded_identifiers = {value.casefold() for value in normalized_identifiers}
+    matches: dict[str, tuple[str, str | None, str | None]] = {}
+    debug_matches: list[dict] = []
+
+    projection = {
+        "_id": 1,
+        "slug": 1,
+        "name": 1,
+        "displayName": 1,
+        "projectName": 1,
+        "code": 1,
+        "projectCode": 1,
+        "sap.projectCode": 1,
+        "sap.sapName": 1,
+        "sap.projectName": 1,
+        "sap.projectNames": 1,
+    }
+    for project_doc in db.projects.find({}, projection):
+        sap_doc = project_doc.get("sap") if isinstance(project_doc.get("sap"), dict) else {}
+        candidate_id = normalize_non_empty_string(project_doc.get("_id"))
+        if not candidate_id:
+            continue
+
+        canonical_code = normalize_non_empty_string(
+            project_doc.get("code")
+            or project_doc.get("projectCode")
+            or sap_doc.get("projectCode")
+            or sap_doc.get("sapName")
+            or project_doc.get("slug")
+            or project_doc.get("name")
+            or project_doc.get("displayName")
+        )
+        canonical_name = normalize_non_empty_string(
+            project_doc.get("displayName")
+            or project_doc.get("name")
+            or sap_doc.get("projectName")
+            or project_doc.get("projectName")
+            or project_doc.get("slug")
+            or canonical_code
+        )
+        candidate_aliases = [
+            normalize_non_empty_string(project_doc.get("displayName")),
+            normalize_non_empty_string(project_doc.get("name")),
+            normalize_non_empty_string(project_doc.get("slug")),
+            normalize_non_empty_string(project_doc.get("code")),
+            normalize_non_empty_string(project_doc.get("projectCode")),
+            normalize_non_empty_string(project_doc.get("projectName")),
+            normalize_non_empty_string(sap_doc.get("projectCode")),
+            normalize_non_empty_string(sap_doc.get("sapName")),
+            normalize_non_empty_string(sap_doc.get("projectName")),
+        ]
+        sap_project_names = sap_doc.get("projectNames") if isinstance(sap_doc.get("projectNames"), list) else []
+        candidate_aliases.extend(normalize_non_empty_string(name) for name in sap_project_names)
+
+        matched_aliases = sorted(
+            {
+                alias
+                for alias in candidate_aliases
+                if alias and alias.casefold() in folded_identifiers
+            }
+        )
+        if not matched_aliases:
+            continue
+
+        matches[candidate_id] = (candidate_id, canonical_code, canonical_name)
+        debug_matches.append(
+            {
+                "projectId": candidate_id,
+                "slug": normalize_non_empty_string(project_doc.get("slug")),
+                "name": normalize_non_empty_string(project_doc.get("name")),
+                "displayName": normalize_non_empty_string(project_doc.get("displayName")),
+                "matchedIdentifiers": matched_aliases,
+            }
+        )
+
+    if len(matches) != 1:
+        return None, None, None, debug_matches
+
+    selected_project = next(iter(matches.values()))
+    return selected_project[0], selected_project[1], selected_project[2], debug_matches
+
+
 def serialize_suspicious_project_resolution_row(tx: dict) -> dict:
     tx_doc = serialize_transaction_with_supplier(tx)
     sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
@@ -5133,15 +5223,14 @@ def resolve_admin_suspicious_project_resolution(
         normalized_payload.get("manual_resolved_project_name") or normalized_payload.get("project_name")
     )
 
+    candidate_projects_found: list[dict] = []
     if resolve_to == "document":
-        selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
-            project_code=document_code,
-            project_name=document_name,
+        selected_project_id, selected_project_code, selected_project_name, candidate_projects_found = resolve_project_metadata_from_identifiers(
+            [document_code, document_name]
         )
     elif resolve_to == "payment":
-        selected_project_id, selected_project_code, selected_project_name = resolve_project_metadata_from_code_or_name(
-            project_code=payment_code,
-            project_name=payment_name,
+        selected_project_id, selected_project_code, selected_project_name, candidate_projects_found = resolve_project_metadata_from_identifiers(
+            [payment_code, payment_name]
         )
     elif resolve_to in {"custom", "other", "manual", ""}:
         if selected_project_id:
@@ -5157,7 +5246,15 @@ def resolve_admin_suspicious_project_resolution(
     if not selected_project_id:
         raise HTTPException(
             status_code=400,
-            detail="Could not derive resolved project id. Provide a valid project_id or a unique project_code/project_name mapping.",
+            detail={
+                "message": "Could not derive resolved project id. Provide a valid project_id or a unique project_code/project_name mapping.",
+                "resolveMode": resolve_to or "custom",
+                "documentProjectCode": document_code,
+                "documentProjectName": document_name,
+                "paymentProjectCode": payment_code,
+                "paymentProjectName": payment_name,
+                "candidateProjectsFound": candidate_projects_found,
+            },
         )
 
     now_iso = datetime.now(timezone.utc).isoformat()

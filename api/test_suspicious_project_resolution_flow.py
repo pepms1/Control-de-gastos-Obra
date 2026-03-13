@@ -280,6 +280,74 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
 
         self.assertEqual(exc.exception.status_code, 400)
         self.assertIn('Could not derive resolved project id', str(exc.exception.detail))
+        self.assertEqual(exc.exception.detail.get('resolveMode'), 'document')
+        self.assertIn('candidateProjectsFound', exc.exception.detail)
+
+    def test_resolve_to_payment_matches_display_name_from_payment_project_code(self):
+        calderon_project_id = ObjectId('69acf7a4988149905ed1a3f9')
+        payment_display_name = 'CALDERON DE LA BARCA'
+        tx_doc = {
+            **self.base_tx,
+            'sap': {
+                **self.base_tx['sap'],
+                'paymentProjectCode': payment_display_name,
+                'paymentProjectName': payment_display_name,
+            },
+        }
+        fake_db = self._fake_db(
+            tx_doc=tx_doc,
+            projects=[
+                {
+                    '_id': calderon_project_id,
+                    'slug': 'calderon',
+                    'name': 'calderon',
+                    'displayName': payment_display_name,
+                }
+            ],
+        )
+
+        with patch.object(main, 'db', fake_db):
+            out_payment = main.resolve_admin_suspicious_project_resolution(
+                str(self.tx_id),
+                {'resolve_to': 'payment', 'resolution_reason': 'payment displayName derivation'},
+                user={'username': 'admin'},
+            )
+
+        self.assertTrue(out_payment['ok'])
+        self.assertEqual(out_payment['manualResolvedProjectId'], str(calderon_project_id))
+
+    def test_resolve_to_document_matches_display_name_from_document_project_code(self):
+        pb_project_id = ObjectId('69acf7a4988149905ed1a3f8')
+        document_display_name = 'PB Y PC INTERIORES'
+        tx_doc = {
+            **self.base_tx,
+            'sap': {
+                **self.base_tx['sap'],
+                'documentProjectCode': document_display_name,
+                'documentProjectName': document_display_name,
+            },
+        }
+        fake_db = self._fake_db(
+            tx_doc=tx_doc,
+            projects=[
+                {
+                    '_id': pb_project_id,
+                    'slug': 'pb-pc-int',
+                    'name': 'proyecto_pb',
+                    'displayName': document_display_name,
+                }
+            ],
+        )
+
+        with patch.object(main, 'db', fake_db):
+            out_document = main.resolve_admin_suspicious_project_resolution(
+                str(self.tx_id),
+                {'resolve_to': 'document', 'resolution_reason': 'document displayName derivation'},
+                user={'username': 'admin'},
+            )
+
+        self.assertTrue(out_document['ok'])
+        self.assertEqual(out_document['manualResolvedProjectId'], str(pb_project_id))
 
     def test_reject_partial_manual_resolution_payload_and_persist_nothing(self):
         fake_db = self._fake_db()
