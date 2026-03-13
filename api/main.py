@@ -2737,6 +2737,36 @@ def build_transactions_query(
     return q
 
 
+def build_project_transactions_query(
+    project_id: str,
+    type_value: str | None = None,
+    category_id: str | None = None,
+    vendor_id: str | None = None,
+    supplier_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    origen: str | None = None,
+    source: str | None = None,
+    source_db: str | None = None,
+    search_query: str | None = None,
+):
+    """Project-scoped transaction query that always applies effective project rules."""
+    base_query = build_transactions_query(
+        type_value=type_value,
+        category_id=category_id,
+        vendor_id=vendor_id,
+        supplier_id=supplier_id,
+        date_from=date_from,
+        date_to=date_to,
+        project_id=None,
+        origen=origen,
+        source=source,
+        source_db=source_db,
+        search_query=search_query,
+    )
+    return with_effective_project_filter(base_query, project_id)
+
+
 def build_transaction_totals(match_query: dict, search_query: str | None = None):
     aggregate_match = dict(match_query)
     cleaned_search = (search_query or "").strip()
@@ -6215,14 +6245,14 @@ def list_transactions(
     effective_date_from = from_date or date_from
     effective_date_to = to_date or date_to
     effective_type = type or tipo
-    match_query = build_transactions_query(
+    match_query = build_project_transactions_query(
+        project_id=resolved_project_id,
         type_value=effective_type,
         category_id=category_id,
         vendor_id=vendor_id,
         supplier_id=supplierId,
         date_from=effective_date_from,
         date_to=effective_date_to,
-        project_id=resolved_project_id,
         origen=origen,
         source=source,
         source_db=sourceDb,
