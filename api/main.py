@@ -5017,7 +5017,12 @@ def get_admin_suspicious_project_resolution_detail(transaction_id: str, _: dict 
 
 
 @app.post("/api/admin/suspicious-project-resolutions/{transaction_id}/resolve")
-def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: dict, user: dict = Depends(require_admin)):
+def resolve_admin_suspicious_project_resolution(
+    transaction_id: str,
+    payload: dict,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_admin),
+):
     raw_transaction_id = str(transaction_id or "")
     normalized_transaction_id = raw_transaction_id.strip()
     logger.info("resolve suspicious-project incoming transactionId=%s normalized=%s", raw_transaction_id, normalized_transaction_id)
@@ -5036,9 +5041,21 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
 
     oid_transaction_id = ObjectId(normalized_transaction_id)
     suspicious_collection, suspicious_db_name, suspicious_collection_name = get_suspicious_project_resolutions_collection()
-    tx = suspicious_collection.find_one({"_id": oid_transaction_id, "source": "sap-sbo"})
+    request_project_id = ""
+    if request is not None and getattr(request, "headers", None) is not None:
+        request_project_id = (request.headers.get("x-project-id") or "").strip()
+
+    tx_lookup_filter = {"_id": oid_transaction_id}
     logger.info(
-        "resolve suspicious-project lookup transactionId=%s objectId=%s db=%s collection=%s found=%s",
+        "resolve suspicious-project lookup transactionId=%s x-project-id=%s filter=%s",
+        normalized_transaction_id,
+        request_project_id or None,
+        _serialize_any(tx_lookup_filter),
+    )
+
+    tx = suspicious_collection.find_one(tx_lookup_filter)
+    logger.info(
+        "resolve suspicious-project lookup result transactionId=%s objectId=%s db=%s collection=%s found=%s",
         normalized_transaction_id,
         str(oid_transaction_id),
         suspicious_db_name,
