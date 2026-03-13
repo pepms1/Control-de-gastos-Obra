@@ -430,6 +430,12 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  resetAdminUserPassword: (userId, newPassword) =>
+    backendReq(`/api/admin/users/${userId}/reset-password`, {
+      method: 'POST',
+      body: JSON.stringify({ new_password: newPassword }),
+    }),
+
   updateAdminProjectVisibility: (projectId, visibleInFrontend) =>
     backendReq(`/api/admin/projects/${projectId}/visibility`, {
       method: 'PATCH',

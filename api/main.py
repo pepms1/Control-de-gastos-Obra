@@ -4778,6 +4778,51 @@ def update_admin_user(user_id: str, payload: dict, _: dict = Depends(require_adm
     return serialize_admin_user(updated)
 
 
+@app.post("/api/admin/users/{user_id}/reset-password")
+def reset_admin_user_password(user_id: str, payload: dict, _: dict = Depends(require_admin)):
+    if normalize_user_role((_ or {}).get("role")) != "SUPERADMIN":
+        raise HTTPException(status_code=403, detail="SUPERADMIN role required")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+
+    new_password = str(payload.get("new_password") or "")
+    if not new_password:
+        raise HTTPException(status_code=400, detail="new_password is required")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="new_password must have at least 8 characters")
+
+    existing = db.users.find_one({"_id": oid(user_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    now = datetime.now(timezone.utc).isoformat()
+    update_fields = {
+        "password_hash": pwd_context.hash(new_password),
+        "updated_at": now,
+    }
+
+    admin_username = str((_.get("username") or _.get("name") or "")).strip()
+    if admin_username:
+        update_fields["updatedBy"] = admin_username
+        update_fields["passwordResetBy"] = admin_username
+    update_fields["passwordResetAt"] = now
+
+    updated = db.users.find_one_and_update(
+        {"_id": oid(user_id)},
+        {"$set": update_fields},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "ok": True,
+        "userId": str(updated.get("_id") or user_id),
+        "username": updated.get("username") or "",
+        "message": "Password reset successfully",
+    }
+
+
 @app.get("/api/admin/raw-data/collections")
 def raw_data_collections(_: dict = Depends(require_admin)):
     excluded = {"system.indexes", "system.profile"}
