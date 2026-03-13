@@ -1,5 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api, SELECTED_PROJECT_KEY } from '../api.js';
+import {
+  getSuspiciousResolutionTarget,
+  getSuspiciousTransactionId,
+  MISSING_TRANSACTION_ID_ERROR,
+} from './suspiciousResolution.js';
 
 function valueToArray(value) {
   if (Array.isArray(value)) return value;
@@ -345,18 +350,27 @@ export function SuspiciousProjectResolutionScreen() {
   const visibleRows = useMemo(() => rows, [rows]);
 
   async function resolveRow(row, resolution) {
-    const transactionId = String(row?.id || '').trim();
-    if (!transactionId) {
-      setError('La fila no tiene transaction id válido.');
+    const target = getSuspiciousResolutionTarget(row);
+    if (!target.canResolve) {
+      console.error('Missing transaction id for suspicious resolution', { row });
+      setError(MISSING_TRANSACTION_ID_ERROR);
       return;
     }
+    const { transactionId } = target;
 
     setToast('');
     try {
       const selectedProjectId = row?.currentAssignedProjectId || '';
       const selectedProjectCode = row?.currentAssignedProjectCode || '';
       const selectedProjectName = row?.currentAssignedProjectName || '';
-      const reason = reasonById[row.id] || '';
+      const reason = reasonById[transactionId] || '';
+
+      console.info('Resolving suspicious transaction', {
+        transactionId,
+        resolution,
+        paymentNum: row?.paymentNum,
+        invoiceNum: row?.invoiceNum,
+      });
 
       const response = await api.resolveSuspiciousProjectResolution(transactionId, {
         resolveTo: resolution,
@@ -435,8 +449,8 @@ export function SuspiciousProjectResolutionScreen() {
                 <td>
                   <div style={{ display: 'grid', gap: 4 }}>
                     <input
-                      value={reasonById[row.id] || ''}
-                      onChange={(e) => setReasonById((prev) => ({ ...prev, [row.id]: e.target.value }))}
+                      value={reasonById[getSuspiciousTransactionId(row)] || ''}
+                      onChange={(e) => setReasonById((prev) => ({ ...prev, [getSuspiciousTransactionId(row)]: e.target.value }))}
                       placeholder="nota"
                     />
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>

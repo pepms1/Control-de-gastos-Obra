@@ -287,6 +287,34 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
         pending_ids = {item['id'] for item in pending['items']}
         self.assertIn(str(tx_pending['_id']), pending_ids)
         self.assertNotIn(str(tx_resolved['_id']), pending_ids)
+        first_row = pending['items'][0]
+        self.assertEqual(first_row['id'], str(tx_pending['_id']))
+        self.assertEqual(first_row['transactionId'], str(tx_pending['_id']))
+        self.assertEqual(first_row['_id'], str(tx_pending['_id']))
+
+    def test_resolve_with_non_matching_valid_object_id_returns_404_with_received_id(self):
+        payment_num_like_oid = str(ObjectId())
+        fake_db = self._fake_db(
+            tx_doc={
+                **self.base_tx,
+                'sap': {
+                    **self.base_tx['sap'],
+                    'paymentNum': payment_num_like_oid,
+                },
+            }
+        )
+
+        with patch.object(main, 'db', fake_db):
+            with self.assertRaises(HTTPException) as exc:
+                main.resolve_admin_suspicious_project_resolution(
+                    payment_num_like_oid,
+                    {'resolve_to': 'document'},
+                    user={'username': 'admin'},
+                )
+
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(exc.exception.detail['message'], 'Transaction not found')
+        self.assertEqual(exc.exception.detail['transactionId'], payment_num_like_oid)
 
     def test_resolved_list_includes_only_rows_with_non_empty_manual_resolved_project_id(self):
         tx_pending = {
