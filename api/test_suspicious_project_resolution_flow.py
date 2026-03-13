@@ -373,6 +373,26 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
         self.assertEqual(pending_expr[1], 0)
         self.assertEqual(resolved_expr[1], 0)
 
+    def test_query_supports_payment_entity_effective_project_supplier_cardcode_amount_and_text(self):
+        query = main.build_suspicious_project_resolutions_query(
+            payment_entity='SBO_GMDI',
+            effective_project='PB Y PC INTERIORES',
+            supplier='C0001',
+            amount_min=100,
+            amount_max=250,
+            text='comentario',
+        )
+
+        self.assertEqual(query['amount']['$gte'], 100)
+        self.assertEqual(query['amount']['$lte'], 250)
+        self.assertIn('$and', query)
+        and_filters = query['$and']
+        flattened = str(and_filters)
+        self.assertIn('sap.cardCode', flattened)
+        self.assertIn('sap.manualResolvedProjectName', flattened)
+        self.assertIn('sourceSbo', flattened)
+        self.assertIn('sap.comments', flattened)
+
     def test_pending_list_includes_suspicious_sap_source_without_manual_resolution(self):
         tx_pending = {
             '_id': ObjectId(),
