@@ -5234,6 +5234,7 @@ def list_admin_latest_imports(
     now_utc = datetime.now(timezone.utc)
     from_utc = now_utc - timedelta(days=normalized_days)
     from_iso = from_utc.isoformat()
+    from_date = from_utc.date().isoformat()
 
     projection = {
         "date": 1,
@@ -5254,10 +5255,24 @@ def list_admin_latest_imports(
     }
 
     query = {
-        "created_at": {"$gte": from_iso},
+        "$or": [
+            {"date": {"$gte": from_date}},
+            {
+                "$and": [
+                    {
+                        "$or": [
+                            {"date": {"$exists": False}},
+                            {"date": None},
+                            {"date": ""},
+                        ]
+                    },
+                    {"created_at": {"$gte": from_iso}},
+                ]
+            },
+        ]
     }
 
-    cursor = db.transactions.find(query, projection).sort([("created_at", -1), ("_id", -1)]).limit(normalized_limit)
+    cursor = db.transactions.find(query, projection).sort([("date", -1), ("created_at", -1), ("_id", -1)]).limit(normalized_limit)
     items = []
     for tx in cursor:
         tx_doc = serialize_transaction_with_supplier(tx)
