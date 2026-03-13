@@ -6235,7 +6235,6 @@ def list_transactions(
     limit: int = 50,
     _: dict = Depends(require_authenticated),
 ):
-    trace_tx_id = "69ae6065aae96a6a5bd0529f"
     normalized_page = max(page, 1)
     resolved_project_id = resolve_project_id(project_id)
     logger.info("transactions projectId=%s resolved=%s", project_id, resolved_project_id)
@@ -6257,12 +6256,6 @@ def list_transactions(
         source_db=sourceDb,
         search_query=q,
     )
-    logger.info(
-        "/transactions trace projectId_received=%s projectId_resolved=%s mongo_filter=%s",
-        project_id,
-        resolved_project_id,
-        match_query,
-    )
     total_count = db.transactions.count_documents(match_query)
     totals = build_transaction_totals(match_query, search_query=q)
     logger.info("/transactions resolved projectId=%s totalCount=%s", resolved_project_id, total_count)
@@ -6272,13 +6265,6 @@ def list_transactions(
         .sort([("date", -1), ("_id", -1)])
         .skip(skip)
         .limit(normalized_limit)
-    )
-    trace_in_cursor = any(str(tx.get("_id") or tx.get("id") or "") == trace_tx_id for tx in txs)
-    logger.info(
-        "/transactions trace returned_rows=%s includes_%s=%s",
-        len(txs),
-        trace_tx_id,
-        trace_in_cursor,
     )
 
     supplier_ids = []
