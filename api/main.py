@@ -2944,6 +2944,8 @@ def backfill_sap_transactions_metadata():
         "amount": 1,
         "sap": 1,
     }
+    collision_skips = 0
+    planned_unique_keys: set[tuple] = set()
     for tx in db.transactions.find(query, projection):
         sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else None
         if not sap_doc:
@@ -2982,6 +2984,39 @@ def backfill_sap_transactions_metadata():
             "sap.montoAplicado": normalized_sap["montoAplicado"],
             "sap.montoAplicadoCents": normalized_sap["montoAplicadoCents"],
         }
+
+        unique_key = (
+            str(tx.get("projectId") or ""),
+            set_values["source"],
+            set_values["sourceDb"],
+            set_values["sap.pagoNum"],
+            set_values["sap.facturaNum"],
+            set_values["sap.montoAplicadoCents"],
+        )
+        duplicate_filter = {
+            "_id": {"$ne": tx["_id"]},
+            "projectId": tx.get("projectId"),
+            "source": set_values["source"],
+            "sourceDb": set_values["sourceDb"],
+            "sap.pagoNum": set_values["sap.pagoNum"],
+            "sap.facturaNum": set_values["sap.facturaNum"],
+            "sap.montoAplicadoCents": set_values["sap.montoAplicadoCents"],
+        }
+        existing_collision = db.transactions.find_one(duplicate_filter, {"_id": 1})
+        if existing_collision or unique_key in planned_unique_keys:
+            collision_skips += 1
+            logger.warning(
+                "Skipping SAP metadata backfill update due to unique-key collision tx=%s projectId=%s sourceDb=%s pagoNum=%s facturaNum=%s montoAplicadoCents=%s",
+                tx.get("_id"),
+                tx.get("projectId"),
+                set_values["sourceDb"],
+                set_values["sap.pagoNum"],
+                set_values["sap.facturaNum"],
+                set_values["sap.montoAplicadoCents"],
+            )
+            continue
+        planned_unique_keys.add(unique_key)
+
         if source_db_was_missing:
             set_values["sourceDbInferred"] = True
 
@@ -2995,9 +3030,17 @@ def backfill_sap_transactions_metadata():
         )
 
     if ops:
-        result = db.transactions.bulk_write(ops, ordered=False)
-        return {"scanned": len(ops), "updated": (result.modified_count or 0) + (result.upserted_count or 0)}
-    return {"scanned": 0, "updated": 0}
+        try:
+            result = db.transactions.bulk_write(ops, ordered=False)
+            return {
+                "scanned": len(ops),
+                "updated": (result.modified_count or 0) + (result.upserted_count or 0),
+                "skippedCollisions": collision_skips,
+            }
+        except BulkWriteError:
+            logger.exception("SAP metadata backfill hit duplicate-key errors; startup will continue")
+            return {"scanned": len(ops), "updated": 0, "skippedCollisions": collision_skips}
+    return {"scanned": 0, "updated": 0, "skippedCollisions": collision_skips}
 
 
 def _is_missing(value) -> bool:

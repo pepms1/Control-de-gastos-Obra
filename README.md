@@ -44,6 +44,12 @@ Comando sugerido para Render Cron:
 
 Opcional: puedes usar `render.yaml` incluido como base para crear el servicio `type: cron`.
 
+## Startup init/backfills (Render)
+
+- El backend soporta desactivar la inicialización de startup (índices, usuarios por defecto y backfills de arranque) con `SKIP_STARTUP_INIT=1`.
+- Esto permite desplegar temporalmente sin backfills de arranque mientras se depura otro flujo (por ejemplo, suspicious resolution).
+- Recomendación operativa en Render durante investigación: setear `SKIP_STARTUP_INIT=1` y ejecutar los backfills de forma controlada/manual luego del diagnóstico.
+
 
 ## Telegram + imports SAP (V2)
 
