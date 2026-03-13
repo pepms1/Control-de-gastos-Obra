@@ -1899,6 +1899,7 @@ function SpecialWorkSuppliersReviewSection() {
   const [saveSuccess, setSaveSuccess] = useState('');
   const [search, setSearch] = useState('');
   const [sboFilter, setSboFilter] = useState('all');
+  const [assignmentFilter, setAssignmentFilter] = useState('all');
   const [selectedCategoryBySupplier, setSelectedCategoryBySupplier] = useState({});
 
   function normalizeGlobalCategories(response) {
@@ -1977,6 +1978,14 @@ function SpecialWorkSuppliersReviewSection() {
         return false;
       }
 
+      const isAssigned = item?.category2Rule?.status === 'assigned';
+      if (assignmentFilter === 'assigned' && !isAssigned) {
+        return false;
+      }
+      if (assignmentFilter === 'unassigned' && isAssigned) {
+        return false;
+      }
+
       if (!normalizedQuery) return true;
       const haystack = normalizeSearchText([
         item?.supplierName,
@@ -1987,7 +1996,7 @@ function SpecialWorkSuppliersReviewSection() {
       ].join(' '));
       return haystack.includes(normalizedQuery);
     });
-  }, [items, search, sboFilter]);
+  }, [items, search, sboFilter, assignmentFilter]);
 
   async function saveSupplierCategory2(item) {
     const supplierKey = String(item?.supplierKey || '').trim();
@@ -2043,6 +2052,14 @@ function SpecialWorkSuppliersReviewSection() {
             {sboOptions.map((option) => (
               <option key={option} value={option}>{option === 'all' ? 'Todos' : option}</option>
             ))}
+          </select>
+        </label>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span className="small">Asignación</span>
+          <select value={assignmentFilter} onChange={(e) => setAssignmentFilter(e.target.value)}>
+            <option value="all">Todos</option>
+            <option value="assigned">Asignados</option>
+            <option value="unassigned">Sin asignar</option>
           </select>
         </label>
         <span className="small">{filteredItems.length} proveedores</span>
