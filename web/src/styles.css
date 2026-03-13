@@ -48,8 +48,8 @@ a{color:inherit}
 .nav-items{display:flex; gap:8px; align-items:center; grid-column:1 / -1; min-width:0;}
 .nav-project-label{margin-bottom:0; white-space:nowrap;}
 .nav-items select{max-width:300px; min-height:38px; font-size:14px;}
-.nav-links-desktop{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
-.nav-links-desktop button{font-size:30px; line-height:1.2;}
+.nav-links-desktop{display:flex; gap:12px; align-items:center; flex-wrap:wrap;}
+.nav-links-desktop button{font-size:28px; line-height:1.15;}
 .nav-user-actions{display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:wrap; justify-content:flex-end;}
 .nav-user{word-break:break-word; text-align:right;}
 .theme-toggle{min-width:112px;}
