@@ -5952,7 +5952,7 @@ def create_transaction(
 @app.patch("/transactions/{transaction_id}")
 def update_transaction(transaction_id: str, payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
     active_project_id = get_active_project_id(request)
-    transaction_filter = {"_id": oid(transaction_id), "projectId": active_project_id}
+    transaction_filter = with_effective_project_filter({"_id": oid(transaction_id)}, active_project_id)
     tx = db.transactions.find_one(transaction_filter)
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -6060,22 +6060,20 @@ def update_transaction(transaction_id: str, payload: dict, request: FastAPIReque
         supplier_id = tx.get("supplierId")
         if supplier_id:
             db.transactions.update_many(
-                {
+                with_effective_project_filter({
                     "supplierId": supplier_id,
                     "type": "EXPENSE",
-                    "projectId": active_project_id,
                     **uncategorized_filter,
-                },
+                }, active_project_id),
                 {"$set": propagation_updates},
             )
         elif tx.get("vendor_id"):
             db.transactions.update_many(
-                {
+                with_effective_project_filter({
                     "vendor_id": tx.get("vendor_id"),
                     "type": "EXPENSE",
-                    "projectId": active_project_id,
                     **uncategorized_filter,
-                },
+                }, active_project_id),
                 {"$set": propagation_updates},
             )
 
@@ -6084,7 +6082,7 @@ def update_transaction(transaction_id: str, payload: dict, request: FastAPIReque
 
 @app.patch("/api/projects/{project_id}/transactions/{transaction_id}")
 def update_project_transaction(project_id: str, transaction_id: str, payload: dict, _: dict = Depends(require_admin)):
-    transaction_filter = {"_id": oid(transaction_id), "projectId": project_id}
+    transaction_filter = with_effective_project_filter({"_id": oid(transaction_id)}, project_id)
     tx = db.transactions.find_one(transaction_filter)
     if not tx:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -6139,22 +6137,20 @@ def update_project_transaction(project_id: str, transaction_id: str, payload: di
         supplier_id = tx.get("supplierId")
         if supplier_id:
             db.transactions.update_many(
-                {
+                with_effective_project_filter({
                     "supplierId": supplier_id,
                     "type": "EXPENSE",
-                    "projectId": project_id,
                     **uncategorized_filter,
-                },
+                }, project_id),
                 {"$set": propagation_updates},
             )
         elif tx.get("vendor_id"):
             db.transactions.update_many(
-                {
+                with_effective_project_filter({
                     "vendor_id": tx.get("vendor_id"),
                     "type": "EXPENSE",
-                    "projectId": project_id,
                     **uncategorized_filter,
-                },
+                }, project_id),
                 {"$set": propagation_updates},
             )
 
@@ -6178,19 +6174,21 @@ def bulk_update_project_transactions_category(project_id: str, payload: dict, _:
     if not updates:
         raise HTTPException(status_code=400, detail="categoryId/category_id is required")
 
-    query = {"projectId": project_id}
+    query = with_effective_project_filter({}, project_id)
     if ids:
         normalized_ids = []
         for tx_id in ids:
             if not ObjectId.is_valid(str(tx_id)):
                 raise HTTPException(status_code=400, detail=f"Invalid transaction id: {tx_id}")
             normalized_ids.append(ObjectId(str(tx_id)))
-        query["_id"] = {"$in": normalized_ids}
+        query = {"$and": [query, {"_id": {"$in": normalized_ids}}]}
     elif isinstance(raw_filter, dict) and raw_filter:
+        extra_filters = {}
         allowed_filters = ("sourceDb", "source", "supplierId", "vendor_id", "type")
         for key in allowed_filters:
             if key in raw_filter:
-                query[key] = raw_filter.get(key)
+                extra_filters[key] = raw_filter.get(key)
+        query = {"$and": [query, extra_filters]} if extra_filters else query
     else:
         raise HTTPException(status_code=400, detail="Provide ids or filter")
 
@@ -6201,7 +6199,7 @@ def bulk_update_project_transactions_category(project_id: str, payload: dict, _:
 @app.delete("/transactions/{transaction_id}")
 def delete_transaction(transaction_id: str, request: FastAPIRequest, _: dict = Depends(require_admin)):
     active_project_id = get_active_project_id(request)
-    result = db.transactions.delete_one({"_id": oid(transaction_id), "projectId": active_project_id})
+    result = db.transactions.delete_one(with_effective_project_filter({"_id": oid(transaction_id)}, active_project_id))
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Transaction not found")
     return {"ok": True}

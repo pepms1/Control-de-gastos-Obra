@@ -147,6 +147,64 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
 
         self.assertIn("sap.pagoNum", search_fields)
 
+    def test_list_transactions_includes_manual_resolved_project_in_project_view(self):
+        project_id = "69acf7a4988149905ed1a3f9"
+        tx = {
+            "_id": ObjectId("507f1f77bcf86cd799439011"),
+            "projectId": "PB Y PC INTERIORES",
+            "type": "EXPENSE",
+            "amount": 1200,
+            "date": "2025-01-15",
+            "sap": {
+                "manualResolvedProjectId": ObjectId(project_id),
+                "manualResolvedProjectName": "CALDERON DE LA BARCA",
+            },
+        }
+
+        class FakeCursor:
+            def __init__(self, docs):
+                self.docs = list(docs)
+
+            def sort(self, *_args, **_kwargs):
+                return self
+
+            def skip(self, value):
+                self.docs = self.docs[value:]
+                return self
+
+            def limit(self, value):
+                self.docs = self.docs[:value]
+                return self
+
+            def __iter__(self):
+                return iter(self.docs)
+
+        class FakeTransactions:
+            def __init__(self, docs):
+                self.docs = docs
+
+            def count_documents(self, query):
+                return sum(1 for doc in self.docs if _matches(doc, query))
+
+            def find(self, query, *_args, **_kwargs):
+                return FakeCursor([doc for doc in self.docs if _matches(doc, query)])
+
+            def aggregate(self, *_args, **_kwargs):
+                return []
+
+        fake_db = SimpleNamespace(
+            transactions=FakeTransactions([tx]),
+            suppliers=SimpleNamespace(find=lambda *_args, **_kwargs: []),
+            categories=SimpleNamespace(find=lambda *_args, **_kwargs: []),
+            projects=SimpleNamespace(find_one=lambda *_args, **_kwargs: {'_id': ObjectId(project_id)}),
+        )
+
+        with patch.object(main, "db", fake_db):
+            response = main.list_transactions(project_id=project_id, from_date=None, to_date=None, page=1, limit=50, _={"role": "ADMIN"})
+
+        self.assertEqual(response["totalCount"], 1)
+        self.assertEqual(len(response["items"]), 1)
+
 
 class _FakeCursor:
     def __init__(self, docs):
