@@ -50,7 +50,6 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
     def test_manual_resolution_takes_precedence_over_project_id(self):
         tx = {
             "projectId": "PB Y PC INTERIORES",
-            "effectiveProjectId": "CALDERON DE LA BARCA",
             "sap": {"manualResolvedProjectId": "CALDERON DE LA BARCA"},
         }
 
@@ -63,7 +62,6 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
     def test_project_id_is_used_when_manual_resolution_is_missing(self):
         tx = {
             "projectId": "PB Y PC INTERIORES",
-            "effectiveProjectId": "PB Y PC INTERIORES",
             "sap": {},
         }
 
@@ -75,7 +73,7 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
 
 
     def test_project_id_string_matches_effective_filter(self):
-        tx = {"projectId": "507f1f77bcf86cd799439011", "effectiveProjectId": "507f1f77bcf86cd799439011", "sap": {}}
+        tx = {"projectId": "507f1f77bcf86cd799439011", "sap": {}}
 
         project_filter = main.build_effective_project_filter("507f1f77bcf86cd799439011")
 
@@ -83,7 +81,7 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
 
     def test_project_id_object_id_matches_effective_filter(self):
         oid = ObjectId("507f1f77bcf86cd799439011")
-        tx = {"projectId": oid, "effectiveProjectId": oid, "sap": {}}
+        tx = {"projectId": oid, "sap": {}}
 
         project_filter = main.build_effective_project_filter("507f1f77bcf86cd799439011")
 
@@ -92,7 +90,6 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
     def test_manual_resolved_project_id_string_matches_effective_filter(self):
         tx = {
             "projectId": "some-other-project",
-            "effectiveProjectId": "507f1f77bcf86cd799439011",
             "sap": {"manualResolvedProjectId": "507f1f77bcf86cd799439011"},
         }
 
@@ -104,7 +101,6 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
         oid = ObjectId("507f1f77bcf86cd799439011")
         tx = {
             "projectId": "some-other-project",
-            "effectiveProjectId": oid,
             "sap": {"manualResolvedProjectId": oid},
         }
 
@@ -115,7 +111,6 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
     def test_transactions_query_prioritizes_manual_resolution_for_project_views(self):
         tx = {
             "projectId": "PB Y PC INTERIORES",
-            "effectiveProjectId": "CALDERON DE LA BARCA",
             "supplierName": "PROVEEDOR UNO",
             "sap": {
                 "manualResolvedProjectId": "CALDERON DE LA BARCA",
@@ -152,22 +147,11 @@ class EffectiveProjectFilteringTests(unittest.TestCase):
 
         self.assertIn("sap.pagoNum", search_fields)
 
-
-    def test_v2_search_respects_effective_project_id(self):
-        fake_db = SimpleNamespace(categories=SimpleNamespace(find=lambda *_args, **_kwargs: []))
-        with patch.object(main, "db", fake_db):
-            calderon_query = main.build_transactions_query(project_id="507f1f77bcf86cd799439011", search_query="PAY-999")
-
-        self.assertIn("$and", calderon_query)
-        project_filter = calderon_query["$and"][0]
-        self.assertEqual(project_filter, main.build_effective_project_filter("507f1f77bcf86cd799439011"))
-
     def test_list_transactions_includes_manual_resolved_project_in_project_view(self):
         project_id = "69acf7a4988149905ed1a3f9"
         tx = {
             "_id": ObjectId("507f1f77bcf86cd799439011"),
             "projectId": "PB Y PC INTERIORES",
-            "effectiveProjectId": ObjectId(project_id),
             "type": "EXPENSE",
             "amount": 1200,
             "date": "2025-01-15",
@@ -261,7 +245,6 @@ class ProjectTransactionsEndpointWiringTests(unittest.TestCase):
         tx_doc = {
             "_id": trace_tx_oid,
             "projectId": "PB Y PC INTERIORES",
-            "effectiveProjectId": ObjectId(project_calderon),
             "type": "EXPENSE",
             "amount": 500.0,
             "date": "2025-01-20",
@@ -292,7 +275,6 @@ class ProjectTransactionsEndpointWiringTests(unittest.TestCase):
         tx_doc = {
             "_id": ObjectId("507f191e810c19729de860eb"),
             "projectId": project_pb,
-            "effectiveProjectId": project_calderon,
             "type": "EXPENSE",
             "amount": 100.0,
             "sap": {
@@ -326,7 +308,6 @@ class ProjectTransactionsEndpointWiringTests(unittest.TestCase):
     def test_build_project_transactions_query_matches_manual_resolution_precedence(self):
         tx = {
             "projectId": "PB Y PC INTERIORES",
-            "effectiveProjectId": "CALDERON DE LA BARCA",
             "sap": {"manualResolvedProjectId": "CALDERON DE LA BARCA"},
         }
 
@@ -335,17 +316,6 @@ class ProjectTransactionsEndpointWiringTests(unittest.TestCase):
 
         self.assertTrue(_matches(tx, calderon_query))
         self.assertFalse(_matches(tx, pb_query))
-
-
-    def test_legacy_unresolved_transaction_still_matches_by_effective_project(self):
-        tx = {
-            "projectId": "507f191e810c19729de860ea",
-            "effectiveProjectId": "507f191e810c19729de860ea",
-            "sap": {},
-        }
-
-        project_query = main.build_project_transactions_query("507f191e810c19729de860ea")
-        self.assertTrue(_matches(tx, project_query))
 
 
 class _FakeCategoriesCollection:
@@ -372,7 +342,6 @@ class DashboardAggregationsEffectiveProjectTests(unittest.TestCase):
         tx_doc = {
             "_id": trace_tx_oid,
             "projectId": project_pb,
-            "effectiveProjectId": project_calderon,
             "type": "EXPENSE",
             "amount": 116.0,
             "tax": {"subtotal": 100.0, "iva": 16.0, "totalFactura": 116.0},
@@ -407,7 +376,6 @@ class DashboardAggregationsEffectiveProjectTests(unittest.TestCase):
         tx_doc = {
             "_id": ObjectId("69ae6065aae96a6a5bd0529f"),
             "projectId": project_pb,
-            "effectiveProjectId": project_calderon,
             "type": "EXPENSE",
             "amount": 116.0,
             "tax": {"subtotal": 100.0, "iva": 16.0, "totalFactura": 116.0},
