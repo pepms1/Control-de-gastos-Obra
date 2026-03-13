@@ -4912,8 +4912,11 @@ def resolve_project_metadata_from_code_or_name(
 def serialize_suspicious_project_resolution_row(tx: dict) -> dict:
     tx_doc = serialize_transaction_with_supplier(tx)
     sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+    mongo_id = normalize_non_empty_string(tx_doc.get("id") or tx.get("_id"))
     return {
-        "id": tx_doc.get("id"),
+        "id": mongo_id,
+        "transactionId": mongo_id,
+        "_id": mongo_id,
         "date": tx_doc.get("date"),
         "sourceSbo": tx_doc.get("sourceSbo") or sap_doc.get("sourceSbo"),
         "sourceDb": tx_doc.get("sourceDb") or sap_doc.get("sourceDb"),
@@ -4992,7 +4995,9 @@ def get_admin_suspicious_project_resolution_detail(transaction_id: str, _: dict 
 
 @app.post("/api/admin/suspicious-project-resolutions/{transaction_id}/resolve")
 def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: dict, user: dict = Depends(require_admin)):
-    normalized_transaction_id = str(transaction_id or "").strip()
+    raw_transaction_id = str(transaction_id or "")
+    normalized_transaction_id = raw_transaction_id.strip()
+    logger.info("resolve suspicious-project incoming transactionId=%s normalized=%s", raw_transaction_id, normalized_transaction_id)
     if not normalized_transaction_id or not ObjectId.is_valid(normalized_transaction_id):
         raise HTTPException(status_code=400, detail="transactionId is required and must be a valid ObjectId")
 
@@ -5006,9 +5011,16 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
     resolve_to = str(normalized_payload.get("resolve_to") or "").strip().lower()
     reason = normalize_non_empty_string(normalized_payload.get("resolution_reason"))
 
-    tx = db.transactions.find_one({"_id": ObjectId(normalized_transaction_id), "source": "sap-sbo"})
+    oid_transaction_id = ObjectId(normalized_transaction_id)
+    tx = db.transactions.find_one({"_id": oid_transaction_id, "source": "sap-sbo"})
     if not tx:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": "Transaction not found",
+                "transactionId": normalized_transaction_id,
+            },
+        )
 
     sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
     document_code = normalize_non_empty_string(sap_doc.get("documentProjectCode"))
@@ -5057,7 +5069,7 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
     resolved_by = normalize_non_empty_string(user.get("displayName") or user.get("username") or user.get("id"))
 
     db.transactions.update_one(
-        {"_id": ObjectId(normalized_transaction_id)},
+        {"_id": oid_transaction_id},
         {
             "$set": {
                 "sap.manualResolvedProjectId": selected_project_id,
@@ -5071,7 +5083,7 @@ def resolve_admin_suspicious_project_resolution(transaction_id: str, payload: di
         },
     )
 
-    updated = db.transactions.find_one({"_id": ObjectId(normalized_transaction_id)})
+    updated = db.transactions.find_one({"_id": oid_transaction_id})
     updated_sap = updated.get("sap") if isinstance(updated.get("sap"), dict) else {}
     persisted_project_id = normalize_non_empty_string(updated_sap.get("manualResolvedProjectId"))
     persisted_project_code = normalize_non_empty_string(updated_sap.get("manualResolvedProjectCode"))
