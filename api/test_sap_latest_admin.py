@@ -62,6 +62,52 @@ class SapLatestAdminEndpointTests(unittest.TestCase):
         core_mock.assert_called_once()
 
 
+class LatestImportsEndpointTests(unittest.TestCase):
+    class _FakeCursor:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def sort(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def __iter__(self):
+            return iter(self.docs)
+
+    class _FakeTransactions:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def find(self, *_args, **_kwargs):
+            return LatestImportsEndpointTests._FakeCursor(self.docs)
+
+    class _FakeDb:
+        def __init__(self, docs):
+            self.transactions = LatestImportsEndpointTests._FakeTransactions(docs)
+
+    def test_latest_imports_includes_concept_and_monto(self):
+        fake_docs = [
+            {
+                '_id': 'tx-1',
+                'created_at': '2026-01-01T12:00:00+00:00',
+                'date': '2026-01-01',
+                'description': 'Pago de proveedor',
+                'amount': 1250.5,
+                'supplierName': 'Proveedor Demo',
+                'sap': {'documentProjectName': 'Obra Norte', 'sourceSbo': 'SBO_A'},
+            }
+        ]
+        with patch.object(main, 'db', self._FakeDb(fake_docs)):
+            result = main.list_admin_latest_imports(days=7, limit=100, _={'role': 'SUPERADMIN'})
+
+        self.assertEqual(result['total'], 1)
+        row = result['items'][0]
+        self.assertEqual(row['concept'], 'Pago de proveedor')
+        self.assertEqual(row['monto'], 1250.5)
+
+
 class TelegramAdminBootstrapTests(unittest.TestCase):
     class _FakeTelegramUsers:
         def __init__(self):
@@ -383,4 +429,3 @@ class SapSboV2ProjectResolutionTests(unittest.TestCase):
             suspicion['projectResolutionSuspicionReasons'],
             ['document_project_differs_from_payment_project'],
         )
-
