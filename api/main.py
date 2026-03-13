@@ -4755,9 +4755,8 @@ def build_suspicious_project_resolutions_query(
     date_from: str | None = None,
     date_to: str | None = None,
 ) -> dict:
-    
+
     query: dict = {
-        "source": "sap-sbo",
         "sap.isProjectResolutionSuspicious": True,
     }
 

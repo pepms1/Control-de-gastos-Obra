@@ -249,32 +249,29 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
         pending_query = main.build_suspicious_project_resolutions_query(status='pending')
         resolved_query = main.build_suspicious_project_resolutions_query(status='resolved')
 
+        self.assertNotIn('source', pending_query)
+        self.assertNotIn('source', resolved_query)
         pending_expr = pending_query['$expr']['$eq']
         resolved_expr = resolved_query['$expr']['$gt']
         self.assertEqual(pending_expr[1], 0)
         self.assertEqual(resolved_expr[1], 0)
 
-    def test_pending_and_resolved_lists_use_only_manual_resolved_project_id(self):
-        tx_missing_id = {
+    def test_pending_list_includes_suspicious_sap_source_without_manual_resolution(self):
+        tx_pending = {
             '_id': ObjectId(),
-            'source': 'sap-sbo',
+            'source': 'sap',
+            'sourceDb': 'SBO_GMDI',
+            'sourceSbo': 'SBO_GMDI',
             'sap': {
+                'sourceDb': 'SBO_GMDI',
+                'sourceSbo': 'SBO_GMDI',
                 'movementType': 'ingreso',
                 'isProjectResolutionSuspicious': True,
             },
         }
-        tx_null_id = {
-            '_id': ObjectId(),
-            'source': 'sap-sbo',
-            'sap': {
-                'movementType': 'egreso',
-                'isProjectResolutionSuspicious': True,
-                'manualResolvedProjectId': None,
-            },
-        }
         tx_resolved = {
             '_id': ObjectId(),
-            'source': 'sap-sbo',
+            'source': 'sap',
             'sap': {
                 'movementType': 'egreso',
                 'isProjectResolutionSuspicious': True,
@@ -282,22 +279,44 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
             },
         }
 
-        fake_db = type('FakeDb', (), {'transactions': FakeTransactions([tx_missing_id, tx_null_id, tx_resolved]), 'projects': FakeProjects([])})()
+        fake_db = type('FakeDb', (), {'transactions': FakeTransactions([tx_pending, tx_resolved]), 'projects': FakeProjects([])})()
 
         with patch.object(main, 'db', fake_db):
             pending = main.list_admin_suspicious_project_resolutions(status='pending', _={'username': 'admin'})
-            resolved = main.list_admin_suspicious_project_resolutions(status='resolved', _={'username': 'admin'})
 
         pending_ids = {item['id'] for item in pending['items']}
-        resolved_ids = {item['id'] for item in resolved['items']}
-
-        self.assertIn(str(tx_missing_id['_id']), pending_ids)
-        self.assertIn(str(tx_null_id['_id']), pending_ids)
+        self.assertIn(str(tx_pending['_id']), pending_ids)
         self.assertNotIn(str(tx_resolved['_id']), pending_ids)
 
+    def test_resolved_list_includes_only_rows_with_non_empty_manual_resolved_project_id(self):
+        tx_pending = {
+            '_id': ObjectId(),
+            'source': 'sap',
+            'sap': {
+                'movementType': 'egreso',
+                'isProjectResolutionSuspicious': True,
+                'manualResolvedProjectId': '',
+            },
+        }
+        tx_resolved = {
+            '_id': ObjectId(),
+            'source': 'sap',
+            'sap': {
+                'movementType': 'egreso',
+                'isProjectResolutionSuspicious': True,
+                'manualResolvedProjectId': str(ObjectId()),
+            },
+        }
+
+        fake_db = type('FakeDb', (), {'transactions': FakeTransactions([tx_pending, tx_resolved]), 'projects': FakeProjects([])})()
+
+        with patch.object(main, 'db', fake_db):
+            resolved = main.list_admin_suspicious_project_resolutions(status='resolved', _={'username': 'admin'})
+
+        resolved_ids = {item['id'] for item in resolved['items']}
+
         self.assertIn(str(tx_resolved['_id']), resolved_ids)
-        self.assertNotIn(str(tx_missing_id['_id']), resolved_ids)
-        self.assertNotIn(str(tx_null_id['_id']), resolved_ids)
+        self.assertNotIn(str(tx_pending['_id']), resolved_ids)
 
     def test_repair_backfills_unique_mapping_and_clears_unmapped_partial_fields(self):
         tx_fix_id = ObjectId()
