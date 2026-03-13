@@ -345,4 +345,21 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ slug }),
     }),
+
+  adminListSuspiciousProjectResolutions: ({ status = 'pending', limit = 200 } = {}) => {
+    const qs = new URLSearchParams({ status, limit: String(limit) }).toString();
+    return backendReq(`/api/admin/sap/suspicious-project-resolutions?${qs}`);
+  },
+
+  adminResolveSuspiciousByPayment: (transactionId) =>
+    backendReq(`/api/admin/sap/suspicious-project-resolutions/${encodeURIComponent(transactionId)}/resolve_by_payment`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }),
+
+  adminResolveSuspiciousByProject: (transactionId, project) =>
+    backendReq(`/api/admin/sap/suspicious-project-resolutions/${encodeURIComponent(transactionId)}/resolve_by_project`, {
+      method: 'POST',
+      body: JSON.stringify({ project }),
+    }),
 };

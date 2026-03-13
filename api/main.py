@@ -317,6 +317,18 @@ def require_admin(user=Depends(role_from_token)):
     return user
 
 
+def require_superadmin(user=Depends(role_from_token)):
+    allowed = {
+        value.strip().lower()
+        for value in (os.getenv("SUPERADMIN_USERNAMES") or "").split(",")
+        if value.strip()
+    }
+    username = str(user.get("username") or "").strip().lower()
+    if user.get("role") == "SUPERADMIN" or (username and username in allowed):
+        return user
+    raise HTTPException(status_code=403, detail="Superadmin only")
+
+
 def require_authenticated(user=Depends(role_from_token)):
     return user
 
@@ -437,6 +449,48 @@ def resolve_effective_project_fields(tx_doc: dict, fallback_project_id: str | No
         "effectiveProjectId": automatic_identity.get("effectiveProjectId") or automatic_project_id,
         "effectiveProjectCode": normalize_non_empty_string(automatic_identity.get("effectiveProjectCode")),
         "effectiveProjectName": normalize_non_empty_string(automatic_identity.get("effectiveProjectName")),
+    }
+
+
+def _resolve_project_from_hint(value: str | None) -> dict:
+    hint = normalize_non_empty_string(value)
+    if not hint:
+        return {}
+
+    regex = {"$regex": f"^{re.escape(hint)}$", "$options": "i"}
+    query = {"$or": [{"displayName": regex}, {"name": regex}, {"slug": regex}]}
+    if ObjectId.is_valid(hint):
+        query["$or"].insert(0, {"_id": ObjectId(hint)})
+    doc = db.projects.find_one(query, {"_id": 1, "name": 1, "slug": 1, "displayName": 1}) or {}
+    if not doc:
+        return {}
+    return {
+        "projectId": str(doc.get("_id") or "").strip(),
+        "projectCode": normalize_non_empty_string(doc.get("slug")),
+        "projectName": normalize_non_empty_string(doc.get("displayName") or doc.get("name")),
+    }
+
+
+def _build_suspicious_projection(tx: dict) -> dict:
+    tx_id = str(tx.get("_id") or "")
+    sap = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+    return {
+        "id": tx_id,
+        "_id": tx_id,
+        "transactionId": tx_id,
+        "date": tx.get("date"),
+        "concept": tx.get("concept") or tx.get("description") or "",
+        "amount": tx.get("amount"),
+        "sourceDb": tx.get("sourceDb"),
+        "suspicious": bool(sap.get("suspiciousProjectMismatch")),
+        "manualResolvedProjectId": sap.get("manualResolvedProjectId"),
+        "manualResolvedProjectName": sap.get("manualResolvedProjectName"),
+        "documentProjectId": sap.get("documentProjectId"),
+        "documentProjectCode": sap.get("documentProjectCode"),
+        "documentProjectName": sap.get("documentProjectName"),
+        "paymentProjectId": sap.get("paymentProjectId"),
+        "paymentProjectCode": sap.get("paymentProjectCode"),
+        "paymentProjectName": sap.get("paymentProjectName"),
     }
 
 
@@ -2975,6 +3029,7 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
     optional_tax_headers = ["subtotal", "iva", "retenciones", "totalfactura"]
     optional_movement_headers = ["sourcedb"]
     optional_category_hint_headers = ["categoryhintcode", "categoryhintname", "categoryhintproject"]
+    optional_project_resolution_headers = ["projectcode", "pagoprjcode", "documentprojectcode", "paymentprojectcode"]
     canonical_to_expected = dict(zip(canonical_headers, expected_headers))
     header_aliases = {
         "docnum": "pagonum",
@@ -3002,6 +3057,10 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
         "categoryhintcode": "categoryhintcode",
         "categoryhintname": "categoryhintname",
         "categoryhintproject": "categoryhintproject",
+        "projectcode": "projectcode",
+        "pagoprjcode": "pagoprjcode",
+        "documentprojectcode": "documentprojectcode",
+        "paymentprojectcode": "paymentprojectcode",
     }
 
     def normalize_header(header_value):
@@ -3023,6 +3082,7 @@ def parse_sap_file(file_name: str, file_bytes: bytes):
                 + optional_tax_headers
                 + optional_movement_headers
                 + optional_category_hint_headers
+                + optional_project_resolution_headers
             ) and canonical not in header_index:
                 header_index[canonical] = idx
 
@@ -4376,6 +4436,25 @@ def run_sap_import(
                 or None
             )
             category_hint_project = str(row.get("categoryhintproject") or "").strip() or None
+            generic_project_code = str(row.get("ProjectCode") or row.get("projectcode") or "").strip() or None
+            payment_project_code = str(row.get("PagoPrjCode") or row.get("pagoprjcode") or "").strip() or None
+            document_project_code = str(
+                row.get("DocumentProjectCode") or row.get("documentprojectcode") or ""
+            ).strip() or None
+
+            if not document_project_code and generic_project_code:
+                document_project_code = generic_project_code
+            if not payment_project_code and generic_project_code:
+                payment_project_code = generic_project_code
+
+            document_project = _resolve_project_from_hint(document_project_code)
+            payment_project = _resolve_project_from_hint(payment_project_code)
+            auto_project = document_project or payment_project
+            suspicious_mismatch = bool(
+                document_project.get("projectId")
+                and payment_project.get("projectId")
+                and document_project.get("projectId") != payment_project.get("projectId")
+            )
 
             if card_code not in existing_cardcodes and card_code not in created_cardcodes:
                 suppliers_created += 1
@@ -4428,6 +4507,14 @@ def run_sap_import(
                     "categoryHintCode": category_hint_code,
                     "categoryHintName": category_hint_name,
                     "categoryHintProject": category_hint_project,
+                    "documentProject": document_project,
+                    "paymentProject": payment_project,
+                    "documentProjectCode": document_project_code,
+                    "paymentProjectCode": payment_project_code,
+                    "autoProjectId": auto_project.get("projectId"),
+                    "autoProjectCode": auto_project.get("projectCode"),
+                    "autoProjectName": auto_project.get("projectName"),
+                    "suspiciousProjectMismatch": suspicious_mismatch,
                 }
             )
             rows_ok += 1
@@ -4607,7 +4694,14 @@ def run_sap_import(
                     "cardCode": record["cardCode"],
                     "sourceFile": source_file_value,
                     "sourceSbo": record["sourceDb"],
-                    "projectId": project_id,
+                    "projectId": record.get("autoProjectId") or project_id,
+                    "documentProjectId": (record.get("documentProject") or {}).get("projectId"),
+                    "documentProjectCode": record.get("documentProjectCode") or (record.get("documentProject") or {}).get("projectCode"),
+                    "documentProjectName": (record.get("documentProject") or {}).get("projectName"),
+                    "paymentProjectId": (record.get("paymentProject") or {}).get("projectId"),
+                    "paymentProjectCode": record.get("paymentProjectCode") or (record.get("paymentProject") or {}).get("projectCode"),
+                    "paymentProjectName": (record.get("paymentProject") or {}).get("projectName"),
+                    "suspiciousProjectMismatch": bool(record.get("suspiciousProjectMismatch")),
                 },
             }
             sap_set_doc.update(resolve_effective_project_fields(sap_set_doc, fallback_project_id=project_id))
@@ -5649,6 +5743,133 @@ def backfill_supplier_name(_: dict = Depends(require_admin)):
             updated += 1
 
     return {"scanned": scanned, "updated": updated}
+
+
+@app.get("/api/admin/sap/suspicious-project-resolutions")
+def admin_list_suspicious_project_resolutions(
+    status: str = "pending",
+    limit: int = 200,
+    _: dict = Depends(require_superadmin),
+):
+    normalized_status = str(status or "pending").strip().lower()
+    query = {
+        "source": "sap",
+        "sap.suspiciousProjectMismatch": True,
+    }
+    if normalized_status == "pending":
+        query["sap.manualResolvedProjectId"] = {"$in": [None, ""]}
+    elif normalized_status == "resolved":
+        query["sap.manualResolvedProjectId"] = {"$nin": [None, ""]}
+    elif normalized_status != "all":
+        raise HTTPException(status_code=400, detail="status must be pending|resolved|all")
+
+    rows = list(
+        db.transactions.find(
+            query,
+            {
+                "date": 1,
+                "concept": 1,
+                "description": 1,
+                "amount": 1,
+                "sourceDb": 1,
+                "sap.documentProjectId": 1,
+                "sap.documentProjectCode": 1,
+                "sap.documentProjectName": 1,
+                "sap.paymentProjectId": 1,
+                "sap.paymentProjectCode": 1,
+                "sap.paymentProjectName": 1,
+                "sap.manualResolvedProjectId": 1,
+                "sap.manualResolvedProjectName": 1,
+                "sap.suspiciousProjectMismatch": 1,
+            },
+        )
+        .sort("date", -1)
+        .limit(max(1, min(int(limit or 200), 1000)))
+    )
+    return {"items": [_build_suspicious_projection(row) for row in rows], "count": len(rows)}
+
+
+@app.post("/api/admin/sap/suspicious-project-resolutions/{transaction_id}/resolve_by_project")
+def admin_resolve_suspicious_by_project(
+    transaction_id: str,
+    payload: dict,
+    _: dict = Depends(require_superadmin),
+):
+    target_project = _resolve_project_from_hint((payload or {}).get("project"))
+    if not target_project:
+        raise HTTPException(status_code=404, detail="Target project not found")
+
+    if not ObjectId.is_valid(str(transaction_id or "")):
+        raise HTTPException(status_code=400, detail="Invalid transaction id")
+
+    result = db.transactions.update_one(
+        {"_id": ObjectId(transaction_id), "source": "sap", "sap.suspiciousProjectMismatch": True},
+        {
+            "$set": {
+                "sap.manualResolvedProjectId": target_project["projectId"],
+                "sap.manualResolvedProjectCode": target_project["projectCode"],
+                "sap.manualResolvedProjectName": target_project["projectName"],
+            }
+        },
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Suspicious transaction not found")
+
+    tx = db.transactions.find_one({"_id": ObjectId(transaction_id)}, {"sap": 1, "projectId": 1}) or {}
+    db.transactions.update_one(
+        {"_id": ObjectId(transaction_id)},
+        {"$set": resolve_effective_project_fields(tx, fallback_project_id=tx.get("projectId"))},
+    )
+    return {"ok": True, "transactionId": transaction_id, "resolvedProjectId": target_project["projectId"]}
+
+
+@app.post("/api/admin/sap/suspicious-project-resolutions/{transaction_id}/resolve_by_payment")
+def admin_resolve_suspicious_by_payment(
+    transaction_id: str,
+    _: dict = Depends(require_superadmin),
+):
+    if not ObjectId.is_valid(str(transaction_id or "")):
+        raise HTTPException(status_code=400, detail="Invalid transaction id")
+
+    tx = db.transactions.find_one(
+        {"_id": ObjectId(transaction_id), "source": "sap", "sap.suspiciousProjectMismatch": True},
+        {"sap": 1, "projectId": 1},
+    )
+    if not tx:
+        raise HTTPException(status_code=404, detail="Suspicious transaction not found")
+
+    sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+    target_project = (
+        _resolve_project_from_hint(sap_doc.get("paymentProjectName"))
+        or _resolve_project_from_hint(sap_doc.get("paymentProjectCode"))
+        or _resolve_project_from_hint(sap_doc.get("paymentProjectId"))
+    )
+    if not target_project:
+        raise HTTPException(status_code=404, detail="Could not derive project from payment fields")
+
+    db.transactions.update_one(
+        {"_id": ObjectId(transaction_id)},
+        {
+            "$set": {
+                "sap.manualResolvedProjectId": target_project["projectId"],
+                "sap.manualResolvedProjectCode": target_project["projectCode"],
+                "sap.manualResolvedProjectName": target_project["projectName"],
+                **resolve_effective_project_fields(
+                    {
+                        "sap": {
+                            **sap_doc,
+                            "manualResolvedProjectId": target_project["projectId"],
+                            "manualResolvedProjectCode": target_project["projectCode"],
+                            "manualResolvedProjectName": target_project["projectName"],
+                        },
+                        "projectId": tx.get("projectId"),
+                    },
+                    fallback_project_id=tx.get("projectId"),
+                ),
+            }
+        },
+    )
+    return {"ok": True, "transactionId": transaction_id, "resolvedProjectId": target_project["projectId"]}
 
 
 @app.post("/api/admin/dedupe/sap-transactions")
