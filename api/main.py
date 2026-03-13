@@ -5238,6 +5238,8 @@ def list_admin_latest_imports(
     projection = {
         "date": 1,
         "created_at": 1,
+        "concept": 1,
+        "description": 1,
         "supplierName": 1,
         "sourceDb": 1,
         "sourceSbo": 1,
@@ -5270,7 +5272,9 @@ def list_admin_latest_imports(
                 "landedIn": tx_doc.get("effectiveProjectName") or sap_doc.get("manualResolvedProjectName") or sap_doc.get("paymentProjectName") or "",
                 "sourceDb": tx_doc.get("sourceDb") or sap_doc.get("sourceDb"),
                 "sourceSbo": tx_doc.get("sourceSbo") or sap_doc.get("sourceSbo"),
+                "concept": tx_doc.get("concept") or tx_doc.get("description") or "",
                 "amount": tx_doc.get("amount"),
+                "monto": tx_doc.get("amount"),
             }
         )
 

@@ -645,6 +645,8 @@ export function LatestImportsScreen() {
               <th>Creado</th>
               <th>Proyecto</th>
               <th>Quién pagó</th>
+              <th>Concepto</th>
+              <th>Monto</th>
               <th>En dónde cayó</th>
               <th>Entidad</th>
             </tr>
@@ -655,13 +657,15 @@ export function LatestImportsScreen() {
                 <td>{String(row.createdAt || row.date || '').slice(0, 19).replace('T', ' ') || '—'}</td>
                 <td>{row.project || '—'}</td>
                 <td>{row.paidBy || '—'}</td>
+                <td>{row.concept || '—'}</td>
+                <td>{row.monto ?? row.amount ?? '—'}</td>
                 <td>{row.landedIn || '—'}</td>
                 <td>{row.sourceSbo || row.sourceDb || '—'}</td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={5} className="small">
+                <td colSpan={7} className="small">
                   {loading ? 'Cargando registros...' : 'No hay documentos para el rango seleccionado.'}
                 </td>
               </tr>
