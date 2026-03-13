@@ -344,7 +344,7 @@ function Nav({
     padding: 0,
     cursor: 'pointer',
     textAlign: 'left',
-    font: 'inherit',
+    fontFamily: 'inherit',
     color: 'inherit',
     opacity: active ? 1 : 0.85,
     fontWeight: active ? 800 : 600,
