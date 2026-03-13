@@ -382,12 +382,6 @@ def build_effective_project_filter(project_id: str) -> dict:
     1) sap.manualResolvedProjectId
     2) fallback to projectId/sap.projectId when no manual resolution exists.
     """
-    project_ids: list[object] = [project_id]
-    try:
-        project_ids.append(ObjectId(project_id))
-    except Exception:
-        pass
-
     manual_missing_filter = {
         "$or": [
             {"sap.manualResolvedProjectId": None},
@@ -395,15 +389,10 @@ def build_effective_project_filter(project_id: str) -> dict:
             {"sap.manualResolvedProjectId": {"$exists": False}},
         ]
     }
-    legacy_project_filter = {
-        "$or": [
-            {"projectId": {"$in": project_ids}},
-            {"sap.projectId": {"$in": project_ids}},
-        ]
-    }
+    legacy_project_filter = {"$or": [{"projectId": project_id}, {"sap.projectId": project_id}]}
     return {
         "$or": [
-            {"sap.manualResolvedProjectId": {"$in": project_ids}},
+            {"sap.manualResolvedProjectId": project_id},
             {"$and": [manual_missing_filter, legacy_project_filter]},
         ]
     }
