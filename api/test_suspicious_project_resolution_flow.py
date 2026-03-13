@@ -113,6 +113,24 @@ class FakeProjects:
         return list(self.docs.values())
 
 
+class FakeMongoDatabase:
+    def __init__(self, name, transactions=None, projects=None):
+        self.name = name
+        self.transactions = transactions or FakeTransactions([])
+        self.projects = projects or FakeProjects([])
+
+    def __getitem__(self, collection_name):
+        return getattr(self, collection_name)
+
+
+class FakeMongoClient:
+    def __init__(self, databases):
+        self.databases = databases
+
+    def __getitem__(self, db_name):
+        return self.databases[db_name]
+
+
 class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
     def setUp(self):
         self.tx_id = ObjectId()
@@ -315,6 +333,57 @@ class SuspiciousProjectResolutionFlowTests(unittest.TestCase):
         self.assertEqual(exc.exception.status_code, 404)
         self.assertEqual(exc.exception.detail['message'], 'Transaction not found')
         self.assertEqual(exc.exception.detail['transactionId'], payment_num_like_oid)
+        self.assertEqual(exc.exception.detail['db'], 'control_obra_v2')
+        self.assertEqual(exc.exception.detail['collection'], 'transactions')
+        self.assertEqual(exc.exception.detail['objectIdParsed'], payment_num_like_oid)
+
+    def test_list_and_resolve_use_same_control_obra_v2_transactions_collection(self):
+        tx_control_obra_v2 = {
+            '_id': self.tx_id,
+            'source': 'sap-sbo',
+            'sap': {
+                'movementType': 'egreso',
+                'isProjectResolutionSuspicious': True,
+                'documentProjectCode': 'DOC-CODE',
+                'documentProjectName': 'Proyecto Documento',
+            },
+        }
+        wrong_db_tx = {
+            '_id': self.tx_id,
+            'source': 'sap-sbo',
+            'sap': {
+                'movementType': 'egreso',
+                'isProjectResolutionSuspicious': False,
+                'documentProjectCode': 'WRONG',
+                'documentProjectName': 'Wrong DB Row',
+            },
+        }
+
+        correct_transactions = FakeTransactions([tx_control_obra_v2])
+        wrong_transactions = FakeTransactions([wrong_db_tx])
+        projects = FakeProjects(
+            [
+                {'_id': ObjectId(), 'name': 'Proyecto Documento', 'sap': {'projectCode': 'DOC-CODE'}},
+            ]
+        )
+
+        default_db = FakeMongoDatabase('control-obra', transactions=wrong_transactions, projects=projects)
+        suspicious_db = FakeMongoDatabase('control_obra_v2', transactions=correct_transactions, projects=projects)
+        fake_client = FakeMongoClient({'control-obra': default_db, 'control_obra_v2': suspicious_db})
+
+        with patch.object(main, 'db', default_db), patch.object(main, 'client', fake_client):
+            listed = main.list_admin_suspicious_project_resolutions(status='pending', _={'username': 'admin'})
+            resolved = main.resolve_admin_suspicious_project_resolution(
+                str(self.tx_id),
+                {'resolve_to': 'document'},
+                user={'username': 'admin'},
+            )
+
+        listed_ids = {item['id'] for item in listed['items']}
+        self.assertIn(str(self.tx_id), listed_ids)
+        self.assertEqual(resolved['transactionId'], str(self.tx_id))
+        self.assertTrue(str(correct_transactions.docs[str(self.tx_id)]['sap'].get('manualResolvedProjectId')).strip())
+        self.assertIsNone(wrong_transactions.docs[str(self.tx_id)]['sap'].get('manualResolvedProjectId'))
 
     def test_resolved_list_includes_only_rows_with_non_empty_manual_resolved_project_id(self):
         tx_pending = {
