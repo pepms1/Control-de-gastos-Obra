@@ -19,6 +19,14 @@ class InsertResult:
         self.inserted_id = inserted_id
 
 
+class FakePwdContext:
+    def hash(self, value):
+        return f"hashed::{value}"
+
+    def verify(self, plain, hashed):
+        return hashed == f"hashed::{plain}"
+
+
 class FakeUsersCollection:
     def __init__(self, docs):
         self.docs = {str(doc['_id']): dict(doc) for doc in docs}
@@ -125,6 +133,64 @@ class AdminUserRoleUpdateTests(unittest.TestCase):
             updated = main.update_admin_user(str(user_id), {'displayName': 'Nombre Nuevo'}, _={'role': 'SUPERADMIN'})
 
         self.assertEqual(updated.get('displayName'), 'Nombre Nuevo')
+
+
+class AdminUserPasswordResetTests(unittest.TestCase):
+    def test_superadmin_can_reset_password_and_stores_hash(self):
+        user_id = ObjectId()
+        target_doc = {
+            '_id': user_id,
+            'username': 'viewer01',
+            'password_hash': 'hashed::oldpass123',
+            'role': 'VIEWER',
+            'roleVersion': 2,
+            'allowedProjectIds': [],
+        }
+        fake_users = FakeUsersCollection([target_doc])
+        fake_db = type('FakeDb', (), {'users': fake_users})()
+        fake_pwd = FakePwdContext()
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'pwd_context', fake_pwd), patch.object(main, 'get_env_auth_users', return_value={}):
+            response = main.reset_admin_user_password(
+                str(user_id),
+                {'new_password': 'newpass123'},
+                _={'role': 'SUPERADMIN', 'username': 'root'},
+            )
+            login_response = main.login(main.LoginRequest(username='viewer01', password='newpass123'))
+
+        stored = fake_users.find_one({'_id': user_id})
+        self.assertTrue(response.get('ok'))
+        self.assertEqual(response.get('userId'), str(user_id))
+        self.assertEqual(response.get('username'), 'viewer01')
+        self.assertEqual(stored.get('password_hash'), 'hashed::newpass123')
+        self.assertNotEqual(stored.get('password_hash'), 'newpass123')
+        self.assertEqual(stored.get('passwordResetBy'), 'root')
+        self.assertIn('access_token', login_response)
+
+    def test_non_superadmin_cannot_reset_password(self):
+        user_id = ObjectId()
+        fake_users = FakeUsersCollection([
+            {
+                '_id': user_id,
+                'username': 'viewer01',
+                'password_hash': 'hashed::oldpass123',
+                'role': 'VIEWER',
+                'roleVersion': 2,
+                'allowedProjectIds': [],
+            }
+        ])
+        fake_db = type('FakeDb', (), {'users': fake_users})()
+
+        with patch.object(main, 'db', fake_db):
+            with self.assertRaises(HTTPException) as ctx:
+                main.reset_admin_user_password(
+                    str(user_id),
+                    {'new_password': 'newpass123'},
+                    _={'role': 'ADMIN', 'username': 'admin01'},
+                )
+
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertEqual(ctx.exception.detail, 'SUPERADMIN role required')
 
 
 if __name__ == '__main__':

@@ -5,6 +5,7 @@ import { ImportSapScreen, SuspiciousProjectResolutionScreen } from './ImportAndA
 import { SearchTransactionsV2 } from './SearchTransactionsV2.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 import { isAdmin as isAdminRole, isSuperAdmin, isViewer, normalizeRole } from './roles.js';
+import { validatePasswordResetFields } from './passwordResetValidation.js';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
 
@@ -1098,6 +1099,15 @@ function AdminUsersAccessSection() {
   });
   const [editingNameUserId, setEditingNameUserId] = useState('');
   const [draftDisplayName, setDraftDisplayName] = useState('');
+  const [resetTargetUser, setResetTargetUser] = useState(null);
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [resetError, setResetError] = useState('');
+  const [resetSuccess, setResetSuccess] = useState('');
+  const [resettingPassword, setResettingPassword] = useState(false);
+
+  const isSuperAdminUser = isSuperAdmin(normalizeRole(getSession()?.role));
 
   const projectMap = useMemo(() => {
     const map = new Map();
@@ -1261,6 +1271,53 @@ function AdminUsersAccessSection() {
     }
   }
 
+  function openResetPasswordModal(user) {
+    setResetTargetUser(user || null);
+    setResetPassword('');
+    setResetConfirmPassword('');
+    setShowResetPassword(false);
+    setResetError('');
+    setResetSuccess('');
+  }
+
+  function closeResetPasswordModal() {
+    if (resettingPassword) return;
+    setResetTargetUser(null);
+    setResetPassword('');
+    setResetConfirmPassword('');
+    setShowResetPassword(false);
+    setResetError('');
+  }
+
+  async function submitResetPassword() {
+    const userId = String(resetTargetUser?.id || resetTargetUser?._id || '');
+    const newPassword = resetPassword;
+    const confirmPassword = resetConfirmPassword;
+
+    const validationError = validatePasswordResetFields(newPassword, confirmPassword);
+    if (validationError) {
+      setResetError(validationError);
+      return;
+    }
+
+    setResettingPassword(true);
+    setResetError('');
+    setResetSuccess('');
+    try {
+      await api.resetAdminUserPassword(userId, newPassword);
+      setResetSuccess('Contraseña restablecida correctamente');
+      setResetTargetUser(null);
+      setResetPassword('');
+      setResetConfirmPassword('');
+      setShowResetPassword(false);
+      setResetError('');
+    } catch (e) {
+      setResetError(e.message || 'No se pudo restablecer la contraseña.');
+    } finally {
+      setResettingPassword(false);
+    }
+  }
+
   function renderAllowedProjects(user) {
     const ids = Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds : [];
     if (!ids.length) return 'Sin proyectos asignados';
@@ -1359,6 +1416,7 @@ function AdminUsersAccessSection() {
 
       {loading && <div className="small">Cargando usuarios...</div>}
       {error && <div className="small" style={{ color: '#b00020' }}>{error}</div>}
+      {resetSuccess && <div className="small" style={{ color: '#166534' }}>{resetSuccess}</div>}
 
       {!loading && (
         <div style={{ overflowX: 'auto' }}>
@@ -1370,7 +1428,7 @@ function AdminUsersAccessSection() {
                 <th>Rol</th>
                 <th>Estado</th>
                 <th>Proyectos permitidos (VIEWER)</th>
-                <th>Acción</th>
+                <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -1418,7 +1476,16 @@ function AdminUsersAccessSection() {
                       </td>
                       <td><span className="badge">{user?.isActive === false ? 'Inactivo' : 'Activo'}</span></td>
                       <td className="small">{viewer ? <div style={{ display: 'grid', gap: 4 }}><strong style={{ fontSize: 12 }}>{getViewerProjectsLabel(user)}</strong><span>{renderAllowedProjects(user)}</span></div> : 'No aplica'}</td>
-                      <td>{viewer ? <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>Editar accesos</button> : <span className="small">No editable</span>}</td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          {viewer ? <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>Editar accesos</button> : <span className="small">No editable</span>}
+                          {isSuperAdminUser && (
+                            <button type="button" className="secondary" onClick={() => openResetPasswordModal(user)} disabled={saving || resettingPassword}>
+                              Restablecer contraseña
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                     {viewer && isEditing && (
                       <tr>
@@ -1451,6 +1518,45 @@ function AdminUsersAccessSection() {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {resetTargetUser && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3>Restablecer contraseña</h3>
+            <div style={{ display: 'grid', gap: 8 }}>
+              <label className="small">Usuario
+                <input value={resetTargetUser?.displayName || resetTargetUser?.username || ''} readOnly disabled />
+              </label>
+              <label className="small">Nueva contraseña
+                <input
+                  type={showResetPassword ? 'text' : 'password'}
+                  value={resetPassword}
+                  onChange={(e) => setResetPassword(e.target.value)}
+                  placeholder="Mínimo 8 caracteres"
+                  autoFocus
+                />
+              </label>
+              <label className="small">Confirmar nueva contraseña
+                <input
+                  type={showResetPassword ? 'text' : 'password'}
+                  value={resetConfirmPassword}
+                  onChange={(e) => setResetConfirmPassword(e.target.value)}
+                  placeholder="Repite la nueva contraseña"
+                />
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }} className="small">
+                <input type="checkbox" checked={showResetPassword} onChange={(e) => setShowResetPassword(e.target.checked)} />
+                Mostrar contraseña
+              </label>
+              {resetError && <div className="small" style={{ color: '#b00020' }}>{resetError}</div>}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+              <button type="button" className="secondary" onClick={closeResetPasswordModal} disabled={resettingPassword}>Cancelar</button>
+              <button type="button" onClick={submitResetPassword} disabled={resettingPassword}>{resettingPassword ? 'Restableciendo...' : 'Restablecer'}</button>
+            </div>
+          </div>
         </div>
       )}
     </div>
