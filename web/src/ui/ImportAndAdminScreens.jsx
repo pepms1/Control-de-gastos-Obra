@@ -588,6 +588,92 @@ export function SuspiciousProjectResolutionScreen() {
   );
 }
 
+export function LatestImportsScreen() {
+  const [days, setDays] = useState(7);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  async function load(selectedDays = days) {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await api.latestImports({ days: selectedDays, limit: 500 });
+      setRows(Array.isArray(response?.items) ? response.items : []);
+    } catch (err) {
+      setError(err.message || 'No se pudo cargar últimos imports.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load(days);
+  }, [days]);
+
+  return (
+    <div className="container grid">
+      <div className="card">
+        <h2 style={{ marginTop: 0 }}>Últimos imports</h2>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <button
+            type="button"
+            className={days === 7 ? '' : 'secondary'}
+            onClick={() => setDays(7)}
+            disabled={loading}
+          >
+            7 días
+          </button>
+          <button
+            type="button"
+            className={days === 14 ? '' : 'secondary'}
+            onClick={() => setDays(14)}
+            disabled={loading}
+          >
+            14 días
+          </button>
+          <button type="button" className="secondary" onClick={() => load(days)} disabled={loading}>
+            {loading ? 'Cargando...' : 'Actualizar'}
+          </button>
+        </div>
+
+        {error && <p style={{ color: '#b91c1c' }}>{error}</p>}
+
+        <table>
+          <thead>
+            <tr>
+              <th>Creado</th>
+              <th>Proyecto</th>
+              <th>Quién pagó</th>
+              <th>En dónde cayó</th>
+              <th>Entidad</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id}>
+                <td>{String(row.createdAt || row.date || '').slice(0, 19).replace('T', ' ') || '—'}</td>
+                <td>{row.project || '—'}</td>
+                <td>{row.paidBy || '—'}</td>
+                <td>{row.landedIn || '—'}</td>
+                <td>{row.sourceSbo || row.sourceDb || '—'}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={5} className="small">
+                  {loading ? 'Cargando registros...' : 'No hay documentos para el rango seleccionado.'}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
 export function renderRoute(pathname) {
   if (pathname === '/imports/sap') return <ImportSapScreen />;
   if (pathname === '/admin/suppliers/unclassified') return <UnclassifiedSuppliersScreen />;
