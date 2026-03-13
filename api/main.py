@@ -375,34 +375,12 @@ def resolve_project_id(project_id: str | None = None) -> str:
     return requested_project_id
 
 
-def build_effective_project_filter(project_id: str) -> dict:
-    """Project filter with manual SAP suspicious-resolution precedence.
-
-    Precedence:
-    1) sap.manualResolvedProjectId
-    2) fallback to projectId/sap.projectId when no manual resolution exists.
-    """
-    manual_missing_filter = {
-        "$or": [
-            {"sap.manualResolvedProjectId": None},
-            {"sap.manualResolvedProjectId": ""},
-            {"sap.manualResolvedProjectId": {"$exists": False}},
-        ]
-    }
-    legacy_project_filter = {"$or": [{"projectId": project_id}, {"sap.projectId": project_id}]}
-    return {
-        "$or": [
-            {"sap.manualResolvedProjectId": project_id},
-            {"$and": [manual_missing_filter, legacy_project_filter]},
-        ]
-    }
-
-
-def with_effective_project_filter(query: dict, project_id: str) -> dict:
-    project_filter = build_effective_project_filter(project_id)
+def with_legacy_project_filter(query: dict, project_id: str) -> dict:
+    # Multitenancy rule: nunca mezclar proyectos, contemplando registros legacy en sap.projectId.
+    legacy_filter = {"$or": [{"projectId": project_id}, {"sap.projectId": project_id}]}
     if not query:
-        return project_filter
-    return {"$and": [project_filter, query]}
+        return legacy_filter
+    return {"$and": [legacy_filter, query]}
 
 
 def ensure_default_users():
@@ -2656,6 +2634,8 @@ def build_transactions_query(
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": supplier_filter}]
         else:
             q["$or"] = supplier_filter
+    if project_id:
+        q["projectId"] = project_id
     if origen:
         q["source"] = origen
     if source:
@@ -2717,8 +2697,6 @@ def build_transactions_query(
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": search_conditions}]
         else:
             q["$or"] = search_conditions
-    if project_id:
-        q = with_effective_project_filter(q, project_id)
     return q
 
 
@@ -5248,7 +5226,7 @@ def summary_expenses_by_supplier(
     _: dict = Depends(require_authenticated),
 ):
     project_id = resolve_project_id(projectId or project)
-    movements_query = with_effective_project_filter({"type": "EXPENSE"}, project_id)
+    movements_query = {"type": "EXPENSE", "projectId": project_id}
     movements = list(
         db.transactions.find(
             movements_query,
@@ -6213,6 +6191,8 @@ def list_transactions(
         source_db=sourceDb,
         search_query=q,
     )
+    match_query["projectId"] = resolved_project_id
+
     total_count = db.transactions.count_documents(match_query)
     totals = build_transaction_totals(match_query, search_query=q)
     logger.info("/transactions resolved projectId=%s totalCount=%s", resolved_project_id, total_count)
@@ -6278,7 +6258,7 @@ def spend_by_category(
     _: dict = Depends(require_authenticated),
 ):
     active_project_id = resolve_project_id(projectId or project)
-    match = with_effective_project_filter({"type": "EXPENSE"}, active_project_id)
+    match = {"type": "EXPENSE", "projectId": active_project_id}
     if vendor_id:
         match["vendor_id"] = vendor_id
     if date_from or date_to:
