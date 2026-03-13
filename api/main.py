@@ -376,37 +376,13 @@ def resolve_project_id(project_id: str | None = None) -> str:
 
 
 def build_effective_project_filter(project_id: str) -> dict:
-    """Project filter with manual SAP suspicious-resolution precedence.
-
-    Precedence:
-    1) sap.manualResolvedProjectId
-    2) fallback to projectId/sap.projectId when no manual resolution exists.
-    """
+    """Canonical project filter based on materialized effectiveProjectId."""
     project_ids: list[object] = [project_id]
     try:
         project_ids.append(ObjectId(project_id))
     except Exception:
         pass
-
-    manual_missing_filter = {
-        "$or": [
-            {"sap.manualResolvedProjectId": None},
-            {"sap.manualResolvedProjectId": ""},
-            {"sap.manualResolvedProjectId": {"$exists": False}},
-        ]
-    }
-    legacy_project_filter = {
-        "$or": [
-            {"projectId": {"$in": project_ids}},
-            {"sap.projectId": {"$in": project_ids}},
-        ]
-    }
-    return {
-        "$or": [
-            {"sap.manualResolvedProjectId": {"$in": project_ids}},
-            {"$and": [manual_missing_filter, legacy_project_filter]},
-        ]
-    }
+    return {"effectiveProjectId": {"$in": project_ids}}
 
 
 def with_effective_project_filter(query: dict, project_id: str) -> dict:
@@ -414,6 +390,54 @@ def with_effective_project_filter(query: dict, project_id: str) -> dict:
     if not query:
         return project_filter
     return {"$and": [project_filter, query]}
+
+
+def _project_identity_by_id(project_id_value) -> dict:
+    project_id_str = str(project_id_value or "").strip()
+    if not project_id_str:
+        return {}
+
+    query = None
+    if ObjectId.is_valid(project_id_str):
+        query = {"_id": ObjectId(project_id_str)}
+    else:
+        query = {"_id": project_id_str}
+
+    project = db.projects.find_one(query, {"name": 1, "slug": 1, "code": 1}) or {}
+    return {
+        "effectiveProjectId": query["_id"],
+        "effectiveProjectCode": normalize_non_empty_string(project.get("code") or project.get("slug")),
+        "effectiveProjectName": normalize_non_empty_string(project.get("name")),
+    }
+
+
+def resolve_effective_project_fields(tx_doc: dict, fallback_project_id: str | None = None) -> dict:
+    sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+    manual_project_id = normalize_non_empty_string(sap_doc.get("manualResolvedProjectId"))
+
+    if manual_project_id:
+        manual_identity = _project_identity_by_id(manual_project_id)
+        return {
+            "effectiveProjectId": manual_identity.get("effectiveProjectId") or manual_project_id,
+            "effectiveProjectCode": normalize_non_empty_string(
+                sap_doc.get("manualResolvedProjectCode") or manual_identity.get("effectiveProjectCode")
+            ),
+            "effectiveProjectName": normalize_non_empty_string(
+                sap_doc.get("manualResolvedProjectName") or manual_identity.get("effectiveProjectName")
+            ),
+        }
+
+    automatic_project_id = (
+        normalize_non_empty_string(tx_doc.get("projectId"))
+        or normalize_non_empty_string(sap_doc.get("projectId"))
+        or normalize_non_empty_string(fallback_project_id)
+    )
+    automatic_identity = _project_identity_by_id(automatic_project_id)
+    return {
+        "effectiveProjectId": automatic_identity.get("effectiveProjectId") or automatic_project_id,
+        "effectiveProjectCode": normalize_non_empty_string(automatic_identity.get("effectiveProjectCode")),
+        "effectiveProjectName": normalize_non_empty_string(automatic_identity.get("effectiveProjectName")),
+    }
 
 
 def ensure_default_users():
@@ -2063,6 +2087,7 @@ def ensure_indexes():
         name="transactions_project_source_db_category_idx",
     )
     db.transactions.create_index([("sap.projectId", 1)], name="transactions_sap_project_id_idx")
+    db.transactions.create_index([("effectiveProjectId", 1), ("date", -1)], name="transactions_effective_project_date_idx")
     db.vendors.create_index(
         [("projectId", 1), ("supplierCardCode", 1)],
         unique=True,
@@ -3337,6 +3362,19 @@ def raw_data_update_row(collection: str, row_id: str, payload: dict, _: dict = D
         raise HTTPException(status_code=404, detail="Row not found")
 
     normalized = {key: normalize_raw_value(value) for key, value in changes.items()}
+
+    if collection == "transactions":
+        merged_doc = dict(existing)
+        for dotted_key, normalized_value in normalized.items():
+            current = merged_doc
+            parts = dotted_key.split(".")
+            for part in parts[:-1]:
+                if not isinstance(current.get(part), dict):
+                    current[part] = {}
+                current = current[part]
+            current[parts[-1]] = normalized_value
+        normalized.update(resolve_effective_project_fields(merged_doc))
+
     db[collection].update_one({"_id": oid(row_id)}, {"$set": normalized})
     updated = db[collection].find_one({"_id": oid(row_id)})
     return serialize_raw_doc(updated)
@@ -4572,6 +4610,7 @@ def run_sap_import(
                     "projectId": project_id,
                 },
             }
+            sap_set_doc.update(resolve_effective_project_fields(sap_set_doc, fallback_project_id=project_id))
 
             if incoming_hint_code or incoming_hint_name:
                 if incoming_hint_code:
@@ -5438,6 +5477,52 @@ def migrate_transactions_project_id(_: dict = Depends(require_admin)):
     }
 
 
+@app.post("/api/admin/migrate/transactions/effective-project")
+def migrate_transactions_effective_project(_: dict = Depends(require_admin)):
+    scanned = 0
+    updated = 0
+    batch = []
+
+    projection = {
+        "projectId": 1,
+        "sap.projectId": 1,
+        "sap.manualResolvedProjectId": 1,
+        "sap.manualResolvedProjectCode": 1,
+        "sap.manualResolvedProjectName": 1,
+        "effectiveProjectId": 1,
+        "effectiveProjectCode": 1,
+        "effectiveProjectName": 1,
+    }
+
+    for tx in db.transactions.find({}, projection):
+        scanned += 1
+        effective = resolve_effective_project_fields(tx)
+        current_tuple = (
+            tx.get("effectiveProjectId"),
+            tx.get("effectiveProjectCode"),
+            tx.get("effectiveProjectName"),
+        )
+        next_tuple = (
+            effective.get("effectiveProjectId"),
+            effective.get("effectiveProjectCode"),
+            effective.get("effectiveProjectName"),
+        )
+        if current_tuple == next_tuple:
+            continue
+
+        batch.append(UpdateOne({"_id": tx["_id"]}, {"$set": effective}))
+        if len(batch) >= 500:
+            result = db.transactions.bulk_write(batch, ordered=False)
+            updated += (result.modified_count or 0)
+            batch = []
+
+    if batch:
+        result = db.transactions.bulk_write(batch, ordered=False)
+        updated += (result.modified_count or 0)
+
+    return {"scanned": scanned, "updated": updated}
+
+
 # Manual test (cURL):
 # curl -X POST "http://localhost:8000/api/admin/migrate/projectId" -H "Authorization: Bearer <ADMIN_TOKEN>"
 @app.post("/api/admin/sap/dedupe-migration")
@@ -5967,6 +6052,7 @@ def create_transaction(
         "projectId": active_project_id,
     }
     doc.update(build_effective_category_fields(doc.get("categoryManualCode"), doc.get("categoryManualName"), None, None))
+    doc.update(resolve_effective_project_fields(doc, fallback_project_id=active_project_id))
     _id = db.transactions.insert_one(doc).inserted_id
     return serialize(db.transactions.find_one({"_id": _id}))
 
