@@ -219,6 +219,9 @@ class _FakeCursor:
     def limit(self, *_args, **_kwargs):
         return list(self._docs)
 
+    def __iter__(self):
+        return iter(self._docs)
+
 
 class _FakeTransactionsCollection:
     def __init__(self, docs):
@@ -313,6 +316,95 @@ class ProjectTransactionsEndpointWiringTests(unittest.TestCase):
 
         self.assertTrue(_matches(tx, calderon_query))
         self.assertFalse(_matches(tx, pb_query))
+
+
+class _FakeCategoriesCollection:
+    def find(self, *_args, **_kwargs):
+        return []
+
+
+class _FakeProjectsCollection:
+    def __init__(self, *project_ids):
+        self.project_ids = set(project_ids)
+
+    def find_one(self, query, *_args, **_kwargs):
+        project_id = str(query.get("_id"))
+        if project_id in self.project_ids:
+            return {"_id": ObjectId(project_id)}
+        return None
+
+
+class DashboardAggregationsEffectiveProjectTests(unittest.TestCase):
+    def test_spend_by_category_includes_manual_resolved_transaction(self):
+        project_calderon = "507f1f77bcf86cd799439011"
+        project_pb = "507f191e810c19729de860ea"
+        trace_tx_oid = ObjectId("69ae6065aae96a6a5bd0529f")
+        tx_doc = {
+            "_id": trace_tx_oid,
+            "projectId": project_pb,
+            "type": "EXPENSE",
+            "amount": 116.0,
+            "tax": {"subtotal": 100.0, "iva": 16.0, "totalFactura": 116.0},
+            "category_id": "cat-001",
+            "sap": {"manualResolvedProjectId": project_calderon},
+        }
+
+        fake_transactions = _FakeTransactionsCollection([tx_doc])
+        fake_db = SimpleNamespace(
+            transactions=fake_transactions,
+            categories=_FakeCategoriesCollection(),
+            projects=_FakeProjectsCollection(project_calderon, project_pb),
+        )
+
+        with patch.object(main, "db", fake_db):
+            calderon_response = main.spend_by_category(projectId=project_calderon, _={"role": "ADMIN"})
+            calderon_query = fake_transactions.last_find_query
+
+            pb_response = main.spend_by_category(projectId=project_pb, _={"role": "ADMIN"})
+            pb_query = fake_transactions.last_find_query
+
+        self.assertAlmostEqual(calderon_response["total_expenses"], 100.0)
+        self.assertEqual(len(calderon_response["rows"]), 1)
+        self.assertEqual(pb_response["total_expenses"], 0.0)
+        self.assertEqual(len(pb_response["rows"]), 0)
+        self.assertTrue(_matches(tx_doc, calderon_query))
+        self.assertFalse(_matches(tx_doc, pb_query))
+
+    def test_summary_by_supplier_includes_manual_resolved_transaction(self):
+        project_calderon = "507f1f77bcf86cd799439011"
+        project_pb = "507f191e810c19729de860ea"
+        tx_doc = {
+            "_id": ObjectId("69ae6065aae96a6a5bd0529f"),
+            "projectId": project_pb,
+            "type": "EXPENSE",
+            "amount": 116.0,
+            "tax": {"subtotal": 100.0, "iva": 16.0, "totalFactura": 116.0},
+            "supplierId": "507f191e810c19729de860ec",
+            "supplierName": "Proveedor Uno",
+            "sap": {"manualResolvedProjectId": project_calderon},
+        }
+
+        fake_transactions = _FakeTransactionsCollection([tx_doc])
+        fake_db = SimpleNamespace(
+            transactions=fake_transactions,
+            suppliers=SimpleNamespace(find=lambda *_args, **_kwargs: []),
+            vendors=SimpleNamespace(find=lambda *_args, **_kwargs: []),
+            projects=_FakeProjectsCollection(project_calderon, project_pb),
+        )
+
+        with patch.object(main, "db", fake_db):
+            calderon_response = main.summary_expenses_by_supplier(projectId=project_calderon, _={"role": "ADMIN"})
+            calderon_query = fake_transactions.last_find_query
+
+            pb_response = main.summary_expenses_by_supplier(projectId=project_pb, _={"role": "ADMIN"})
+            pb_query = fake_transactions.last_find_query
+
+        self.assertEqual(len(calderon_response), 1)
+        self.assertAlmostEqual(calderon_response[0]["totalAmount"], 100.0)
+        self.assertEqual(calderon_response[0]["count"], 1)
+        self.assertEqual(pb_response, [])
+        self.assertTrue(_matches(tx_doc, calderon_query))
+        self.assertFalse(_matches(tx_doc, pb_query))
 
 
 if __name__ == '__main__':
