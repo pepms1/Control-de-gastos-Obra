@@ -381,12 +381,12 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
         <button type="button" className="secondary" onClick={() => setShowFilters((value) => !value)}>
           {showFilters ? 'Ocultar filtros' : 'Mostrar filtros'}
         </button>
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
-          <button type="button" onClick={exportPdf} disabled={!visibleRows.length || loading || exporting}>
-            {exporting ? 'Exportando...' : 'Exportar PDF'}
-          </button>
-          <div className="small">Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}</div>
-        </div>
+        <button type="button" onClick={exportPdf} disabled={!visibleRows.length || loading || exporting}>
+          {exporting ? 'Exportando...' : 'Exportar PDF'}
+        </button>
+      </div>
+      <div className="small" style={{ marginTop: 6 }}>
+        Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}
       </div>
 
       {showFilters && (
