@@ -43,31 +43,197 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
       <td>${supplier?.name || '—'}</td>
       <td>${row?.description || '—'}</td>
       <td>${category2?.name || '—'}</td>
-      <td style="text-align:right">${formatCurrencyWithFallback(getAmountWithoutTax(row))}</td>
-      <td style="text-align:right">${formatCurrencyWithFallback(getAmountWithTax(row))}</td>
-      <td>${getTypeLabel(row?.type)}</td>
+      <td class="amount">${formatCurrencyWithFallback(getAmountWithoutTax(row))}</td>
+      <td class="amount">${formatCurrencyWithFallback(getAmountWithTax(row))}</td>
+      <td><span class="type-badge">${getTypeLabel(row?.type)}</span></td>
     </tr>`;
   }).join('');
 
   return `<!doctype html>
-  <html><head><meta charset="utf-8" /><title>Buscar V2</title>
-  <style>
-    body{font-family:Arial,sans-serif;padding:24px;color:#0f172a} h1{margin:0 0 6px}
-    .meta{color:#475569;font-size:12px;margin-bottom:16px} .totals{display:flex;gap:18px;margin:12px 0 18px}
-    table{width:100%;border-collapse:collapse;font-size:12px} th,td{border:1px solid #e2e8f0;padding:6px;vertical-align:top}
-    th{background:#f8fafc;text-align:left}
-  </style></head><body>
-    <h1>BUSCAR V2 · Reporte</h1>
-    <div class="meta">Término: ${query || '—'}<br/>Filtros: ${filters}</div>
-    <div class="totals">
-      <div><strong>Total sin IVA:</strong> $${formatMoney(totalWithoutTax)}</div>
-      <div><strong>Total con IVA:</strong> $${formatMoney(totalWithTax)}</div>
-    </div>
-    <table>
-      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th>Sin IVA</th><th>Con IVA</th><th>Tipo</th></tr></thead>
-      <tbody>${rowsHtml || '<tr><td colspan="7">Sin resultados</td></tr>'}</tbody>
-    </table>
-  </body></html>`;
+  <html lang="es">
+    <head>
+      <meta charset="utf-8" />
+      <title>Buscar V2</title>
+      <style>
+        :root {
+          --bg: #f1f5f9;
+          --paper: #ffffff;
+          --primary: #1d4ed8;
+          --primary-dark: #1e3a8a;
+          --text: #0f172a;
+          --muted: #475569;
+          --line: #dbe3ef;
+          --chip: #dbeafe;
+          --chip-text: #1e3a8a;
+        }
+        * { box-sizing: border-box; }
+        body {
+          margin: 0;
+          padding: 22px;
+          color: var(--text);
+          background: var(--bg);
+          font-family: 'Segoe UI', Roboto, Arial, sans-serif;
+        }
+        .sheet {
+          border: 1px solid var(--line);
+          border-radius: 16px;
+          overflow: hidden;
+          background: var(--paper);
+          box-shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+        }
+        .header {
+          background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+          color: #fff;
+          padding: 22px 24px;
+        }
+        .header h1 {
+          margin: 0;
+          font-size: 23px;
+          letter-spacing: .01em;
+        }
+        .header p {
+          margin: 8px 0 0;
+          font-size: 12px;
+          opacity: .95;
+        }
+        .details {
+          padding: 16px 24px 8px;
+          border-bottom: 1px solid var(--line);
+          background: #f8fafc;
+        }
+        .details-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          gap: 8px;
+          margin-top: 8px;
+          font-size: 12px;
+          color: var(--muted);
+        }
+        .chips {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 10px;
+        }
+        .chip {
+          border-radius: 999px;
+          padding: 5px 11px;
+          background: var(--chip);
+          color: var(--chip-text);
+          font-size: 11px;
+          font-weight: 600;
+        }
+        .summary {
+          padding: 14px 24px;
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          gap: 10px;
+          border-bottom: 1px solid var(--line);
+        }
+        .summary-card {
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          padding: 10px 12px;
+          background: #fff;
+        }
+        .summary-card .label {
+          text-transform: uppercase;
+          letter-spacing: .05em;
+          color: #64748b;
+          font-size: 10px;
+          margin-bottom: 6px;
+        }
+        .summary-card .value {
+          font-size: 18px;
+          font-weight: 700;
+          color: var(--primary-dark);
+        }
+        .table-wrap {
+          padding: 16px 24px 24px;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 12px;
+        }
+        th, td {
+          border-bottom: 1px solid var(--line);
+          padding: 8px 7px;
+          vertical-align: top;
+          text-align: left;
+        }
+        thead th {
+          background: #eff6ff;
+          color: var(--primary-dark);
+          font-weight: 700;
+        }
+        tbody tr:nth-child(even) {
+          background: #f8fafc;
+        }
+        .amount {
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+          font-weight: 700;
+          color: #1e293b;
+          white-space: nowrap;
+        }
+        .type-badge {
+          border-radius: 999px;
+          font-size: 10px;
+          display: inline-block;
+          padding: 3px 8px;
+          background: #e2e8f0;
+          color: #334155;
+          font-weight: 700;
+        }
+      </style>
+    </head>
+    <body>
+      <section class="sheet">
+        <header class="header">
+          <h1>BUSCAR V2 · Reporte</h1>
+          <p>Generado: ${new Date().toLocaleString('es-MX')}</p>
+        </header>
+
+        <section class="details">
+          <strong style="font-size:13px">Contexto de búsqueda</strong>
+          <div class="details-grid">
+            <div><strong>Término:</strong> ${query || '—'}</div>
+            <div><strong>Filtros:</strong> ${filters}</div>
+            <div><strong>Movimientos exportados:</strong> ${rows.length}</div>
+          </div>
+          <div class="chips">
+            <span class="chip">Proveedor: ${supplierLabel}</span>
+            <span class="chip">Categoría 2: ${categoryLabel}</span>
+            <span class="chip">Tipo: ${typeLabel}</span>
+          </div>
+        </section>
+
+        <section class="summary">
+          <div class="summary-card"><div class="label">Total sin IVA</div><div class="value">$${formatMoney(totalWithoutTax)}</div></div>
+          <div class="summary-card"><div class="label">Total con IVA</div><div class="value">$${formatMoney(totalWithTax)}</div></div>
+          <div class="summary-card"><div class="label">Registros exportados</div><div class="value">${rows.length}</div></div>
+        </section>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Proveedor</th>
+                <th>Descripción</th>
+                <th>Categoría 2</th>
+                <th style="text-align:right">Sin IVA</th>
+                <th style="text-align:right">Con IVA</th>
+                <th>Tipo</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml || '<tr><td colspan="7">Sin resultados</td></tr>'}</tbody>
+          </table>
+        </div>
+      </section>
+    </body>
+  </html>`;
 }
 
 export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
