@@ -35,6 +35,9 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
     typeLabel !== 'Todos' ? `Tipo: ${typeLabel}` : null,
   ].filter(Boolean).join(' · ') || 'Sin filtros activos';
 
+  const providerName = String(supplierLabel || 'Sin proveedor').trim() || 'Sin proveedor';
+  const reportTitle = `(${providerName.toUpperCase()}) - Reporte de egresos`;
+
   const rowsHtml = rows.map((row) => {
     const supplier = resolveSupplierIdentity(row);
     const category2 = resolveCategory2(row, {});
