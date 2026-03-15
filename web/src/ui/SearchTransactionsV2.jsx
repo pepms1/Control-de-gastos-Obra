@@ -385,7 +385,7 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
           {exporting ? 'Exportando...' : 'Exportar PDF'}
         </button>
       </div>
-      <div className="small" style={{ marginTop: 6, fontSize: '1em', color: 'var(--primary)' }}>
+      <div className="small" style={{ marginTop: 6, fontSize: '1em' }}>
         Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}
       </div>
 
