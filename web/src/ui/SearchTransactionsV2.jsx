@@ -56,18 +56,18 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
   <html lang="es">
     <head>
       <meta charset="utf-8" />
-      <title>${reportTitle}</title>
+      <title>Buscar V2</title>
       <style>
         :root {
           --bg: #f1f5f9;
           --paper: #ffffff;
-          --primary: #1b1464;
-          --primary-dark: #120d45;
+          --primary: #1d4ed8;
+          --primary-dark: #1e3a8a;
           --text: #0f172a;
           --muted: #475569;
-          --line: #e2e8f0;
-          --chip: #ecebfb;
-          --chip-text: #120d45;
+          --line: #dbe3ef;
+          --chip: #dbeafe;
+          --chip-text: #1e3a8a;
         }
         * { box-sizing: border-box; }
         body {
@@ -166,7 +166,7 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
           text-align: left;
         }
         thead th {
-          background: #f1f5f9;
+          background: #eff6ff;
           color: var(--primary-dark);
           font-weight: 700;
         }
@@ -194,7 +194,7 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
     <body>
       <section class="sheet">
         <header class="header">
-          <h1>${reportTitle}</h1>
+          <h1>BUSCAR V2 · Reporte</h1>
           <p>Generado: ${new Date().toLocaleString('es-MX')}</p>
         </header>
 
