@@ -18,10 +18,12 @@ function formatPct(value) {
   return `${amount.toFixed(2)}%`;
 }
 
-function getStatusLabel(status) {
-  if (status === 'EXCEEDED') return 'Excedido';
-  if (status === 'WARNING') return 'Advertencia';
-  return 'OK';
+function classifyBudgetStatus(progressPct) {
+  const progress = Number(progressPct);
+  if (!Number.isFinite(progress)) return { label: 'En presupuesto', className: 'in-budget' };
+  if (progress > 100) return { label: 'Excedido', className: 'exceeded' };
+  if (progress === 100) return { label: 'Pagado', className: 'paid' };
+  return { label: 'En presupuesto', className: 'in-budget' };
 }
 
 function normalizeTextForSupplierKey(value) {
@@ -364,8 +366,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
             <tbody>
               {rows.map((row) => {
                 const project = projectsById.get(String(row.projectId || ''));
-                const status = String(row.status || '').toUpperCase();
-                const statusClass = status === 'EXCEEDED' ? 'danger' : status === 'WARNING' ? 'warning' : 'ok';
+                const status = classifyBudgetStatus(row.progressPct);
                 return (
                   <tr key={row.id}>
                     <td>{project?.displayName || project?.name || row.projectId}</td>
@@ -375,7 +376,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                     <td>{formatCurrency(row.paidAmount)}</td>
                     <td style={{ color: Number(row.remainingAmount) < 0 ? '#b91c1c' : undefined }}>{formatCurrency(row.remainingAmount)}</td>
                     <td>{formatPct(row.progressPct)}</td>
-                    <td><span className={`budget-status ${statusClass}`}>{getStatusLabel(status)}</span></td>
+                    <td><span className={`budget-status ${status.className}`}>{status.label}</span></td>
                     <td>{row.notes || '—'}</td>
                     <td><button type="button" className="secondary" onClick={() => startEdit(row)}>Editar</button></td>
                   </tr>
