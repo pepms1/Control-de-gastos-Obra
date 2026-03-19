@@ -8810,6 +8810,20 @@ def update_budget(budget_id: str, payload: dict, user: dict = Depends(require_ad
     return serialize_budget_with_metrics(saved) if saved else {"ok": True}
 
 
+@app.delete("/api/budgets/{budget_id}")
+def delete_budget(budget_id: str, user: dict = Depends(require_admin_or_superadmin)):
+    existing = db.budgets.find_one({"_id": oid(budget_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    project_id = str(existing.get("projectId") or "")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    db.budgets.delete_one({"_id": oid(budget_id)})
+    return {"ok": True}
+
+
 @app.get("/api/admin/trabajos-especiales/suppliers")
 def admin_trabajos_especiales_suppliers(_: dict = Depends(require_admin)):
     tx_query = {

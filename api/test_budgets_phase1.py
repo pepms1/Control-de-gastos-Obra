@@ -58,6 +58,11 @@ class _InsertResult:
         self.inserted_id = inserted_id
 
 
+class _DeleteResult:
+    def __init__(self, deleted_count):
+        self.deleted_count = deleted_count
+
+
 class FakeCollection:
     def __init__(self, docs=None):
         self.docs = list(docs or [])
@@ -106,6 +111,13 @@ class FakeCollection:
                 next_doc.update(update['$set'])
             self.docs[idx] = next_doc
             return
+
+    def delete_one(self, query):
+        for idx, doc in enumerate(self.docs):
+            if _matches(doc, query):
+                del self.docs[idx]
+                return _DeleteResult(1)
+        return _DeleteResult(0)
 
 
 class BudgetsPhase1Tests(unittest.TestCase):
@@ -180,6 +192,17 @@ class BudgetsPhase1Tests(unittest.TestCase):
             )
 
         self.assertEqual(created['budgetAmount'], 200)
+
+    def test_delete_budget_removes_document(self):
+        budget_id = ObjectId()
+        existing = [{'_id': budget_id, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'isActive': True, 'budgetAmount': 100, 'notes': ''}]
+        fake_db = self._fake_db(budgets=existing)
+
+        with patch.object(main, 'db', fake_db):
+            result = main.delete_budget(str(budget_id), user={'role': 'SUPERADMIN'})
+
+        self.assertEqual(result, {'ok': True})
+        self.assertEqual(fake_db.budgets.find_one({'_id': budget_id}), None)
 
     def test_supplier_without_movements_returns_paid_zero(self):
         fake_db = self._fake_db(transactions=[])

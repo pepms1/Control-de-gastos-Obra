@@ -237,6 +237,24 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     }
   }
 
+  async function deleteCurrentBudget() {
+    if (!editingBudget?.id) return;
+    const confirmed = window.confirm('¿Seguro que quieres eliminar este presupuesto? Esta acción no se puede deshacer.');
+    if (!confirmed) return;
+
+    setSaving(true);
+    setError('');
+    try {
+      await api.deleteBudget(editingBudget.id);
+      await loadBudgets();
+      resetForm();
+    } catch (e) {
+      setError(e.message || 'No se pudo eliminar el presupuesto');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div className="card" style={{ display: 'grid', gap: 12 }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -337,6 +355,11 @@ export function BudgetsSection({ projects, selectedProjectId }) {
           )}
           <div className="row" style={{ gap: 8 }}>
             <button type="submit" disabled={saving}>{saving ? 'Guardando...' : (editingBudget ? 'Guardar cambios' : 'Crear presupuesto')}</button>
+            {editingBudget && (
+              <button type="button" className="secondary" onClick={deleteCurrentBudget} disabled={saving} style={{ color: '#b91c1c' }}>
+                Eliminar
+              </button>
+            )}
             {(showForm || editingBudget) && <button type="button" className="secondary" onClick={resetForm}>Cancelar</button>}
           </div>
         </form>
