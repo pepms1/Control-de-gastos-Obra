@@ -5916,7 +5916,11 @@ def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, user:
             return []
         raise HTTPException(status_code=403, detail="Project access denied")
 
-    query = {"$and": [{"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}]}
+    project_candidates: list[str | ObjectId] = [active_project_id]
+    if ObjectId.is_valid(active_project_id):
+        project_candidates.append(ObjectId(active_project_id))
+
+    query = {"$and": [{"$or": [{"projectId": {"$in": project_candidates}}, {"projectIds": {"$in": project_candidates}}]}]}
     if uncategorized == 1:
         query["$and"].append({"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]})
     return [serialize(s) for s in db.suppliers.find(query).sort("name", 1)]
@@ -5925,9 +5929,12 @@ def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, user:
 @app.patch("/api/suppliers/{supplier_id}")
 def update_supplier(supplier_id: str, payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
     active_project_id = get_active_project_id(request)
+    project_candidates: list[str | ObjectId] = [active_project_id]
+    if ObjectId.is_valid(active_project_id):
+        project_candidates.append(ObjectId(active_project_id))
     supplier_filter = {
         "_id": oid(supplier_id),
-        "$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}],
+        "$or": [{"projectId": {"$in": project_candidates}}, {"projectIds": {"$in": project_candidates}}],
     }
     supplier = db.suppliers.find_one(supplier_filter)
     if not supplier:
