@@ -104,9 +104,9 @@ th, td{padding:10px 8px; border-bottom:1px solid var(--gray-200); text-align:lef
 .badge-visible{background:#dcfce7; color:#166534;}
 .badge-hidden{background:#fee2e2; color:#991b1b;}
 .budget-status{display:inline-flex; align-items:center; border-radius:999px; font-size:12px; font-weight:700; padding:3px 10px;}
-.budget-status.ok{background:#dcfce7; color:#166534;}
-.budget-status.warning{background:#fef3c7; color:#92400e;}
-.budget-status.danger{background:#fee2e2; color:#991b1b;}
+.budget-status.in-budget{background:#dcfce7; color:#166534;}
+.budget-status.paid{background:#dbeafe; color:#1e3a8a;}
+.budget-status.exceeded{background:#fee2e2; color:#991b1b;}
 .dashboard-shell{display:grid; gap:12px;}
 .dashboard-header{display:flex; justify-content:space-between; gap:10px; align-items:flex-start; flex-wrap:wrap;}
 .dashboard-controls{padding:6px 10px; border:1px solid var(--gray-200); border-radius:999px; background:var(--gray-50); display:inline-flex; width:fit-content;}
