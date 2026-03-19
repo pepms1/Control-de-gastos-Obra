@@ -8269,7 +8269,13 @@ def validate_budget_amount(value) -> float:
     return amount
 
 
-def compute_expense_totals_by_supplier_bucket(project_id: str) -> dict[str, float]:
+def resolve_budget_includes_tax(value, *, default: bool = True) -> bool:
+    if value is None:
+        return default
+    return bool(value)
+
+
+def compute_expense_totals_by_supplier_bucket(project_id: str, *, include_tax: bool = True) -> dict[str, float]:
     tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
     movements = list(
         db.transactions.find(
@@ -8277,6 +8283,7 @@ def compute_expense_totals_by_supplier_bucket(project_id: str) -> dict[str, floa
             {
                 "_id": 1,
                 "amount": 1,
+                "tax": 1,
                 "supplierId": 1,
                 "supplier_id": 1,
                 "vendor_id": 1,
@@ -8295,12 +8302,14 @@ def compute_expense_totals_by_supplier_bucket(project_id: str) -> dict[str, floa
     totals: dict[str, float] = {}
     for tx in movements:
         bucket_key = _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key)
-        totals[bucket_key] = round(float(totals.get(bucket_key) or 0) + float(tx.get("amount") or 0), 2)
+        amount_value = float(tx.get("amount") or 0)
+        movement_amount = amount_value if include_tax else compute_monto_sin_iva(tx)
+        totals[bucket_key] = round(float(totals.get(bucket_key) or 0) + movement_amount, 2)
     return totals
 
 
-def compute_budget_metrics(project_id: str, supplier_key: str, budget_amount: float) -> dict:
-    totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id)
+def compute_budget_metrics(project_id: str, supplier_key: str, budget_amount: float, budget_includes_tax: bool = True) -> dict:
+    totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=budget_includes_tax)
     paid_amount = round(float(totals_by_bucket.get(supplier_key) or 0), 2)
     remaining_amount = round(float(budget_amount or 0) - paid_amount, 2)
     if budget_amount > 0:
@@ -8329,7 +8338,9 @@ def serialize_budget_with_metrics(doc: dict) -> dict:
     budget_amount = float(payload.get("budgetAmount") or 0)
     project_id = str(payload.get("projectId") or "").strip()
     supplier_key = str(payload.get("supplierKey") or "").strip()
-    payload.update(compute_budget_metrics(project_id, supplier_key, budget_amount))
+    budget_includes_tax = resolve_budget_includes_tax(payload.get("budgetIncludesTax"), default=True)
+    payload["budgetIncludesTax"] = budget_includes_tax
+    payload.update(compute_budget_metrics(project_id, supplier_key, budget_amount, budget_includes_tax=budget_includes_tax))
     return payload
 
 
@@ -8666,6 +8677,7 @@ def create_budget(payload: dict, request: FastAPIRequest, user: dict = Depends(r
     currency = normalize_non_empty_string((payload or {}).get("currency")) or "MXN"
     is_active = (payload or {}).get("isActive")
     is_active = True if is_active is None else bool(is_active)
+    budget_includes_tax = resolve_budget_includes_tax((payload or {}).get("budgetIncludesTax"), default=True)
 
     if is_active:
         duplicate = db.budgets.find_one(
@@ -8687,6 +8699,7 @@ def create_budget(payload: dict, request: FastAPIRequest, user: dict = Depends(r
         "currency": currency,
         "notes": notes or "",
         "isActive": is_active,
+        "budgetIncludesTax": budget_includes_tax,
         "createdBy": normalize_non_empty_string(user.get("username")) or "system",
         "createdAt": now_iso,
         "updatedAt": now_iso,
@@ -8737,6 +8750,7 @@ def budgets_summary_by_project(
             project_id=row_project_id,
             supplier_key=str(row.get("supplierKey") or ""),
             budget_amount=float(row.get("budgetAmount") or 0),
+            budget_includes_tax=resolve_budget_includes_tax(row.get("budgetIncludesTax"), default=True),
         )
         summary["budgetsCount"] += 1
         summary["totalBudgetAmount"] += float(row.get("budgetAmount") or 0)
@@ -8770,6 +8784,8 @@ def update_budget(budget_id: str, payload: dict, user: dict = Depends(require_ad
         updates["supplierNameSnapshot"] = normalize_non_empty_string(payload.get("supplierNameSnapshot")) or ""
     if "isActive" in payload:
         updates["isActive"] = bool(payload.get("isActive"))
+    if "budgetIncludesTax" in payload:
+        updates["budgetIncludesTax"] = resolve_budget_includes_tax(payload.get("budgetIncludesTax"), default=True)
 
     if not updates:
         return serialize_budget_with_metrics(existing)
