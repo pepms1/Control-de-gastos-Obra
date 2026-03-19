@@ -561,7 +561,7 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
           color: 'var(--primary)',
         }}
       >
-        BUSCAR V2 ACTIVO — Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}
+        Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}
       </div>
 
       {showFilters && (
