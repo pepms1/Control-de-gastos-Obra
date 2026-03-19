@@ -558,16 +558,12 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
         className="small"
         style={{
           marginTop: 6,
-          fontSize: '24px',
-          background: 'yellow',
-          border: '3px solid red',
-          color: 'blue',
+          color: 'var(--primary)',
+          fontSize: '16px',
           fontWeight: 700,
-          padding: '6px 10px',
-          borderRadius: 6,
         }}
       >
-        BUSCAR V2 ACTIVO — Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}
+        Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}
       </div>
 
       {showFilters && (
