@@ -559,6 +559,7 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
         style={{
           marginTop: 6,
           color: 'var(--primary)',
+          fontSize: '16px',
         }}
       >
         Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}
