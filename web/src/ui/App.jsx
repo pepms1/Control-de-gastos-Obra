@@ -535,12 +535,12 @@ export default function App() {
     setThemePreference((prev) => (prev === 'dark' ? 'light' : 'dark'));
   }
 
-  async function loadProjects() {
+  async function loadProjects(sessionData = session) {
     const data = await api.projects();
     const list = Array.isArray(data) ? data : [];
     setProjects(list);
 
-    const selectableList = getAdminPersonalizedProjects(list, session);
+    const selectableList = getAdminPersonalizedProjects(list, sessionData);
 
     if (!selectableList.length) {
       setSelectedProjectId('');
@@ -549,7 +549,7 @@ export default function App() {
     }
 
     const currentProjectId = localStorage.getItem(SELECTED_PROJECT_KEY) || '';
-    const preferredProjectId = String(session?.uiPrefs?.defaultProjectId || '').trim();
+    const preferredProjectId = String(sessionData?.uiPrefs?.defaultProjectId || '').trim();
     const exists = selectableList.some((project) => project._id === currentProjectId);
     const preferredExists = selectableList.some((project) => String(project?._id || '') === preferredProjectId);
     const fallbackProjectId = selectableList[0]?._id || '';
@@ -572,28 +572,41 @@ export default function App() {
 
   useEffect(() => {
     if (!session.token) return;
+    let active = true;
 
-    api.me()
-      .then((me) => {
+    async function bootstrapSessionData() {
+      let sessionForProjects = session;
+      try {
+        const me = await api.me();
         const nextSession = {
           ...getSession(),
           ...me,
           role: normalizeRole(me?.role || session.role),
           displayName: me?.name || me?.displayName || session.displayName,
         };
+        if (!active) return;
         saveSession(nextSession);
         setSession(nextSession);
-      })
-      .catch(() => {
+        sessionForProjects = nextSession;
+      } catch {
+        if (!active) return;
         clearSession();
         setSession(getSession());
+      }
+
+      refreshCatalog().catch(() => {});
+
+      loadProjects(sessionForProjects).catch(() => {
+        if (!active) return;
+        setProjects([]);
       });
+    }
 
-    refreshCatalog().catch(() => {});
+    bootstrapSessionData();
 
-    loadProjects().catch(() => {
-      setProjects([]);
-    });
+    return () => {
+      active = false;
+    };
   }, [session.token]);
 
   // When switching projects, refresh vendors (and other catalogs) immediately.
