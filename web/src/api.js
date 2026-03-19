@@ -327,6 +327,11 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  deleteBudget: (id) =>
+    backendReq(`/api/budgets/${id}`, {
+      method: 'DELETE',
+    }),
+
   budgetsSummaryByProject: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return backendReq(`/api/budgets/summary-by-project${qs ? `?${qs}` : ''}`);
