@@ -132,7 +132,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
         with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
             main, 'build_transactions_query', return_value={}
         ):
-            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 500)
+            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 500, budget_includes_tax=True)
 
         self.assertEqual(metrics['paidAmount'], 225.0)
         self.assertEqual(metrics['remainingAmount'], 275.0)
@@ -186,7 +186,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
         with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
             main, 'build_transactions_query', return_value={}
         ):
-            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 100)
+            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 100, budget_includes_tax=True)
         self.assertEqual(metrics['paidAmount'], 0.0)
 
     def test_budget_zero_does_not_break_progress(self):
@@ -194,7 +194,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
         with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
             main, 'build_transactions_query', return_value={}
         ):
-            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 0)
+            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 0, budget_includes_tax=True)
         self.assertEqual(metrics['progressPct'], 0.0)
 
     def test_negative_remaining_marks_exceeded(self):
@@ -203,9 +203,65 @@ class BudgetsPhase1Tests(unittest.TestCase):
         with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
             main, 'build_transactions_query', return_value={}
         ):
-            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 100)
+            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 100, budget_includes_tax=True)
         self.assertEqual(metrics['status'], 'EXCEEDED')
         self.assertLess(metrics['remainingAmount'], 0)
+
+
+    def test_budget_without_tax_uses_compute_monto_sin_iva_logic(self):
+        tx = [
+            {
+                '_id': '1',
+                'projectId': self.project_id,
+                'type': 'EXPENSE',
+                'amount': 116,
+                'tax': {'subtotal': 100, 'iva': 16, 'totalFactura': 116},
+                'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'},
+            }
+        ]
+        fake_db = self._fake_db(transactions=tx)
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
+            main, 'build_transactions_query', return_value={}
+        ):
+            metrics_with_tax = main.compute_budget_metrics(self.project_id, self.supplier_key, 200, budget_includes_tax=True)
+            metrics_without_tax = main.compute_budget_metrics(self.project_id, self.supplier_key, 200, budget_includes_tax=False)
+
+        self.assertEqual(metrics_with_tax['paidAmount'], 116.0)
+        self.assertEqual(metrics_without_tax['paidAmount'], 100.0)
+
+    def test_serialize_budget_defaults_budget_includes_tax_for_legacy_docs(self):
+        tx = [{'_id': '1', 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 116, 'tax': {'subtotal': 100, 'iva': 16, 'totalFactura': 116}, 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}}]
+        fake_db = self._fake_db(transactions=tx)
+        legacy_doc = {'_id': ObjectId(), 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'budgetAmount': 200}
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
+            main, 'build_transactions_query', return_value={}
+        ):
+            serialized = main.serialize_budget_with_metrics(legacy_doc)
+
+        self.assertTrue(serialized['budgetIncludesTax'])
+        self.assertEqual(serialized['paidAmount'], 116.0)
+
+    def test_create_budget_persists_budget_includes_tax(self):
+        fake_db = self._fake_db(budgets=[])
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'resolve_project_id', return_value=self.project_id):
+            created = main.create_budget(
+                {
+                    'projectId': self.project_id,
+                    'supplierKey': self.supplier_key,
+                    'supplierName': 'ACERO SA',
+                    'supplierCardCode': 'P001',
+                    'businessPartner': 'ACERO SA',
+                    'budgetAmount': 1000,
+                    'budgetIncludesTax': False,
+                },
+                request=SimpleNamespace(headers={}, query_params={}),
+                user={'role': 'SUPERADMIN', 'username': 'admin'},
+            )
+
+        self.assertFalse(created['budgetIncludesTax'])
 
     def test_roles_access_for_budget_module(self):
         with self.assertRaises(HTTPException):

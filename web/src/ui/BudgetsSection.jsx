@@ -63,6 +63,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     vendorId: '',
     budgetAmount: '',
     notes: '',
+    budgetIncludesTax: true,
   });
 
   const projectsById = useMemo(
@@ -170,6 +171,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
       vendorId: '',
       budgetAmount: '',
       notes: '',
+      budgetIncludesTax: true,
     });
   }
 
@@ -191,6 +193,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
       budgetAmount: String(row.budgetAmount ?? ''),
       notes: row.notes || '',
       isActive: row.isActive !== false,
+      budgetIncludesTax: row.budgetIncludesTax !== false,
     });
   }
 
@@ -208,6 +211,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
         vendorId: form.vendorId,
         budgetAmount: Number(String(form.budgetAmount).replace(/,/g, '').trim()),
         notes: form.notes,
+        budgetIncludesTax: Boolean(form.budgetIncludesTax),
       };
 
       if (editingBudget) {
@@ -216,6 +220,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
           notes: payload.notes,
           isActive: Boolean(form.isActive),
           supplierNameSnapshot: payload.supplierName,
+          budgetIncludesTax: payload.budgetIncludesTax,
         });
       } else {
         await api.createBudget(payload);
@@ -303,6 +308,14 @@ export function BudgetsSection({ projects, selectedProjectId }) {
               required
             />
           </div>
+          <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="checkbox"
+              checked={Boolean(form.budgetIncludesTax)}
+              onChange={(e) => setForm((prev) => ({ ...prev, budgetIncludesTax: e.target.checked }))}
+            />
+            Incluye IVA
+          </label>
           <div>
             <label>Nota (opcional)</label>
             <input
@@ -339,6 +352,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                 <th>Obra</th>
                 <th>Proveedor</th>
                 <th>Presupuesto</th>
+                <th>Tipo</th>
                 <th>Pagado</th>
                 <th>Saldo</th>
                 <th>Avance %</th>
@@ -357,6 +371,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                     <td>{project?.displayName || project?.name || row.projectId}</td>
                     <td>{row.supplierNameSnapshot || row.supplierKey || '—'}</td>
                     <td>{formatCurrency(row.budgetAmount)}</td>
+                    <td>{row.budgetIncludesTax === false ? 'Sin IVA' : 'Con IVA'}</td>
                     <td>{formatCurrency(row.paidAmount)}</td>
                     <td style={{ color: Number(row.remainingAmount) < 0 ? '#b91c1c' : undefined }}>{formatCurrency(row.remainingAmount)}</td>
                     <td>{formatPct(row.progressPct)}</td>
@@ -368,7 +383,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
               })}
               {!rows.length && (
                 <tr>
-                  <td colSpan={9} className="small" style={{ textAlign: 'center' }}>No hay presupuestos para los filtros seleccionados.</td>
+                  <td colSpan={10} className="small" style={{ textAlign: 'center' }}>No hay presupuestos para los filtros seleccionados.</td>
                 </tr>
               )}
             </tbody>
