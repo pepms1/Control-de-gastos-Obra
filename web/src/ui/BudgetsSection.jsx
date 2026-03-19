@@ -96,13 +96,23 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   useEffect(() => {
     if (!selectedProjectId) return;
     let active = true;
+    const normalizeRows = (payload) => {
+      if (Array.isArray(payload)) return payload;
+      if (Array.isArray(payload?.items)) return payload.items;
+      if (Array.isArray(payload?.rows)) return payload.rows;
+      if (Array.isArray(payload?.data)) return payload.data;
+      return [];
+    };
     Promise.allSettled([api.expensesSummaryBySupplier(), api.suppliers()])
       .then(([summaryResult, suppliersResult]) => {
         if (!active) return;
 
         const optionsByKey = new Map();
-        if (summaryResult.status === 'fulfilled' && Array.isArray(summaryResult.value)) {
-          summaryResult.value.forEach((row) => {
+        const summaryRows = summaryResult.status === 'fulfilled' ? normalizeRows(summaryResult.value) : [];
+        const supplierCatalogRows = suppliersResult.status === 'fulfilled' ? normalizeRows(suppliersResult.value) : [];
+
+        if (summaryRows.length) {
+          summaryRows.forEach((row) => {
             const key = String(row?.supplierKey || '').trim();
             if (!key) return;
             optionsByKey.set(key, {
@@ -115,8 +125,8 @@ export function BudgetsSection({ projects, selectedProjectId }) {
           });
         }
 
-        if (suppliersResult.status === 'fulfilled' && Array.isArray(suppliersResult.value)) {
-          suppliersResult.value.forEach((supplier) => {
+        if (supplierCatalogRows.length) {
+          supplierCatalogRows.forEach((supplier) => {
             const supplierName = String(supplier?.name || '').trim();
             const sapCardCode = String(supplier?.cardCode || '').trim();
             const key = buildCanonicalSupplierKey({

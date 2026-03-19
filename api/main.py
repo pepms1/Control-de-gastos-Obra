@@ -8589,6 +8589,10 @@ def summary_expenses_by_supplier(
         output.append(
             {
                 "supplierId": resolved_supplier_id,
+                "vendorId": row.get("vendorId"),
+                "supplierKey": row.get("supplierKey") or provider_key,
+                "sapCardCode": row.get("sapCardCode") or "",
+                "sapBusinessPartner": row.get("sapBusinessPartner") or "",
                 "supplierName": resolved_name,
                 "totalAmount": round(float(row.get("totalAmount") or 0), 2),
                 "count": int(row.get("count") or 0),

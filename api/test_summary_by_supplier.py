@@ -225,5 +225,39 @@ class SupplierSummaryFilterParityTests(unittest.TestCase):
         self.assertEqual(captured.get('source_db'), 'SBO_CDB')
 
 
+class SupplierSummaryOutputShapeTests(unittest.TestCase):
+    def test_summary_by_supplier_includes_supplier_key_for_frontend_selectors(self):
+        class FakeTransactions:
+            def find(self, _query, _projection):
+                return [
+                    {
+                        '_id': 'tx1',
+                        'amount': 123.0,
+                        'sap': {'cardCode': 'P00071', 'businessPartner': 'OMAR SALAS ALDANA'},
+                        'supplierName': 'OMAR SALAS ALDANA',
+                    }
+                ]
+
+        class EmptyFind:
+            def find(self, *_args, **_kwargs):
+                return []
+
+        fake_db = type('FakeDb', (), {'transactions': FakeTransactions(), 'suppliers': EmptyFind(), 'vendors': EmptyFind()})()
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'resolve_project_id', return_value='project-1'), patch.object(
+            main, 'can_access_project', return_value=True
+        ), patch.object(main, 'build_transactions_query', return_value={}), patch.object(
+            main, 'with_legacy_project_filter', side_effect=lambda q, _project_id: q
+        ):
+            result = main.summary_expenses_by_supplier(
+                projectId='project-1',
+                include_iva=True,
+                user={'id': 'u1', 'role': 'ADMIN'},
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(result[0].get('supplierKey'), 'bpcc:omar salas aldana|p00071')
+
+
 if __name__ == '__main__':
     unittest.main()
