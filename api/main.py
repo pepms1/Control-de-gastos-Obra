@@ -694,6 +694,12 @@ def require_admin(user=Depends(role_from_token)):
     return user
 
 
+def require_admin_or_superadmin(user=Depends(role_from_token)):
+    if user.get("role") not in {"SUPERADMIN", "ADMIN"}:
+        raise HTTPException(status_code=403, detail="ADMIN or SUPERADMIN role required")
+    return user
+
+
 def require_authenticated(user=Depends(role_from_token)):
     return user
 
@@ -2718,6 +2724,13 @@ def ensure_indexes():
     )
     db.adminActions.create_index([("projectId", 1), ("requestedAt", -1)])
     db.adminActions.create_index([("action", 1), ("requestedAt", -1)])
+    db.budgets.create_index([("projectId", 1), ("supplierKey", 1), ("isActive", 1)], name="budgets_project_supplier_active_idx")
+    db.budgets.create_index(
+        [("projectId", 1), ("supplierKey", 1)],
+        unique=True,
+        name="budgets_project_supplier_active_unique",
+        partialFilterExpression={"isActive": {"$ne": False}},
+    )
     db.settings.create_index("key", unique=True)
     db.telegram_users.create_index("chat_id", unique=True)
     db.telegram_users.create_index([("status", 1), ("updated_at", -1)])
@@ -5903,7 +5916,11 @@ def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, user:
             return []
         raise HTTPException(status_code=403, detail="Project access denied")
 
-    query = {"$and": [{"$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}]}]}
+    project_candidates: list[str | ObjectId] = [active_project_id]
+    if ObjectId.is_valid(active_project_id):
+        project_candidates.append(ObjectId(active_project_id))
+
+    query = {"$and": [{"$or": [{"projectId": {"$in": project_candidates}}, {"projectIds": {"$in": project_candidates}}]}]}
     if uncategorized == 1:
         query["$and"].append({"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]})
     return [serialize(s) for s in db.suppliers.find(query).sort("name", 1)]
@@ -5912,9 +5929,12 @@ def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, user:
 @app.patch("/api/suppliers/{supplier_id}")
 def update_supplier(supplier_id: str, payload: dict, request: FastAPIRequest, _: dict = Depends(require_admin)):
     active_project_id = get_active_project_id(request)
+    project_candidates: list[str | ObjectId] = [active_project_id]
+    if ObjectId.is_valid(active_project_id):
+        project_candidates.append(ObjectId(active_project_id))
     supplier_filter = {
         "_id": oid(supplier_id),
-        "$or": [{"projectId": active_project_id}, {"projectIds": active_project_id}],
+        "$or": [{"projectId": {"$in": project_candidates}}, {"projectIds": {"$in": project_candidates}}],
     }
     supplier = db.suppliers.find_one(supplier_filter)
     if not supplier:
@@ -8216,6 +8236,103 @@ def _resolve_supplier_summary_display_name(tx: dict, identity: dict, suppliers_b
     return catalog_name or supplier_name or sap_business_partner or sap_card_code or ""
 
 
+def resolve_budget_supplier_key(payload: dict) -> str:
+    raw_supplier_key = normalize_non_empty_string((payload or {}).get("supplierKey"))
+    supplier_key = build_supplier_key(
+        supplier_card_code=(payload or {}).get("supplierCardCode"),
+        business_partner=(payload or {}).get("businessPartner"),
+        supplier_name=(payload or {}).get("supplierName"),
+    )
+    if raw_supplier_key and not raw_supplier_key.startswith(("bpcc:", "bp:", "cardcode:", "name:")):
+        raise HTTPException(status_code=400, detail="supplierKey must use canonical supplier identity")
+
+    if raw_supplier_key and supplier_key and raw_supplier_key != supplier_key:
+        raise HTTPException(status_code=400, detail="supplierKey does not match supplier identity fields")
+
+    if raw_supplier_key and not supplier_key:
+        return raw_supplier_key
+
+    if not supplier_key:
+        raise HTTPException(
+            status_code=400,
+            detail="supplierKey is required (or provide supplierCardCode/businessPartner/supplierName)",
+        )
+    return supplier_key
+
+
+def validate_budget_amount(value) -> float:
+    amount = parse_decimal(value)
+    if amount < 0:
+        raise HTTPException(status_code=400, detail="budgetAmount must be greater than or equal to 0")
+    if amount > 1_000_000_000_000:
+        raise HTTPException(status_code=400, detail="budgetAmount is too large")
+    return amount
+
+
+def compute_expense_totals_by_supplier_bucket(project_id: str) -> dict[str, float]:
+    tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
+    movements = list(
+        db.transactions.find(
+            tx_query,
+            {
+                "_id": 1,
+                "amount": 1,
+                "supplierId": 1,
+                "supplier_id": 1,
+                "vendor_id": 1,
+                "supplierName": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "proveedorNombre": 1,
+                "beneficiario": 1,
+                "sap.cardCode": 1,
+                "sap.businessPartner": 1,
+            },
+        )
+    )
+
+    trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
+    totals: dict[str, float] = {}
+    for tx in movements:
+        bucket_key = _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key)
+        totals[bucket_key] = round(float(totals.get(bucket_key) or 0) + float(tx.get("amount") or 0), 2)
+    return totals
+
+
+def compute_budget_metrics(project_id: str, supplier_key: str, budget_amount: float) -> dict:
+    totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id)
+    paid_amount = round(float(totals_by_bucket.get(supplier_key) or 0), 2)
+    remaining_amount = round(float(budget_amount or 0) - paid_amount, 2)
+    if budget_amount > 0:
+        progress_pct = round((paid_amount / budget_amount) * 100, 2)
+    elif paid_amount > 0:
+        progress_pct = 100.0
+    else:
+        progress_pct = 0.0
+
+    status = "OK"
+    if progress_pct > 100:
+        status = "EXCEEDED"
+    elif progress_pct >= 80:
+        status = "WARNING"
+
+    return {
+        "paidAmount": paid_amount,
+        "remainingAmount": remaining_amount,
+        "progressPct": progress_pct,
+        "status": status,
+    }
+
+
+def serialize_budget_with_metrics(doc: dict) -> dict:
+    payload = serialize_raw_doc(doc)
+    budget_amount = float(payload.get("budgetAmount") or 0)
+    project_id = str(payload.get("projectId") or "").strip()
+    supplier_key = str(payload.get("supplierKey") or "").strip()
+    payload.update(compute_budget_metrics(project_id, supplier_key, budget_amount))
+    return payload
+
+
 @app.post("/api/admin/import/sap-latest")
 def admin_import_sap_latest(payload: dict, user: dict = Depends(require_admin)):
     project_id = str((payload or {}).get("projectId") or "").strip()
@@ -8479,6 +8596,10 @@ def summary_expenses_by_supplier(
         output.append(
             {
                 "supplierId": resolved_supplier_id,
+                "vendorId": row.get("vendorId"),
+                "supplierKey": row.get("supplierKey") or provider_key,
+                "sapCardCode": row.get("sapCardCode") or "",
+                "sapBusinessPartner": row.get("sapBusinessPartner") or "",
                 "supplierName": resolved_name,
                 "totalAmount": round(float(row.get("totalAmount") or 0), 2),
                 "count": int(row.get("count") or 0),
@@ -8497,6 +8618,180 @@ def summary_expenses_by_supplier(
 
     output.sort(key=lambda item: (item["supplierName"] or "").lower())
     return output
+
+
+@app.get("/api/budgets")
+def list_budgets(
+    projectId: str | None = None,
+    supplier: str | None = None,
+    includeInactive: bool = False,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    project_id = resolve_project_id(projectId or get_active_project_id(request))
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    query: dict = {"projectId": project_id}
+    if not includeInactive:
+        query["isActive"] = {"$ne": False}
+
+    supplier_search = normalize_non_empty_string(supplier)
+    if supplier_search:
+        escaped = re.escape(supplier_search)
+        query["$or"] = [
+            {"supplierKey": {"$regex": escaped, "$options": "i"}},
+            {"supplierNameSnapshot": {"$regex": escaped, "$options": "i"}},
+            {"supplierCardCode": {"$regex": escaped, "$options": "i"}},
+            {"businessPartner": {"$regex": escaped, "$options": "i"}},
+        ]
+
+    rows = list(db.budgets.find(query).sort("updatedAt", -1))
+    return [serialize_budget_with_metrics(row) for row in rows]
+
+
+@app.post("/api/budgets", status_code=201)
+def create_budget(payload: dict, request: FastAPIRequest, user: dict = Depends(require_admin_or_superadmin)):
+    project_id = resolve_project_id((payload or {}).get("projectId") or get_active_project_id(request))
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    supplier_key = resolve_budget_supplier_key(payload)
+    supplier_name_snapshot = normalize_non_empty_string((payload or {}).get("supplierName")) or supplier_key
+    budget_amount = validate_budget_amount((payload or {}).get("budgetAmount"))
+    notes = normalize_non_empty_string((payload or {}).get("notes"))
+    vendor_id = normalize_non_empty_string((payload or {}).get("vendorId"))
+    supplier_card_code = normalize_non_empty_string((payload or {}).get("supplierCardCode"))
+    business_partner = normalize_non_empty_string((payload or {}).get("businessPartner"))
+    currency = normalize_non_empty_string((payload or {}).get("currency")) or "MXN"
+    is_active = (payload or {}).get("isActive")
+    is_active = True if is_active is None else bool(is_active)
+
+    if is_active:
+        duplicate = db.budgets.find_one(
+            {"projectId": project_id, "supplierKey": supplier_key, "isActive": {"$ne": False}},
+            {"_id": 1},
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail="An active budget already exists for this project and supplier")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "projectId": project_id,
+        "supplierKey": supplier_key,
+        "supplierNameSnapshot": supplier_name_snapshot,
+        "vendorId": vendor_id,
+        "supplierCardCode": supplier_card_code,
+        "businessPartner": business_partner,
+        "budgetAmount": budget_amount,
+        "currency": currency,
+        "notes": notes or "",
+        "isActive": is_active,
+        "createdBy": normalize_non_empty_string(user.get("username")) or "system",
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+    }
+    inserted_id = db.budgets.insert_one(doc).inserted_id
+    saved = db.budgets.find_one({"_id": inserted_id})
+    return serialize_budget_with_metrics(saved) if saved else {"ok": True, "id": str(inserted_id)}
+
+
+@app.get("/api/budgets/summary-by-project")
+def budgets_summary_by_project(
+    projectId: str | None = None,
+    includeInactive: bool = False,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    requested_project_id = normalize_non_empty_string(projectId) or normalize_non_empty_string((request.headers.get("X-Project-Id") if request else None))
+    project_ids: list[str]
+    if requested_project_id:
+        resolved_project_id = resolve_project_id(requested_project_id)
+        if not can_access_project(user, resolved_project_id):
+            raise HTTPException(status_code=403, detail="Project access denied")
+        project_ids = [resolved_project_id]
+    else:
+        accessible_project_ids = get_accessible_project_ids(user)
+        if accessible_project_ids is None:
+            project_ids = [str(row.get("_id")) for row in db.projects.find({}, {"_id": 1})]
+        else:
+            project_ids = [pid for pid in accessible_project_ids if ObjectId.is_valid(pid)]
+
+    query: dict = {"projectId": {"$in": project_ids}}
+    if not includeInactive:
+        query["isActive"] = {"$ne": False}
+
+    rows = list(db.budgets.find(query))
+    summary = {
+        "projectId": project_ids[0] if len(project_ids) == 1 else None,
+        "projectIds": project_ids,
+        "budgetsCount": 0,
+        "totalBudgetAmount": 0.0,
+        "totalPaidAmount": 0.0,
+        "totalRemainingAmount": 0.0,
+        "exceededCount": 0,
+    }
+    for row in rows:
+        row_project_id = str(row.get("projectId") or "")
+        metrics = compute_budget_metrics(
+            project_id=row_project_id,
+            supplier_key=str(row.get("supplierKey") or ""),
+            budget_amount=float(row.get("budgetAmount") or 0),
+        )
+        summary["budgetsCount"] += 1
+        summary["totalBudgetAmount"] += float(row.get("budgetAmount") or 0)
+        summary["totalPaidAmount"] += float(metrics.get("paidAmount") or 0)
+        summary["totalRemainingAmount"] += float(metrics.get("remainingAmount") or 0)
+        if metrics.get("status") == "EXCEEDED":
+            summary["exceededCount"] += 1
+
+    summary["totalBudgetAmount"] = round(summary["totalBudgetAmount"], 2)
+    summary["totalPaidAmount"] = round(summary["totalPaidAmount"], 2)
+    summary["totalRemainingAmount"] = round(summary["totalRemainingAmount"], 2)
+    return summary
+
+
+@app.patch("/api/budgets/{budget_id}")
+def update_budget(budget_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    existing = db.budgets.find_one({"_id": oid(budget_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    project_id = str(existing.get("projectId") or "")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    updates: dict = {}
+    if "budgetAmount" in payload:
+        updates["budgetAmount"] = validate_budget_amount(payload.get("budgetAmount"))
+    if "notes" in payload:
+        updates["notes"] = normalize_non_empty_string(payload.get("notes")) or ""
+    if "supplierNameSnapshot" in payload:
+        updates["supplierNameSnapshot"] = normalize_non_empty_string(payload.get("supplierNameSnapshot")) or ""
+    if "isActive" in payload:
+        updates["isActive"] = bool(payload.get("isActive"))
+
+    if not updates:
+        return serialize_budget_with_metrics(existing)
+
+    next_is_active = updates.get("isActive", existing.get("isActive", True))
+    if next_is_active:
+        duplicate = db.budgets.find_one(
+            {
+                "_id": {"$ne": oid(budget_id)},
+                "projectId": project_id,
+                "supplierKey": str(existing.get("supplierKey") or ""),
+                "isActive": {"$ne": False},
+            },
+            {"_id": 1},
+        )
+        if duplicate:
+            raise HTTPException(status_code=409, detail="An active budget already exists for this project and supplier")
+
+    updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    db.budgets.update_one({"_id": oid(budget_id)}, {"$set": updates})
+    saved = db.budgets.find_one({"_id": oid(budget_id)})
+    return serialize_budget_with_metrics(saved) if saved else {"ok": True}
 
 
 @app.get("/api/admin/trabajos-especiales/suppliers")
