@@ -25,17 +25,19 @@ function getSelectedProjectId() {
   return localStorage.getItem(SELECTED_PROJECT_KEY) || '';
 }
 
-function shouldInjectProjectId(method, path) {
+export function shouldInjectProjectId(method, path) {
   if ((method || 'GET').toUpperCase() !== 'GET') return false;
 
   const pathname = path.split('?')[0] || '';
   if (pathname === '/api/projects' || pathname.startsWith('/auth/')) return false;
+  if (pathname === '/api/budgets/summary-by-project') return false;
 
   return [
     '/transactions',
     '/api/transactions',
     '/api/movimientos',
     '/api/expenses/summary-by-supplier',
+    '/api/budgets',
     '/api/suppliers',
     '/stats/spend-by-category',
     '/categories',
@@ -306,6 +308,28 @@ export const api = {
   expensesSummaryBySupplier: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return backendReq(`/api/expenses/summary-by-supplier${qs ? `?${qs}` : ''}`);
+  },
+
+  budgets: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/budgets${qs ? `?${qs}` : ''}`);
+  },
+
+  createBudget: (payload) =>
+    backendReq('/api/budgets', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updateBudget: (id, payload) =>
+    backendReq(`/api/budgets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  budgetsSummaryByProject: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/budgets/summary-by-project${qs ? `?${qs}` : ''}`);
   },
 
   importSapPayments: (file, project, projectId, force = false) => {

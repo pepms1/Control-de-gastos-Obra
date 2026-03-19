@@ -6,6 +6,7 @@ import { SearchTransactionsV2 } from './SearchTransactionsV2.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 import { isAdmin as isAdminRole, isSuperAdmin, isViewer, normalizeRole } from './roles.js';
 import { validatePasswordResetFields } from './passwordResetValidation.js';
+import { BudgetsSection } from './BudgetsSection.jsx';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
 
@@ -325,17 +326,20 @@ function Nav({
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const normalizedRole = normalizeRole(role);
   const canSeeSettings = !isViewer(normalizedRole);
+  const canSeeBudgets = isSuperAdmin(normalizedRole) || isAdminRole(normalizedRole);
   const canSeeTransactionsAdmin = isSuperAdmin(normalizedRole);
   const showTransactionsAdminNav = false;
   const items = [
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar', true],
+    ['budgets', 'Presupuestos', canSeeBudgets],
     ['transactions', 'Editar movimientos', canSeeTransactionsAdmin && showTransactionsAdminNav],
     ['settings', 'Ajustes', canSeeSettings],
   ];
   const mobileBottomItems = [
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar', true],
+    ['budgets', 'Presupuestos', canSeeBudgets],
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
@@ -650,10 +654,13 @@ export default function App() {
     if (!isSuperAdminUser && tab === 'transactions') {
       setTab('search');
     }
+    if (!(isSuperAdminUser || isAdminUser) && tab === 'budgets') {
+      setTab('dashboard');
+    }
     if (isViewerUser && tab === 'settings') {
       setTab('dashboard');
     }
-  }, [isSuperAdminUser, isViewerUser, tab]);
+  }, [isSuperAdminUser, isAdminUser, isViewerUser, tab]);
 
   if (!session.token) return <Login onLogin={setSession} />;
 
@@ -701,6 +708,13 @@ export default function App() {
           <SearchTransactionsV2
             cats={cats}
             vendors={vendors}
+            selectedProjectId={selectedProjectId}
+          />
+        )}
+
+        {tab === 'budgets' && (isSuperAdminUser || isAdminUser) && (
+          <BudgetsSection
+            projects={personalizedProjects}
             selectedProjectId={selectedProjectId}
           />
         )}
