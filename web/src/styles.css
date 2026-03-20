@@ -229,3 +229,30 @@ body.theme-dark .dashboard-state-error{background:#3f1d2e; color:#fecdd3; border
 .dashboard-recent-list{display:grid; gap:8px;}
 .dashboard-recent-item{display:flex; justify-content:space-between; gap:10px; align-items:flex-start; border:1px solid var(--gray-100); border-radius:10px; padding:8px;}
 .app-content{padding-bottom:84px;}
+.container.app-content.app-content--budgets{max-width:1400px;}
+.budgets-card{width:100%;}
+.budgets-table-shell{width:100%;}
+.budgets-table{min-width:1120px;}
+.budgets-table th{white-space:nowrap;}
+.budgets-table .col-supplier{min-width:320px;}
+.budgets-table .col-count{min-width:120px;}
+.budgets-table .col-money{min-width:150px;}
+.budgets-table .col-progress{min-width:130px;}
+.budgets-table .col-status{min-width:130px;}
+.budgets-table .col-detail{min-width:88px;}
+.budgets-table .supplier-name{white-space:nowrap;}
+.budgets-table-nested{min-width:980px;}
+.budgets-expand-btn{
+  min-width:28px;
+  min-height:28px;
+  padding:4px 7px;
+  border-radius:8px;
+  font-size:14px;
+  line-height:1;
+}
+
+@media (max-width: 680px){
+  .container.app-content.app-content--budgets{max-width:100%;}
+  .budgets-table{min-width:980px;}
+  .budgets-table-nested{min-width:860px;}
+}

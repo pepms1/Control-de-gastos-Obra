@@ -680,7 +680,7 @@ export default function App() {
         onProjectChange={handleProjectChange}
       />
 
-      <div className="container app-content grid" style={{ gap: 14 }}>
+      <div className={`container app-content grid${tab === 'budgets' ? ' app-content--budgets' : ''}`} style={{ gap: 14 }}>
         {toast && <div className="card">{toast}</div>}
 
         {tab === 'dashboard' && (
