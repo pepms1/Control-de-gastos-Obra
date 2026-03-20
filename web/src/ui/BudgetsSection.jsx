@@ -63,6 +63,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     supplierCardCode: '',
     businessPartner: '',
     vendorId: '',
+    concept: '',
     budgetAmount: '',
     notes: '',
     budgetIncludesTax: true,
@@ -171,6 +172,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
       supplierCardCode: '',
       businessPartner: '',
       vendorId: '',
+      concept: '',
       budgetAmount: '',
       notes: '',
       budgetIncludesTax: true,
@@ -192,6 +194,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
       supplierCardCode: row.supplierCardCode || '',
       businessPartner: row.businessPartner || '',
       vendorId: row.vendorId || '',
+      concept: row.concept || 'General',
       budgetAmount: String(row.budgetAmount ?? ''),
       notes: row.notes || '',
       isActive: row.isActive !== false,
@@ -211,6 +214,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
         supplierCardCode: form.supplierCardCode,
         businessPartner: form.businessPartner,
         vendorId: form.vendorId,
+        concept: String(form.concept || '').trim(),
         budgetAmount: Number(String(form.budgetAmount).replace(/,/g, '').trim()),
         notes: form.notes,
         budgetIncludesTax: Boolean(form.budgetIncludesTax),
@@ -222,6 +226,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
           notes: payload.notes,
           isActive: Boolean(form.isActive),
           supplierNameSnapshot: payload.supplierName,
+          concept: payload.concept,
           budgetIncludesTax: payload.budgetIncludesTax,
         });
       } else {
@@ -320,6 +325,15 @@ export function BudgetsSection({ projects, selectedProjectId }) {
             </select>
           </div>
           <div>
+            <label>Concepto</label>
+            <input
+              value={form.concept}
+              onChange={(e) => setForm((prev) => ({ ...prev, concept: e.target.value }))}
+              placeholder="Ej. Carpintería"
+              required
+            />
+          </div>
+          <div>
             <label>Monto presupuesto</label>
             <input
               value={form.budgetAmount}
@@ -376,6 +390,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
               <tr>
                 <th>Obra</th>
                 <th>Proveedor</th>
+                <th>Concepto</th>
                 <th>Presupuesto</th>
                 <th>Tipo</th>
                 <th>Pagado</th>
@@ -394,6 +409,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                   <tr key={row.id}>
                     <td>{project?.displayName || project?.name || row.projectId}</td>
                     <td>{row.supplierNameSnapshot || row.supplierKey || '—'}</td>
+                    <td>{row.concept || 'General'}</td>
                     <td>{formatCurrency(row.budgetAmount)}</td>
                     <td>{row.budgetIncludesTax === false ? 'Sin IVA' : 'Con IVA'}</td>
                     <td>{formatCurrency(row.paidAmount)}</td>
@@ -407,7 +423,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
               })}
               {!rows.length && (
                 <tr>
-                  <td colSpan={10} className="small" style={{ textAlign: 'center' }}>No hay presupuestos para los filtros seleccionados.</td>
+                  <td colSpan={11} className="small" style={{ textAlign: 'center' }}>No hay presupuestos para los filtros seleccionados.</td>
                 </tr>
               )}
             </tbody>

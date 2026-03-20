@@ -150,7 +150,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
         self.assertEqual(metrics['remainingAmount'], 275.0)
 
     def test_duplicate_active_budget_fails(self):
-        existing = [{'_id': ObjectId(), 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'isActive': True}]
+        existing = [{'_id': ObjectId(), 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'concept': 'Carpintería', 'conceptKey': 'carpintería', 'isActive': True}]
         fake_db = self._fake_db(budgets=existing)
 
         with patch.object(main, 'db', fake_db), patch.object(main, 'resolve_project_id', return_value=self.project_id):
@@ -162,6 +162,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
                         'supplierName': 'ACERO SA',
                         'supplierCardCode': 'P001',
                         'businessPartner': 'ACERO SA',
+                        'concept': 'Carpintería',
                         'budgetAmount': 1000,
                     },
                     request=SimpleNamespace(headers={}, query_params={}),
@@ -169,9 +170,30 @@ class BudgetsPhase1Tests(unittest.TestCase):
                 )
         self.assertEqual(ctx.exception.status_code, 409)
 
+    def test_active_budget_allows_same_supplier_when_concept_changes(self):
+        existing = [{'_id': ObjectId(), 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'concept': 'Carpintería', 'conceptKey': 'carpintería', 'isActive': True}]
+        fake_db = self._fake_db(budgets=existing)
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'resolve_project_id', return_value=self.project_id):
+            created = main.create_budget(
+                {
+                    'projectId': self.project_id,
+                    'supplierKey': self.supplier_key,
+                    'supplierName': 'ACERO SA',
+                    'supplierCardCode': 'P001',
+                    'businessPartner': 'ACERO SA',
+                    'concept': 'Obra general',
+                    'budgetAmount': 1000,
+                },
+                request=SimpleNamespace(headers={}, query_params={}),
+                user={'role': 'SUPERADMIN', 'username': 'admin'},
+            )
+
+        self.assertEqual(created['concept'], 'Obra general')
+
     def test_deactivate_and_create_new_budget_works(self):
         budget_id = ObjectId()
-        existing = [{'_id': budget_id, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'isActive': True, 'budgetAmount': 100, 'notes': ''}]
+        existing = [{'_id': budget_id, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'concept': 'Carpintería', 'conceptKey': 'carpintería', 'isActive': True, 'budgetAmount': 100, 'notes': ''}]
         fake_db = self._fake_db(budgets=existing)
 
         with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
@@ -185,6 +207,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
                     'supplierName': 'ACERO SA',
                     'supplierCardCode': 'P001',
                     'businessPartner': 'ACERO SA',
+                    'concept': 'Carpintería',
                     'budgetAmount': 200,
                 },
                 request=SimpleNamespace(headers={}, query_params={}),
@@ -195,7 +218,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
 
     def test_delete_budget_removes_document(self):
         budget_id = ObjectId()
-        existing = [{'_id': budget_id, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'isActive': True, 'budgetAmount': 100, 'notes': ''}]
+        existing = [{'_id': budget_id, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'concept': 'Carpintería', 'conceptKey': 'carpintería', 'isActive': True, 'budgetAmount': 100, 'notes': ''}]
         fake_db = self._fake_db(budgets=existing)
 
         with patch.object(main, 'db', fake_db):
@@ -264,6 +287,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
             serialized = main.serialize_budget_with_metrics(legacy_doc)
 
         self.assertTrue(serialized['budgetIncludesTax'])
+        self.assertEqual(serialized['concept'], 'General')
         self.assertEqual(serialized['paidAmount'], 116.0)
 
     def test_create_budget_persists_budget_includes_tax(self):
@@ -277,6 +301,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
                     'supplierName': 'ACERO SA',
                     'supplierCardCode': 'P001',
                     'businessPartner': 'ACERO SA',
+                    'concept': 'Cancelería',
                     'budgetAmount': 1000,
                     'budgetIncludesTax': False,
                 },
@@ -285,6 +310,25 @@ class BudgetsPhase1Tests(unittest.TestCase):
             )
 
         self.assertFalse(created['budgetIncludesTax'])
+        self.assertEqual(created['concept'], 'Cancelería')
+
+    def test_create_budget_requires_concept(self):
+        fake_db = self._fake_db(budgets=[])
+        with patch.object(main, 'db', fake_db), patch.object(main, 'resolve_project_id', return_value=self.project_id):
+            with self.assertRaises(HTTPException) as ctx:
+                main.create_budget(
+                    {
+                        'projectId': self.project_id,
+                        'supplierKey': self.supplier_key,
+                        'supplierName': 'ACERO SA',
+                        'supplierCardCode': 'P001',
+                        'businessPartner': 'ACERO SA',
+                        'budgetAmount': 1000,
+                    },
+                    request=SimpleNamespace(headers={}, query_params={}),
+                    user={'role': 'SUPERADMIN', 'username': 'admin'},
+                )
+        self.assertEqual(ctx.exception.status_code, 400)
 
     def test_roles_access_for_budget_module(self):
         with self.assertRaises(HTTPException):

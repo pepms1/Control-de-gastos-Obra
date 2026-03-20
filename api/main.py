@@ -2724,12 +2724,32 @@ def ensure_indexes():
     )
     db.adminActions.create_index([("projectId", 1), ("requestedAt", -1)])
     db.adminActions.create_index([("action", 1), ("requestedAt", -1)])
-    db.budgets.create_index([("projectId", 1), ("supplierKey", 1), ("isActive", 1)], name="budgets_project_supplier_active_idx")
+    budgets_indexes = {idx.get("name"): idx for idx in db.budgets.list_indexes()}
+    if "budgets_project_supplier_active_unique" in budgets_indexes:
+        db.budgets.drop_index("budgets_project_supplier_active_unique")
+    db.budgets.update_many(
+        {"concept": {"$exists": False}},
+        {"$set": {"concept": BUDGET_LEGACY_DEFAULT_CONCEPT}},
+    )
+    db.budgets.update_many(
+        {"concept": {"$in": [None, ""]}},
+        {"$set": {"concept": BUDGET_LEGACY_DEFAULT_CONCEPT}},
+    )
+    for budget in db.budgets.find({}, {"_id": 1, "concept": 1, "conceptKey": 1}):
+        normalized_concept = resolve_budget_concept(budget.get("concept"), default=BUDGET_LEGACY_DEFAULT_CONCEPT)
+        normalized_concept_key = normalize_budget_concept_key(normalized_concept)
+        if budget.get("concept") != normalized_concept or budget.get("conceptKey") != normalized_concept_key:
+            db.budgets.update_one(
+                {"_id": budget["_id"]},
+                {"$set": {"concept": normalized_concept, "conceptKey": normalized_concept_key}},
+            )
+
+    db.budgets.create_index([("projectId", 1), ("supplierKey", 1), ("conceptKey", 1), ("isActive", 1)], name="budgets_project_supplier_concept_active_idx")
     db.budgets.create_index(
-        [("projectId", 1), ("supplierKey", 1)],
+        [("projectId", 1), ("supplierKey", 1), ("conceptKey", 1)],
         unique=True,
-        name="budgets_project_supplier_active_unique",
-        partialFilterExpression={"isActive": {"$ne": False}},
+        name="budgets_project_supplier_concept_active_unique",
+        partialFilterExpression={"isActive": {"$ne": False}, "conceptKey": {"$exists": True, "$type": "string", "$gt": ""}},
     )
     db.settings.create_index("key", unique=True)
     db.telegram_users.create_index("chat_id", unique=True)
@@ -8275,6 +8295,41 @@ def resolve_budget_includes_tax(value, *, default: bool = True) -> bool:
     return bool(value)
 
 
+BUDGET_LEGACY_DEFAULT_CONCEPT = "General"
+
+
+def resolve_budget_concept(value, *, default: str | None = None) -> str:
+    concept = normalize_non_empty_string(value)
+    if concept:
+        return concept
+    if default is not None:
+        return default
+    raise HTTPException(status_code=400, detail="concept is required")
+
+
+def normalize_budget_concept_key(value) -> str:
+    concept = normalize_non_empty_string(value) or BUDGET_LEGACY_DEFAULT_CONCEPT
+    return concept.lower()
+
+
+def build_active_budget_duplicate_query(project_id: str, supplier_key: str, concept_key: str) -> dict:
+    normalized_concept_key = normalize_budget_concept_key(concept_key)
+    query = {
+        "projectId": project_id,
+        "supplierKey": supplier_key,
+        "isActive": {"$ne": False},
+    }
+    if normalized_concept_key == normalize_budget_concept_key(BUDGET_LEGACY_DEFAULT_CONCEPT):
+        query["$or"] = [
+            {"conceptKey": normalized_concept_key},
+            {"concept": {"$in": [None, ""]}},
+            {"concept": {"$exists": False}},
+        ]
+    else:
+        query["conceptKey"] = normalized_concept_key
+    return query
+
+
 def compute_expense_totals_by_supplier_bucket(project_id: str, *, include_tax: bool = True) -> dict[str, float]:
     tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
     movements = list(
@@ -8338,6 +8393,8 @@ def serialize_budget_with_metrics(doc: dict) -> dict:
     budget_amount = float(payload.get("budgetAmount") or 0)
     project_id = str(payload.get("projectId") or "").strip()
     supplier_key = str(payload.get("supplierKey") or "").strip()
+    payload["concept"] = resolve_budget_concept(payload.get("concept"), default=BUDGET_LEGACY_DEFAULT_CONCEPT)
+    payload["conceptKey"] = normalize_budget_concept_key(payload.get("conceptKey") or payload.get("concept"))
     budget_includes_tax = resolve_budget_includes_tax(payload.get("budgetIncludesTax"), default=True)
     payload["budgetIncludesTax"] = budget_includes_tax
     payload.update(compute_budget_metrics(project_id, supplier_key, budget_amount, budget_includes_tax=budget_includes_tax))
@@ -8655,6 +8712,7 @@ def list_budgets(
             {"supplierNameSnapshot": {"$regex": escaped, "$options": "i"}},
             {"supplierCardCode": {"$regex": escaped, "$options": "i"}},
             {"businessPartner": {"$regex": escaped, "$options": "i"}},
+            {"concept": {"$regex": escaped, "$options": "i"}},
         ]
 
     rows = list(db.budgets.find(query).sort("updatedAt", -1))
@@ -8669,6 +8727,8 @@ def create_budget(payload: dict, request: FastAPIRequest, user: dict = Depends(r
 
     supplier_key = resolve_budget_supplier_key(payload)
     supplier_name_snapshot = normalize_non_empty_string((payload or {}).get("supplierName")) or supplier_key
+    concept = resolve_budget_concept((payload or {}).get("concept"))
+    concept_key = normalize_budget_concept_key(concept)
     budget_amount = validate_budget_amount((payload or {}).get("budgetAmount"))
     notes = normalize_non_empty_string((payload or {}).get("notes"))
     vendor_id = normalize_non_empty_string((payload or {}).get("vendorId"))
@@ -8680,18 +8740,17 @@ def create_budget(payload: dict, request: FastAPIRequest, user: dict = Depends(r
     budget_includes_tax = resolve_budget_includes_tax((payload or {}).get("budgetIncludesTax"), default=True)
 
     if is_active:
-        duplicate = db.budgets.find_one(
-            {"projectId": project_id, "supplierKey": supplier_key, "isActive": {"$ne": False}},
-            {"_id": 1},
-        )
+        duplicate = db.budgets.find_one(build_active_budget_duplicate_query(project_id, supplier_key, concept_key), {"_id": 1})
         if duplicate:
-            raise HTTPException(status_code=409, detail="An active budget already exists for this project and supplier")
+            raise HTTPException(status_code=409, detail="An active budget already exists for this project, supplier and concept")
 
     now_iso = datetime.now(timezone.utc).isoformat()
     doc = {
         "projectId": project_id,
         "supplierKey": supplier_key,
         "supplierNameSnapshot": supplier_name_snapshot,
+        "concept": concept,
+        "conceptKey": concept_key,
         "vendorId": vendor_id,
         "supplierCardCode": supplier_card_code,
         "businessPartner": business_partner,
@@ -8786,23 +8845,31 @@ def update_budget(budget_id: str, payload: dict, user: dict = Depends(require_ad
         updates["isActive"] = bool(payload.get("isActive"))
     if "budgetIncludesTax" in payload:
         updates["budgetIncludesTax"] = resolve_budget_includes_tax(payload.get("budgetIncludesTax"), default=True)
+    if "concept" in payload:
+        concept = resolve_budget_concept(payload.get("concept"))
+        updates["concept"] = concept
+        updates["conceptKey"] = normalize_budget_concept_key(concept)
 
     if not updates:
         return serialize_budget_with_metrics(existing)
 
     next_is_active = updates.get("isActive", existing.get("isActive", True))
     if next_is_active:
+        next_concept_key = normalize_budget_concept_key(
+            updates.get("conceptKey")
+            or existing.get("conceptKey")
+            or existing.get("concept")
+            or BUDGET_LEGACY_DEFAULT_CONCEPT
+        )
         duplicate = db.budgets.find_one(
             {
                 "_id": {"$ne": oid(budget_id)},
-                "projectId": project_id,
-                "supplierKey": str(existing.get("supplierKey") or ""),
-                "isActive": {"$ne": False},
+                **build_active_budget_duplicate_query(project_id, str(existing.get("supplierKey") or ""), next_concept_key),
             },
             {"_id": 1},
         )
         if duplicate:
-            raise HTTPException(status_code=409, detail="An active budget already exists for this project and supplier")
+            raise HTTPException(status_code=409, detail="An active budget already exists for this project, supplier and concept")
 
     updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
     db.budgets.update_one({"_id": oid(budget_id)}, {"$set": updates})
