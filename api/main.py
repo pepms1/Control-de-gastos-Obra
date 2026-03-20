@@ -8389,12 +8389,27 @@ def _build_transaction_ids_query(selected_transaction_ids: list[str]) -> dict | 
     return {"$or": query_variants}
 
 
+def _count_active_budgets_for_supplier(project_id: str, supplier_key: str) -> int:
+    if not project_id or not supplier_key:
+        return 0
+    rows = db.budgets.find(
+        {
+            "projectId": project_id,
+            "supplierKey": supplier_key,
+            "isActive": True,
+        },
+        {"_id": 1},
+    )
+    return len(list(rows))
+
+
 def compute_budget_metrics(
     project_id: str,
     supplier_key: str,
     budget_amount: float,
     budget_includes_tax: bool = True,
     budget_id: str | None = None,
+    budget_is_active: bool = True,
 ) -> dict:
     paid_amount = 0.0
     if budget_id:
@@ -8435,6 +8450,9 @@ def compute_budget_metrics(
                     amount_value = float(tx.get("amount") or 0)
                     paid_amount += amount_value if budget_includes_tax else compute_monto_sin_iva(tx)
                 paid_amount = round(paid_amount, 2)
+        elif budget_is_active and _count_active_budgets_for_supplier(project_id, supplier_key) == 1:
+            totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=budget_includes_tax)
+            paid_amount = round(float(totals_by_bucket.get(supplier_key) or 0), 2)
     else:
         totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=budget_includes_tax)
         paid_amount = round(float(totals_by_bucket.get(supplier_key) or 0), 2)
@@ -8470,7 +8488,16 @@ def serialize_budget_with_metrics(doc: dict) -> dict:
     payload["conceptKey"] = normalize_budget_concept_key(payload.get("conceptKey") or payload.get("concept"))
     budget_includes_tax = resolve_budget_includes_tax(payload.get("budgetIncludesTax"), default=True)
     payload["budgetIncludesTax"] = budget_includes_tax
-    payload.update(compute_budget_metrics(project_id, supplier_key, budget_amount, budget_includes_tax=budget_includes_tax, budget_id=str(payload.get("id") or "")))
+    payload.update(
+        compute_budget_metrics(
+            project_id,
+            supplier_key,
+            budget_amount,
+            budget_includes_tax=budget_includes_tax,
+            budget_id=str(payload.get("id") or ""),
+            budget_is_active=bool(payload.get("isActive", True)),
+        )
+    )
     return payload
 
 
@@ -9037,6 +9064,7 @@ def budgets_summary_by_project(
             budget_amount=float(row.get("budgetAmount") or 0),
             budget_includes_tax=resolve_budget_includes_tax(row.get("budgetIncludesTax"), default=True),
             budget_id=str(row.get("_id") or ""),
+            budget_is_active=bool(row.get("isActive", True)),
         )
         summary["budgetsCount"] += 1
         summary["totalBudgetAmount"] += float(row.get("budgetAmount") or 0)

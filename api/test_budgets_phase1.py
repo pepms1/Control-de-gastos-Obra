@@ -403,6 +403,32 @@ class BudgetsPhase1Tests(unittest.TestCase):
             metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 500, budget_includes_tax=True, budget_id=budget_id)
         self.assertEqual(metrics['paidAmount'], 0.0)
 
+    def test_budget_without_links_falls_back_to_supplier_total_when_single_active_budget(self):
+        tx = [{'_id': ObjectId(), 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 250, 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}}]
+        budget_id = ObjectId()
+        budgets = [{'_id': budget_id, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'isActive': True, 'budgetAmount': 500, 'concept': 'General', 'conceptKey': 'general'}]
+        fake_db = self._fake_db(transactions=tx, budgets=budgets)
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
+            main, 'build_transactions_query', return_value={}
+        ):
+            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 500, budget_includes_tax=True, budget_id=str(budget_id))
+        self.assertEqual(metrics['paidAmount'], 250.0)
+
+    def test_budget_without_links_keeps_paid_zero_when_multiple_active_budgets(self):
+        tx = [{'_id': ObjectId(), 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 250, 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}}]
+        budget_a = ObjectId()
+        budget_b = ObjectId()
+        budgets = [
+            {'_id': budget_a, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'isActive': True, 'budgetAmount': 500, 'concept': 'General', 'conceptKey': 'general'},
+            {'_id': budget_b, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'isActive': True, 'budgetAmount': 500, 'concept': 'Extra', 'conceptKey': 'extra'},
+        ]
+        fake_db = self._fake_db(transactions=tx, budgets=budgets)
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
+            main, 'build_transactions_query', return_value={}
+        ):
+            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 500, budget_includes_tax=True, budget_id=str(budget_a))
+        self.assertEqual(metrics['paidAmount'], 0.0)
+
     def test_budget_with_links_uses_only_assigned_transactions(self):
         tx_1 = ObjectId()
         tx_2 = ObjectId()
