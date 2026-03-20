@@ -61,6 +61,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   const [selectedTransactionIds, setSelectedTransactionIds] = useState(new Set());
   const [transactionSearch, setTransactionSearch] = useState('');
   const [loadingTransactions, setLoadingTransactions] = useState(false);
+  const [expandedSuppliers, setExpandedSuppliers] = useState(() => new Set());
   const [form, setForm] = useState({
     projectId: selectedProjectId || '',
     supplierKey: '',
@@ -78,6 +79,54 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     () => new Map((Array.isArray(projects) ? projects : []).map((project) => [String(project?._id || ''), project])),
     [projects],
   );
+
+  const groupedRows = useMemo(() => {
+    const groups = new Map();
+    rows.forEach((row) => {
+      const supplierKey = String(row?.supplierKey || '').trim();
+      const supplierName = String(row?.supplierNameSnapshot || row?.supplierKey || 'Sin proveedor');
+      const groupKey = supplierKey || `__name__:${supplierName}`;
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, {
+          key: groupKey,
+          supplierName,
+          items: [],
+          totals: {
+            budgetAmount: 0,
+            paidAmount: 0,
+            remainingAmount: 0,
+            progressPct: 0,
+          },
+        });
+      }
+      const group = groups.get(groupKey);
+      group.items.push(row);
+      group.totals.budgetAmount += Number(row?.budgetAmount) || 0;
+      group.totals.paidAmount += Number(row?.paidAmount) || 0;
+      group.totals.remainingAmount += Number(row?.remainingAmount) || 0;
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        totals: {
+          ...group.totals,
+          progressPct: group.totals.budgetAmount > 0
+            ? (group.totals.paidAmount / group.totals.budgetAmount) * 100
+            : 0,
+        },
+      }))
+      .sort((a, b) => a.supplierName.localeCompare(b.supplierName, 'es'));
+  }, [rows]);
+
+  function toggleSupplierExpand(groupKey) {
+    setExpandedSuppliers((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  }
 
   async function loadBudgets() {
     setLoading(true);
@@ -448,47 +497,103 @@ export function BudgetsSection({ projects, selectedProjectId }) {
           <table>
             <thead>
               <tr>
-                <th>Obra</th>
                 <th>Proveedor</th>
-                <th>Concepto</th>
-                <th>Presupuesto</th>
-                <th>Tipo</th>
-                <th>Pagado</th>
-                <th>Saldo</th>
-                <th>Avance %</th>
-                <th>Estatus</th>
-                <th>Nota</th>
-                <th>Acciones</th>
+                <th># presupuestos</th>
+                <th>Presupuesto total</th>
+                <th>Pagado total</th>
+                <th>Saldo total</th>
+                <th>Avance global</th>
+                <th>Estado global</th>
+                <th>Detalle</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => {
-                const project = projectsById.get(String(row.projectId || ''));
-                const status = classifyBudgetStatus(row.progressPct);
+              {groupedRows.map((group) => {
+                const status = classifyBudgetStatus(group.totals.progressPct);
+                const isExpanded = expandedSuppliers.has(group.key);
                 return (
-                  <tr key={row.id}>
-                    <td>{project?.displayName || project?.name || row.projectId}</td>
-                    <td>{row.supplierNameSnapshot || row.supplierKey || '—'}</td>
-                    <td>{row.concept || 'General'}</td>
-                    <td>{formatCurrency(row.budgetAmount)}</td>
-                    <td>{row.budgetIncludesTax === false ? 'Sin IVA' : 'Con IVA'}</td>
-                    <td>{formatCurrency(row.paidAmount)}</td>
-                    <td style={{ color: Number(row.remainingAmount) < 0 ? '#b91c1c' : undefined }}>{formatCurrency(row.remainingAmount)}</td>
-                    <td><span className={`budget-badge budget-progress ${status.className}`}>{formatPct(row.progressPct)}</span></td>
-                    <td><span className={`budget-badge budget-status ${status.className}`}>{status.label}</span></td>
-                    <td>{row.notes || '—'}</td>
-                    <td>
-                      <div className="row" style={{ gap: 6 }}>
-                        <button type="button" className="secondary" onClick={() => startEdit(row)}>Editar</button>
-                        <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar</button>
-                      </div>
-                    </td>
-                  </tr>
+                  <React.Fragment key={group.key}>
+                    <tr style={{ background: '#f8fafc' }}>
+                      <td>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => toggleSupplierExpand(group.key)}
+                          style={{ marginRight: 8, minWidth: 34 }}
+                          aria-expanded={isExpanded}
+                          aria-label={isExpanded ? 'Colapsar proveedor' : 'Expandir proveedor'}
+                        >
+                          {isExpanded ? '−' : '+'}
+                        </button>
+                        <strong>{group.supplierName || '—'}</strong>
+                      </td>
+                      <td>{group.items.length}</td>
+                      <td>{formatCurrency(group.totals.budgetAmount)}</td>
+                      <td>{formatCurrency(group.totals.paidAmount)}</td>
+                      <td style={{ color: group.totals.remainingAmount < 0 ? '#b91c1c' : undefined }}>{formatCurrency(group.totals.remainingAmount)}</td>
+                      <td><span className={`budget-badge budget-progress ${status.className}`}>{formatPct(group.totals.progressPct)}</span></td>
+                      <td><span className={`budget-badge budget-status ${status.className}`}>{status.label}</span></td>
+                      <td>
+                        <button type="button" className="secondary" onClick={() => toggleSupplierExpand(group.key)}>
+                          {isExpanded ? 'Ocultar' : 'Ver'}
+                        </button>
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={8} style={{ padding: 0 }}>
+                          <div style={{ overflowX: 'auto' }}>
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Obra</th>
+                                  <th>Concepto</th>
+                                  <th>Tipo</th>
+                                  <th>Presupuesto</th>
+                                  <th>Pagado</th>
+                                  <th>Saldo</th>
+                                  <th>Avance</th>
+                                  <th>Estado</th>
+                                  <th>Nota</th>
+                                  <th>Acciones</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {group.items.map((row) => {
+                                  const project = projectsById.get(String(row.projectId || ''));
+                                  const childStatus = classifyBudgetStatus(row.progressPct);
+                                  return (
+                                    <tr key={row.id}>
+                                      <td>{project?.displayName || project?.name || row.projectId}</td>
+                                      <td>{row.concept || 'General'}</td>
+                                      <td>{row.budgetIncludesTax === false ? 'Sin IVA' : 'Con IVA'}</td>
+                                      <td>{formatCurrency(row.budgetAmount)}</td>
+                                      <td>{formatCurrency(row.paidAmount)}</td>
+                                      <td style={{ color: Number(row.remainingAmount) < 0 ? '#b91c1c' : undefined }}>{formatCurrency(row.remainingAmount)}</td>
+                                      <td><span className={`budget-badge budget-progress ${childStatus.className}`}>{formatPct(row.progressPct)}</span></td>
+                                      <td><span className={`budget-badge budget-status ${childStatus.className}`}>{childStatus.label}</span></td>
+                                      <td>{row.notes || '—'}</td>
+                                      <td>
+                                        <div className="row" style={{ gap: 6 }}>
+                                          <button type="button" className="secondary" onClick={() => startEdit(row)}>Editar</button>
+                                          <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar</button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
                 );
               })}
-              {!rows.length && (
+              {!groupedRows.length && (
                 <tr>
-                  <td colSpan={11} className="small" style={{ textAlign: 'center' }}>No hay presupuestos para los filtros seleccionados.</td>
+                  <td colSpan={8} className="small" style={{ textAlign: 'center' }}>No hay presupuestos para los filtros seleccionados.</td>
                 </tr>
               )}
             </tbody>
