@@ -474,8 +474,8 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                     <td>{row.budgetIncludesTax === false ? 'Sin IVA' : 'Con IVA'}</td>
                     <td>{formatCurrency(row.paidAmount)}</td>
                     <td style={{ color: Number(row.remainingAmount) < 0 ? '#b91c1c' : undefined }}>{formatCurrency(row.remainingAmount)}</td>
-                    <td>{formatPct(row.progressPct)}</td>
-                    <td><span className={`budget-status ${status.className}`}>{status.label}</span></td>
+                    <td><span className={`budget-badge budget-progress ${status.className}`}>{formatPct(row.progressPct)}</span></td>
+                    <td><span className={`budget-badge budget-status ${status.className}`}>{status.label}</span></td>
                     <td>{row.notes || '—'}</td>
                     <td>
                       <div className="row" style={{ gap: 6 }}>
