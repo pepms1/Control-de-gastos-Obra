@@ -56,6 +56,11 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   const [saving, setSaving] = useState(false);
   const [editingBudget, setEditingBudget] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [assigningBudget, setAssigningBudget] = useState(null);
+  const [candidateTransactions, setCandidateTransactions] = useState([]);
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState(new Set());
+  const [transactionSearch, setTransactionSearch] = useState('');
+  const [loadingTransactions, setLoadingTransactions] = useState(false);
   const [form, setForm] = useState({
     projectId: selectedProjectId || '',
     supplierKey: '',
@@ -177,6 +182,61 @@ export function BudgetsSection({ projects, selectedProjectId }) {
       notes: '',
       budgetIncludesTax: true,
     });
+  }
+
+  function formatDate(value) {
+    if (!value) return '—';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return String(value);
+    return parsed.toLocaleDateString('es-MX');
+  }
+
+  async function loadBudgetTransactions(budgetId, search = '') {
+    if (!budgetId) return;
+    setLoadingTransactions(true);
+    setError('');
+    try {
+      const payload = await api.budgetTransactions(budgetId, search ? { search } : {});
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      setCandidateTransactions(items);
+      setSelectedTransactionIds(new Set(items.filter((item) => item.isAssignedToCurrentBudget).map((item) => item.id)));
+    } catch (e) {
+      setCandidateTransactions([]);
+      setSelectedTransactionIds(new Set());
+      setError(e.message || 'No se pudieron cargar las transacciones del presupuesto');
+    } finally {
+      setLoadingTransactions(false);
+    }
+  }
+
+  function startAssignPayments(row) {
+    setAssigningBudget(row);
+    setTransactionSearch('');
+    loadBudgetTransactions(row.id);
+  }
+
+  function closeAssignPayments() {
+    setAssigningBudget(null);
+    setCandidateTransactions([]);
+    setSelectedTransactionIds(new Set());
+    setTransactionSearch('');
+  }
+
+  async function saveAssignedPayments() {
+    if (!assigningBudget?.id) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api.saveBudgetTransactionLinks(assigningBudget.id, {
+        selectedTransactionIds: Array.from(selectedTransactionIds),
+      });
+      await loadBudgets();
+      await loadBudgetTransactions(assigningBudget.id, transactionSearch);
+    } catch (e) {
+      setError(e.message || 'No se pudieron guardar las asignaciones');
+    } finally {
+      setSaving(false);
+    }
   }
 
   function startCreate() {
@@ -417,7 +477,12 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                     <td>{formatPct(row.progressPct)}</td>
                     <td><span className={`budget-status ${status.className}`}>{status.label}</span></td>
                     <td>{row.notes || '—'}</td>
-                    <td><button type="button" className="secondary" onClick={() => startEdit(row)}>Editar</button></td>
+                    <td>
+                      <div className="row" style={{ gap: 6 }}>
+                        <button type="button" className="secondary" onClick={() => startEdit(row)}>Editar</button>
+                        <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar pagos</button>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
@@ -428,6 +493,85 @@ export function BudgetsSection({ projects, selectedProjectId }) {
               )}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {assigningBudget && (
+        <div className="grid" style={{ gap: 8, border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc' }}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong>Asignar pagos · {assigningBudget.supplierNameSnapshot || assigningBudget.supplierKey}</strong>
+            <button type="button" className="secondary" onClick={closeAssignPayments}>Cerrar</button>
+          </div>
+          <div className="small">
+            Concepto: <strong>{assigningBudget.concept || 'General'}</strong> · Solo se usarán pagos asignados manualmente para este presupuesto.
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <input
+              value={transactionSearch}
+              onChange={(e) => setTransactionSearch(e.target.value)}
+              placeholder="Buscar por descripción / concepto"
+              style={{ minWidth: 260 }}
+            />
+            <button type="button" className="secondary" onClick={() => loadBudgetTransactions(assigningBudget.id, transactionSearch)} disabled={loadingTransactions}>
+              Filtrar
+            </button>
+            <button type="button" onClick={saveAssignedPayments} disabled={saving || loadingTransactions}>
+              {saving ? 'Guardando...' : 'Guardar asignación'}
+            </button>
+          </div>
+          {loadingTransactions ? (
+            <div className="small">Cargando transacciones...</div>
+          ) : (
+            <div style={{ overflowX: 'auto', maxHeight: 320 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Fecha</th>
+                    <th>Descripción</th>
+                    <th>Sin IVA</th>
+                    <th>Con IVA</th>
+                    <th>Tipo</th>
+                    <th>Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {candidateTransactions.map((tx) => {
+                    const disabled = tx.isAssignedToOtherBudget;
+                    const checked = selectedTransactionIds.has(tx.id);
+                    return (
+                      <tr key={tx.id}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={disabled}
+                            onChange={(e) => {
+                              const next = new Set(selectedTransactionIds);
+                              if (e.target.checked) next.add(tx.id);
+                              else next.delete(tx.id);
+                              setSelectedTransactionIds(next);
+                            }}
+                          />
+                        </td>
+                        <td>{formatDate(tx.date)}</td>
+                        <td>{tx.description || '—'}</td>
+                        <td>{formatCurrency(tx.amountWithoutTax)}</td>
+                        <td>{formatCurrency(tx.amountWithTax)}</td>
+                        <td>{tx.type || 'EXPENSE'}</td>
+                        <td>{tx.isAssignedToOtherBudget ? 'Asignado a otro presupuesto' : (tx.isAssignedToCurrentBudget ? 'Asignado a este presupuesto' : 'Libre')}</td>
+                      </tr>
+                    );
+                  })}
+                  {!candidateTransactions.length && (
+                    <tr>
+                      <td colSpan={7} className="small" style={{ textAlign: 'center' }}>No hay transacciones disponibles.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>

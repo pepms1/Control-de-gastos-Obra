@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -39,12 +40,21 @@ def _matches(document, query):
                 if field_value not in value['$in']:
                     return False
                 continue
+            if '$nin' in value:
+                if field_value in value['$nin']:
+                    return False
+                continue
             if '$ne' in value:
                 if field_value == value['$ne']:
                     return False
                 continue
             if '$exists' in value:
                 if bool(field_exists) != bool(value['$exists']):
+                    return False
+                continue
+            if '$regex' in value:
+                flags = re.IGNORECASE if 'i' in str(value.get('$options') or '') else 0
+                if not re.search(str(value['$regex']), str(field_value or ''), flags):
                     return False
                 continue
 
@@ -61,6 +71,11 @@ class _InsertResult:
 class _DeleteResult:
     def __init__(self, deleted_count):
         self.deleted_count = deleted_count
+
+
+class _UpdateResult:
+    def __init__(self, modified_count):
+        self.modified_count = modified_count
 
 
 class FakeCollection:
@@ -112,12 +127,35 @@ class FakeCollection:
             self.docs[idx] = next_doc
             return
 
+    def update_many(self, query, update):
+        modified = 0
+        for idx, doc in enumerate(self.docs):
+            if not _matches(doc, query):
+                continue
+            next_doc = dict(doc)
+            if '$set' in update:
+                next_doc.update(update['$set'])
+            self.docs[idx] = next_doc
+            modified += 1
+        return _UpdateResult(modified)
+
     def delete_one(self, query):
         for idx, doc in enumerate(self.docs):
             if _matches(doc, query):
                 del self.docs[idx]
                 return _DeleteResult(1)
         return _DeleteResult(0)
+
+    def delete_many(self, query):
+        kept = []
+        deleted = 0
+        for doc in self.docs:
+            if _matches(doc, query):
+                deleted += 1
+            else:
+                kept.append(doc)
+        self.docs = kept
+        return _DeleteResult(deleted)
 
 
 class BudgetsPhase1Tests(unittest.TestCase):
@@ -129,6 +167,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
         return SimpleNamespace(
             transactions=FakeCollection(transactions or []),
             budgets=FakeCollection(budgets or []),
+            budgetPaymentLinks=FakeCollection([]),
             projects=FakeCollection(projects or [{'_id': ObjectId(self.project_id)}]),
         )
 
@@ -288,7 +327,7 @@ class BudgetsPhase1Tests(unittest.TestCase):
 
         self.assertTrue(serialized['budgetIncludesTax'])
         self.assertEqual(serialized['concept'], 'General')
-        self.assertEqual(serialized['paidAmount'], 116.0)
+        self.assertEqual(serialized['paidAmount'], 0.0)
 
     def test_create_budget_persists_budget_includes_tax(self):
         fake_db = self._fake_db(budgets=[])
@@ -353,6 +392,91 @@ class BudgetsPhase1Tests(unittest.TestCase):
                     'supplierName': 'ACERO SA',
                 }
             )
+
+    def test_budget_without_links_uses_paid_zero_in_budget_context(self):
+        tx = [{'_id': ObjectId(), 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 250, 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}}]
+        fake_db = self._fake_db(transactions=tx)
+        budget_id = str(ObjectId())
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
+            main, 'build_transactions_query', return_value={}
+        ):
+            metrics = main.compute_budget_metrics(self.project_id, self.supplier_key, 500, budget_includes_tax=True, budget_id=budget_id)
+        self.assertEqual(metrics['paidAmount'], 0.0)
+
+    def test_budget_with_links_uses_only_assigned_transactions(self):
+        tx_1 = ObjectId()
+        tx_2 = ObjectId()
+        tx = [
+            {'_id': tx_1, 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 116, 'tax': {'subtotal': 100, 'iva': 16, 'totalFactura': 116}, 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}},
+            {'_id': tx_2, 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 58, 'tax': {'subtotal': 50, 'iva': 8, 'totalFactura': 58}, 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}},
+        ]
+        fake_db = self._fake_db(transactions=tx)
+        budget_id = str(ObjectId())
+        fake_db.budgetPaymentLinks.insert_one({'budgetId': budget_id, 'transactionId': str(tx_2), 'projectId': self.project_id, 'supplierKey': self.supplier_key})
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
+            main, 'build_transactions_query', return_value={}
+        ):
+            metrics_with_tax = main.compute_budget_metrics(self.project_id, self.supplier_key, 500, budget_includes_tax=True, budget_id=budget_id)
+            metrics_without_tax = main.compute_budget_metrics(self.project_id, self.supplier_key, 500, budget_includes_tax=False, budget_id=budget_id)
+        self.assertEqual(metrics_with_tax['paidAmount'], 58.0)
+        self.assertEqual(metrics_without_tax['paidAmount'], 50.0)
+
+    def test_replace_budget_links_replaces_selection(self):
+        budget_object_id = ObjectId()
+        budget_id = str(budget_object_id)
+        tx_1 = ObjectId()
+        tx_2 = ObjectId()
+        budgets = [{'_id': budget_object_id, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'budgetAmount': 100, 'concept': 'General', 'conceptKey': 'general'}]
+        tx = [
+            {'_id': tx_1, 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 10, 'description': 'A', 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}},
+            {'_id': tx_2, 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 20, 'description': 'B', 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}},
+        ]
+        fake_db = self._fake_db(transactions=tx, budgets=budgets)
+        fake_db.budgetPaymentLinks.insert_one({'budgetId': budget_id, 'transactionId': str(tx_1), 'projectId': self.project_id, 'supplierKey': self.supplier_key})
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(main, 'build_transactions_query', return_value={}):
+            result = main.replace_budget_transaction_links(
+                budget_id,
+                {'selectedTransactionIds': [str(tx_2)]},
+                user={'role': 'ADMIN', 'username': 'admin'},
+            )
+        self.assertTrue(result['ok'])
+        links = fake_db.budgetPaymentLinks.find({'budgetId': budget_id})
+        self.assertEqual({row['transactionId'] for row in links}, {str(tx_2)})
+
+    def test_replace_budget_links_conflict_when_transaction_assigned_elsewhere(self):
+        budget_a = ObjectId()
+        budget_b = ObjectId()
+        tx_1 = ObjectId()
+        budgets = [
+            {'_id': budget_a, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'budgetAmount': 100, 'concept': 'A', 'conceptKey': 'a'},
+            {'_id': budget_b, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'budgetAmount': 100, 'concept': 'B', 'conceptKey': 'b'},
+        ]
+        tx = [{'_id': tx_1, 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 10, 'description': 'A', 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}}]
+        fake_db = self._fake_db(transactions=tx, budgets=budgets)
+        fake_db.budgetPaymentLinks.insert_one({'budgetId': str(budget_b), 'transactionId': str(tx_1), 'projectId': self.project_id, 'supplierKey': self.supplier_key})
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(main, 'build_transactions_query', return_value={}):
+            with self.assertRaises(HTTPException) as ctx:
+                main.replace_budget_transaction_links(str(budget_a), {'selectedTransactionIds': [str(tx_1)]}, user={'role': 'ADMIN', 'username': 'admin'})
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_budget_transactions_support_search_filter(self):
+        budget_object_id = ObjectId()
+        tx_a = ObjectId()
+        tx_b = ObjectId()
+        budgets = [{'_id': budget_object_id, 'projectId': self.project_id, 'supplierKey': self.supplier_key, 'budgetAmount': 100, 'concept': 'General', 'conceptKey': 'general'}]
+        tx = [
+            {'_id': tx_a, 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 10, 'description': 'Pago concreto', 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}},
+            {'_id': tx_b, 'projectId': self.project_id, 'type': 'EXPENSE', 'amount': 20, 'description': 'Otro movimiento', 'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'}},
+        ]
+        fake_db = self._fake_db(transactions=tx, budgets=budgets)
+
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(main, 'build_transactions_query', return_value={}):
+            payload = main.list_budget_candidate_transactions(str(budget_object_id), search='concreto', user={'role': 'ADMIN', 'username': 'admin'})
+        self.assertEqual(len(payload['items']), 1)
+        self.assertEqual(payload['items'][0]['id'], str(tx_a))
 
 
 if __name__ == '__main__':

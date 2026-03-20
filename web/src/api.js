@@ -332,6 +332,17 @@ export const api = {
       method: 'DELETE',
     }),
 
+  budgetTransactions: (id, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/budgets/${id}/transactions${qs ? `?${qs}` : ''}`);
+  },
+
+  saveBudgetTransactionLinks: (id, payload) =>
+    backendReq(`/api/budgets/${id}/transaction-links`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+
   budgetsSummaryByProject: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return backendReq(`/api/budgets/summary-by-project${qs ? `?${qs}` : ''}`);
