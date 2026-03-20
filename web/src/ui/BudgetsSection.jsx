@@ -370,7 +370,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   }
 
   return (
-    <div className="card" style={{ display: 'grid', gap: 12 }}>
+    <div className="card budgets-card" style={{ display: 'grid', gap: 12 }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
         <h2 style={{ margin: 0 }}>Presupuestos</h2>
         <button type="button" onClick={startCreate}>Nuevo presupuesto</button>
@@ -493,18 +493,18 @@ export function BudgetsSection({ projects, selectedProjectId }) {
       {loading ? (
         <div className="small">Cargando presupuestos...</div>
       ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table>
+        <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
+          <table className="budgets-table">
             <thead>
               <tr>
-                <th>Proveedor</th>
-                <th># presupuestos</th>
-                <th>Presupuesto total</th>
-                <th>Pagado total</th>
-                <th>Saldo total</th>
-                <th>Avance global</th>
-                <th>Estado global</th>
-                <th>Detalle</th>
+                <th className="col-supplier">Proveedor</th>
+                <th className="col-count"># presupuestos</th>
+                <th className="col-money">Presupuesto total</th>
+                <th className="col-money">Pagado total</th>
+                <th className="col-money">Saldo total</th>
+                <th className="col-progress">Avance global</th>
+                <th className="col-status">Estado global</th>
+                <th className="col-detail">Detalle</th>
               </tr>
             </thead>
             <tbody>
@@ -517,15 +517,15 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                       <td>
                         <button
                           type="button"
-                          className="secondary"
+                          className="secondary budgets-expand-btn"
                           onClick={() => toggleSupplierExpand(group.key)}
-                          style={{ marginRight: 8, minWidth: 34 }}
+                          style={{ marginRight: 8 }}
                           aria-expanded={isExpanded}
                           aria-label={isExpanded ? 'Colapsar proveedor' : 'Expandir proveedor'}
                         >
                           {isExpanded ? '−' : '+'}
                         </button>
-                        <strong>{group.supplierName || '—'}</strong>
+                        <strong className="supplier-name">{group.supplierName || '—'}</strong>
                       </td>
                       <td>{group.items.length}</td>
                       <td>{formatCurrency(group.totals.budgetAmount)}</td>
@@ -542,8 +542,8 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                     {isExpanded && (
                       <tr>
                         <td colSpan={8} style={{ padding: 0 }}>
-                          <div style={{ overflowX: 'auto' }}>
-                            <table>
+                          <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
+                            <table className="budgets-table budgets-table-nested">
                               <thead>
                                 <tr>
                                   <th>Obra</th>
