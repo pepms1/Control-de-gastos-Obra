@@ -2751,6 +2751,9 @@ def ensure_indexes():
         name="budgets_project_supplier_concept_active_unique",
         partialFilterExpression={"isActive": {"$ne": False}, "conceptKey": {"$exists": True, "$type": "string", "$gt": ""}},
     )
+    db.budgetPaymentLinks.create_index([("budgetId", 1), ("transactionId", 1)], unique=True, name="budget_payment_links_budget_tx_unique")
+    db.budgetPaymentLinks.create_index([("transactionId", 1)], unique=True, name="budget_payment_links_transaction_unique")
+    db.budgetPaymentLinks.create_index([("projectId", 1), ("supplierKey", 1), ("budgetId", 1)], name="budget_payment_links_project_supplier_budget_idx")
     db.settings.create_index("key", unique=True)
     db.telegram_users.create_index("chat_id", unique=True)
     db.telegram_users.create_index([("status", 1), ("updated_at", -1)])
@@ -8363,9 +8366,79 @@ def compute_expense_totals_by_supplier_bucket(project_id: str, *, include_tax: b
     return totals
 
 
-def compute_budget_metrics(project_id: str, supplier_key: str, budget_amount: float, budget_includes_tax: bool = True) -> dict:
-    totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=budget_includes_tax)
-    paid_amount = round(float(totals_by_bucket.get(supplier_key) or 0), 2)
+def _normalize_transaction_id_values(values) -> list[str]:
+    output: list[str] = []
+    for value in values or []:
+        normalized = normalize_non_empty_string(value)
+        if normalized:
+            output.append(normalized)
+    return list(dict.fromkeys(output))
+
+
+def _build_transaction_ids_query(selected_transaction_ids: list[str]) -> dict | None:
+    object_ids = [ObjectId(value) for value in selected_transaction_ids if ObjectId.is_valid(value)]
+    query_variants: list[dict] = []
+    if object_ids:
+        query_variants.append({"_id": {"$in": object_ids}})
+    if selected_transaction_ids:
+        query_variants.append({"_id": {"$in": selected_transaction_ids}})
+    if not query_variants:
+        return None
+    if len(query_variants) == 1:
+        return query_variants[0]
+    return {"$or": query_variants}
+
+
+def compute_budget_metrics(
+    project_id: str,
+    supplier_key: str,
+    budget_amount: float,
+    budget_includes_tax: bool = True,
+    budget_id: str | None = None,
+) -> dict:
+    paid_amount = 0.0
+    if budget_id:
+        link_rows = list(db.budgetPaymentLinks.find({"budgetId": budget_id}, {"transactionId": 1}))
+        linked_transaction_ids = _normalize_transaction_id_values([row.get("transactionId") for row in link_rows])
+        if linked_transaction_ids:
+            tx_query = _build_transaction_ids_query(linked_transaction_ids)
+            if tx_query:
+                movements = list(
+                    db.transactions.find(
+                        {
+                            "$and": [
+                                with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id),
+                                tx_query,
+                            ]
+                        },
+                        {
+                            "_id": 1,
+                            "amount": 1,
+                            "tax": 1,
+                            "supplierId": 1,
+                            "supplier_id": 1,
+                            "vendor_id": 1,
+                            "supplierName": 1,
+                            "supplierCardCode": 1,
+                            "businessPartner": 1,
+                            "proveedorNombre": 1,
+                            "beneficiario": 1,
+                            "sap.cardCode": 1,
+                            "sap.businessPartner": 1,
+                        },
+                    )
+                )
+                trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
+                for tx in movements:
+                    if _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key) != supplier_key:
+                        continue
+                    amount_value = float(tx.get("amount") or 0)
+                    paid_amount += amount_value if budget_includes_tax else compute_monto_sin_iva(tx)
+                paid_amount = round(paid_amount, 2)
+    else:
+        totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=budget_includes_tax)
+        paid_amount = round(float(totals_by_bucket.get(supplier_key) or 0), 2)
+
     remaining_amount = round(float(budget_amount or 0) - paid_amount, 2)
     if budget_amount > 0:
         progress_pct = round((paid_amount / budget_amount) * 100, 2)
@@ -8397,7 +8470,7 @@ def serialize_budget_with_metrics(doc: dict) -> dict:
     payload["conceptKey"] = normalize_budget_concept_key(payload.get("conceptKey") or payload.get("concept"))
     budget_includes_tax = resolve_budget_includes_tax(payload.get("budgetIncludesTax"), default=True)
     payload["budgetIncludesTax"] = budget_includes_tax
-    payload.update(compute_budget_metrics(project_id, supplier_key, budget_amount, budget_includes_tax=budget_includes_tax))
+    payload.update(compute_budget_metrics(project_id, supplier_key, budget_amount, budget_includes_tax=budget_includes_tax, budget_id=str(payload.get("id") or "")))
     return payload
 
 
@@ -8768,6 +8841,159 @@ def create_budget(payload: dict, request: FastAPIRequest, user: dict = Depends(r
     return serialize_budget_with_metrics(saved) if saved else {"ok": True, "id": str(inserted_id)}
 
 
+@app.get("/api/budgets/{budget_id}/transactions")
+def list_budget_candidate_transactions(
+    budget_id: str,
+    search: str | None = None,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    budget = db.budgets.find_one({"_id": oid(budget_id)})
+    if not budget:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    project_id = str(budget.get("projectId") or "")
+    supplier_key = str(budget.get("supplierKey") or "")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
+    movements = list(
+        db.transactions.find(
+            tx_query,
+            {
+                "_id": 1,
+                "date": 1,
+                "description": 1,
+                "concept": 1,
+                "amount": 1,
+                "tax": 1,
+                "type": 1,
+                "supplierId": 1,
+                "supplier_id": 1,
+                "vendor_id": 1,
+                "supplierName": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "proveedorNombre": 1,
+                "beneficiario": 1,
+                "sap.cardCode": 1,
+                "sap.businessPartner": 1,
+            },
+        )
+    )
+    trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
+    normalized_search = normalize_non_empty_string(search)
+
+    links = list(db.budgetPaymentLinks.find({"projectId": project_id, "supplierKey": supplier_key}, {"budgetId": 1, "transactionId": 1}))
+    assignment_by_tx = {str(row.get("transactionId") or ""): str(row.get("budgetId") or "") for row in links}
+
+    rows = []
+    for tx in movements:
+        if _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key) != supplier_key:
+            continue
+        description = str(tx.get("description") or tx.get("concept") or "").strip()
+        if normalized_search and normalized_search.lower() not in description.lower():
+            continue
+        transaction_id = str(tx.get("_id") or "")
+        assigned_budget_id = assignment_by_tx.get(transaction_id)
+        rows.append(
+            {
+                "id": transaction_id,
+                "date": tx.get("date"),
+                "description": description,
+                "type": tx.get("type") or "EXPENSE",
+                "amountWithTax": round(float(tx.get("amount") or 0), 2),
+                "amountWithoutTax": round(float(compute_monto_sin_iva(tx)), 2),
+                "isAssignedToCurrentBudget": assigned_budget_id == budget_id,
+                "isAssignedToOtherBudget": bool(assigned_budget_id and assigned_budget_id != budget_id),
+                "assignedBudgetId": assigned_budget_id or None,
+            }
+        )
+
+    rows.sort(key=lambda item: str(item.get("date") or ""), reverse=True)
+    return {"items": rows, "budgetId": budget_id}
+
+
+@app.put("/api/budgets/{budget_id}/transaction-links")
+def replace_budget_transaction_links(
+    budget_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    budget = db.budgets.find_one({"_id": oid(budget_id)})
+    if not budget:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    project_id = str(budget.get("projectId") or "")
+    supplier_key = str(budget.get("supplierKey") or "")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    selected_transaction_ids = _normalize_transaction_id_values((payload or {}).get("selectedTransactionIds") or [])
+    valid_rows = list_budget_candidate_transactions(budget_id, search=None, user=user).get("items") or []
+    valid_ids = {str(row.get("id") or "") for row in valid_rows}
+    invalid_ids = [tx_id for tx_id in selected_transaction_ids if tx_id not in valid_ids]
+    if invalid_ids:
+        raise HTTPException(status_code=400, detail={"message": "Some transactions are not valid for this budget", "transactionIds": invalid_ids})
+
+    conflict_rows = list(
+        db.budgetPaymentLinks.find(
+            {"transactionId": {"$in": selected_transaction_ids}, "budgetId": {"$ne": budget_id}},
+            {"transactionId": 1, "budgetId": 1},
+        )
+    )
+    if conflict_rows:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Some transactions are already assigned to another budget",
+                "conflicts": [
+                    {"transactionId": str(row.get("transactionId") or ""), "budgetId": str(row.get("budgetId") or "")}
+                    for row in conflict_rows
+                ],
+            },
+        )
+
+    current_rows = list(db.budgetPaymentLinks.find({"budgetId": budget_id}, {"transactionId": 1}))
+    current_ids = {str(row.get("transactionId") or "") for row in current_rows}
+    selected_set = set(selected_transaction_ids)
+
+    to_delete = list(current_ids - selected_set)
+    if to_delete:
+        db.budgetPaymentLinks.delete_many({"budgetId": budget_id, "transactionId": {"$in": to_delete}})
+
+    to_add = [tx_id for tx_id in selected_transaction_ids if tx_id not in current_ids]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    created_by = normalize_non_empty_string(user.get("username")) or "system"
+    for tx_id in to_add:
+        try:
+            db.budgetPaymentLinks.insert_one(
+                {
+                    "budgetId": budget_id,
+                    "transactionId": tx_id,
+                    "projectId": project_id,
+                    "supplierKey": supplier_key,
+                    "createdBy": created_by,
+                    "createdAt": now_iso,
+                    "updatedAt": now_iso,
+                }
+            )
+        except DuplicateKeyError:
+            raise HTTPException(status_code=409, detail="Some transactions were assigned concurrently to another budget")
+
+    db.budgetPaymentLinks.update_many(
+        {"budgetId": budget_id, "transactionId": {"$in": selected_transaction_ids}},
+        {"$set": {"updatedAt": now_iso}},
+    )
+
+    return {
+        "ok": True,
+        "budgetId": budget_id,
+        "selectedTransactionIds": selected_transaction_ids,
+        "assignedCount": len(selected_transaction_ids),
+    }
+
+
 @app.get("/api/budgets/summary-by-project")
 def budgets_summary_by_project(
     projectId: str | None = None,
@@ -8810,6 +9036,7 @@ def budgets_summary_by_project(
             supplier_key=str(row.get("supplierKey") or ""),
             budget_amount=float(row.get("budgetAmount") or 0),
             budget_includes_tax=resolve_budget_includes_tax(row.get("budgetIncludesTax"), default=True),
+            budget_id=str(row.get("_id") or ""),
         )
         summary["budgetsCount"] += 1
         summary["totalBudgetAmount"] += float(row.get("budgetAmount") or 0)
@@ -8887,6 +9114,7 @@ def delete_budget(budget_id: str, user: dict = Depends(require_admin_or_superadm
     if not can_access_project(user, project_id):
         raise HTTPException(status_code=403, detail="Project access denied")
 
+    db.budgetPaymentLinks.delete_many({"budgetId": budget_id})
     db.budgets.delete_one({"_id": oid(budget_id)})
     return {"ok": True}
 
