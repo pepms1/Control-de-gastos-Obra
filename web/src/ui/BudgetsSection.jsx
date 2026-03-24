@@ -513,7 +513,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                 const isExpanded = expandedSuppliers.has(group.key);
                 return (
                   <React.Fragment key={group.key}>
-                    <tr style={{ background: '#f8fafc' }}>
+                    <tr className="budgets-group-row">
                       <td>
                         <button
                           type="button"
@@ -602,7 +602,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
       )}
 
       {assigningBudget && (
-        <div className="grid" style={{ gap: 8, border: '1px solid #cbd5e1', borderRadius: 10, padding: 12, background: '#f8fafc' }}>
+        <div className="grid budgets-assignment-panel" style={{ gap: 8, borderRadius: 10, padding: 12 }}>
           <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
             <strong>Asignar · {assigningBudget.supplierNameSnapshot || assigningBudget.supplierKey}</strong>
             <button type="button" className="secondary" onClick={closeAssignPayments}>Cerrar</button>

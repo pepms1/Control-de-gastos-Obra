@@ -256,3 +256,15 @@ body.theme-dark .dashboard-state-error{background:#3f1d2e; color:#fecdd3; border
   .budgets-table{min-width:980px;}
   .budgets-table-nested{min-width:860px;}
 }
+
+.budgets-group-row{background:#f8fafc;}
+.budgets-assignment-panel{
+  border:1px solid #cbd5e1;
+  background:#f8fafc;
+}
+
+body.theme-dark .budgets-group-row{background:#0b1220;}
+body.theme-dark .budgets-assignment-panel{
+  border-color:#334155;
+  background:#0b1220;
+}
