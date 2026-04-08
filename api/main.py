@@ -5265,8 +5265,9 @@ def list_admin_latest_imports(
     limit: int = 300,
     _: dict = Depends(require_admin),
 ):
-    normalized_days = 14 if int(days) == 14 else 7
+    normalized_days = max(int(days), 1)
     normalized_limit = min(max(int(limit), 1), 1000)
+    logger.info("latest-imports params parsed days=%s limit=%s", normalized_days, normalized_limit)
     now_utc = datetime.now(timezone.utc)
     from_utc = now_utc - timedelta(days=normalized_days)
     from_iso = from_utc.isoformat()
