@@ -107,6 +107,35 @@ class LatestImportsEndpointTests(unittest.TestCase):
         self.assertEqual(row['concept'], 'Pago de proveedor')
         self.assertEqual(row['monto'], 1250.5)
 
+    def test_latest_imports_honors_days_and_limit_params(self):
+        class CapturingCursor(self._FakeCursor):
+            def __init__(self, docs):
+                super().__init__(docs)
+                self.limit_value = None
+
+            def limit(self, value, **_kwargs):
+                self.limit_value = value
+                return self
+
+        class CapturingTransactions(self._FakeTransactions):
+            def __init__(self, docs):
+                super().__init__(docs)
+                self.last_cursor = None
+
+            def find(self, query, projection):
+                self.last_cursor = CapturingCursor(self.docs)
+                return self.last_cursor
+
+        tx = CapturingTransactions([])
+        fake_db = type('FakeDb', (), {'transactions': tx})()
+
+        with patch.object(main, 'db', fake_db):
+            result = main.list_admin_latest_imports(days=365, limit=25, _={'role': 'SUPERADMIN'})
+
+        self.assertEqual(result['days'], 365)
+        self.assertEqual(result['limit'], 25)
+        self.assertEqual(tx.last_cursor.limit_value, 25)
+
     def test_latest_imports_filters_and_sorts_by_document_date(self):
         class CapturingCursor(self._FakeCursor):
             def __init__(self, docs):
