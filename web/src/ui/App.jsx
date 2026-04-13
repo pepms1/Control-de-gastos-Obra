@@ -346,13 +346,10 @@ function Nav({
   const normalizedRole = normalizeRole(role);
   const canSeeSettings = !isViewer(normalizedRole);
   const canSeeBudgets = isSuperAdmin(normalizedRole) || isAdminRole(normalizedRole);
-  const canSeeTransactionsAdmin = isSuperAdmin(normalizedRole) || isAdminRole(normalizedRole);
-  const showTransactionsAdminNav = true;
   const items = [
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar', true],
     ['budgets', 'Presupuestos', canSeeBudgets],
-    ['transactions', 'Editar movimientos', canSeeTransactionsAdmin && showTransactionsAdminNav],
     ['settings', 'Ajustes', canSeeSettings],
   ];
   const mobileBottomItems = [
@@ -544,7 +541,6 @@ export default function App() {
   const isAdminUser = isAdminRole(userRole);
   const canUseAdminPreferences = isAdminUser || isSuperAdminUser;
   const isAdmin = isSuperAdminUser;
-  const canSeeTransactionsAdmin = isSuperAdminUser || isAdminUser;
   const isDarkMode = themePreference === 'dark';
 
   useEffect(() => {
@@ -671,8 +667,8 @@ export default function App() {
   }, [session.token, personalizedProjects, selectedProjectId]);
 
   useEffect(() => {
-    if (!canSeeTransactionsAdmin && tab === 'transactions') {
-      setTab('search');
+    if (tab === 'transactions') {
+      setTab('settings');
     }
     if (!(isSuperAdminUser || isAdminUser) && tab === 'budgets') {
       setTab('dashboard');
@@ -680,7 +676,7 @@ export default function App() {
     if (isViewerUser && tab === 'settings') {
       setTab('dashboard');
     }
-  }, [canSeeTransactionsAdmin, isSuperAdminUser, isAdminUser, isViewerUser, tab]);
+  }, [isSuperAdminUser, isAdminUser, isViewerUser, tab]);
 
   if (!session.token) return <Login onLogin={setSession} />;
 
@@ -712,19 +708,6 @@ export default function App() {
             refreshKey={dataVersion}
           />
         )}
-
-        {tab === 'transactions' && canSeeTransactionsAdmin && (
-          <Transactions
-            isAdmin={isAdmin}
-            canManageCancellation={canSeeTransactionsAdmin}
-            cats={cats}
-            vendors={vendors}
-            onCatalogChanged={refreshCatalog}
-            onTransactionsChanged={invalidateData}
-            selectedProjectId={selectedProjectId}
-          />
-        )}
-
         {tab === 'search' && (
           <SearchTransactionsV2
             cats={cats}
@@ -758,6 +741,7 @@ export default function App() {
               await refreshCatalog();
               setToast('Catálogo actualizado');
             }}
+            onTransactionsChanged={invalidateData}
           />
         )}
       </div>
@@ -765,8 +749,14 @@ export default function App() {
   );
 }
 
-function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects, session, canUseAdminPreferences, selectedProjectId, onCatalogChanged, onProjectCreated, onSessionUpdated, onSelectedProjectSaved }) {
+function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects, session, canUseAdminPreferences, selectedProjectId, onCatalogChanged, onTransactionsChanged, onProjectCreated, onSessionUpdated, onSelectedProjectSaved }) {
   const [section, setSection] = useState('catalog');
+
+  useEffect(() => {
+    if (!isSuperAdmin && section === 'edit-transactions') {
+      setSection('catalog');
+    }
+  }, [isSuperAdmin, section]);
 
   return (
     <div className="grid" style={{ gap: 14 }}>
@@ -851,6 +841,16 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
             Últimos imports
           </button>
         )}
+
+        {isSuperAdmin && (
+          <button
+            type="button"
+            className={section === 'edit-transactions' ? '' : 'secondary'}
+            onClick={() => setSection('edit-transactions')}
+          >
+            Editar movimientos
+          </button>
+        )}
         <button
           type="button"
           className={section === 'raw-data' ? '' : 'secondary'}
@@ -904,6 +904,22 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
       {section === 'projects-visibility' && isSuperAdmin && <AdminProjectVisibilitySection onProjectUpdated={onProjectCreated} />}
 
       {section === 'users-access' && isSuperAdmin && <AdminUsersAccessSection />}
+
+
+      {section === 'edit-transactions' &&
+        (isSuperAdmin ? (
+          <Transactions
+            isAdmin={isAdmin}
+            canManageCancellation={isSuperAdmin}
+            cats={cats}
+            vendors={vendors}
+            onCatalogChanged={onCatalogChanged}
+            onTransactionsChanged={onTransactionsChanged}
+            selectedProjectId={selectedProjectId}
+          />
+        ) : (
+          <div className="card">Solo los superadministradores pueden editar movimientos.</div>
+        ))}
 
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los superadministradores pueden ver raw data.</div>)}
