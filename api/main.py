@@ -10833,14 +10833,21 @@ def restore_transaction_admin(transaction_id: str, payload: dict, user: dict = D
     return serialize_transaction_with_supplier(db.transactions.find_one({"_id": tx["_id"]}))
 
 
-def reclassify_transactions_financial_kind(project_id: str | None = None, source_sbo: str | None = None) -> dict:
+def reclassify_transactions_financial_kind(
+    project_id: str | None = None,
+    source_sbo: str | None = None,
+    source_db: str | None = None,
+) -> dict:
     query: dict = {}
     normalized_project_id = normalize_non_empty_string(project_id)
     normalized_source_sbo = normalize_non_empty_string(source_sbo)
+    normalized_source_db = normalize_non_empty_string(source_db)
     if normalized_project_id:
         query["projectId"] = normalized_project_id
     if normalized_source_sbo:
         query["sourceSbo"] = normalized_source_sbo
+    if normalized_source_db:
+        query["sourceDb"] = normalized_source_db
 
     projection = {
         "_id": 1,
@@ -10888,7 +10895,13 @@ def reclassify_transactions_financial_kind(project_id: str | None = None, source
         result = db.transactions.bulk_write(ops, ordered=False)
         modified += (result.modified_count or 0) + (result.upserted_count or 0)
 
-    return {"matched": matched, "modified": modified, "projectId": normalized_project_id, "sourceSbo": normalized_source_sbo}
+    return {
+        "matched": matched,
+        "modified": modified,
+        "projectId": normalized_project_id,
+        "sourceSbo": normalized_source_sbo,
+        "sourceDb": normalized_source_db,
+    }
 
 
 @app.post("/api/admin/reclassify/financial-kind")
@@ -10896,9 +10909,14 @@ def admin_reclassify_financial_kind(
     project: str | None = None,
     projectId: str | None = None,
     sourceSbo: str | None = None,
+    sourceDb: str | None = None,
     _: dict = Depends(require_admin_or_superadmin),
 ):
-    result = reclassify_transactions_financial_kind(project_id=projectId or project, source_sbo=sourceSbo)
+    result = reclassify_transactions_financial_kind(
+        project_id=projectId or project,
+        source_sbo=sourceSbo,
+        source_db=sourceDb,
+    )
     return {"ok": True, **result}
 
 

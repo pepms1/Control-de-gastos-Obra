@@ -84,6 +84,9 @@ class _FakeCollection:
 
     def find(self, query, projection=None):
         for doc in self.docs.values():
+            if query:
+                if any(doc.get(key) != value for key, value in query.items()):
+                    continue
             yield deepcopy(doc)
 
     def bulk_write(self, ops, ordered=False):
@@ -174,6 +177,40 @@ class FinancialKindImportAndReclassifyTests(unittest.TestCase):
         updated = fake_transactions.docs["k1"]
         self.assertEqual(updated.get("financialKind"), "contribution_withdrawal")
         self.assertTrue(updated.get("excludeFromExpenseViews"))
+
+    def test_reclassify_can_filter_by_source_db(self):
+        tx_id = ObjectId()
+        untouched_id = ObjectId()
+        fake_transactions = _FakeCollection()
+        fake_transactions.docs["k1"] = {
+            "_id": tx_id,
+            "dedupeKey": "k1",
+            "projectId": "p1",
+            "sourceDb": "IVA",
+            "description": "RETIRO DE APORTACION",
+            "financialKind": "expense",
+            "excludeFromExpenseViews": False,
+            "classificationSource": "default",
+        }
+        fake_transactions.docs["k2"] = {
+            "_id": untouched_id,
+            "dedupeKey": "k2",
+            "projectId": "p1",
+            "sourceDb": "EFECTIVO",
+            "description": "RETIRO DE APORTACION",
+            "financialKind": "expense",
+            "excludeFromExpenseViews": False,
+            "classificationSource": "default",
+        }
+        fake_db = SimpleNamespace(transactions=fake_transactions)
+
+        with patch.object(main, "db", fake_db):
+            result = main.reclassify_transactions_financial_kind(project_id="p1", source_db="IVA")
+
+        self.assertEqual(result["matched"], 1)
+        self.assertEqual(result["modified"], 1)
+        self.assertEqual(fake_transactions.docs["k1"].get("financialKind"), "contribution_withdrawal")
+        self.assertEqual(fake_transactions.docs["k2"].get("financialKind"), "expense")
 
 
 if __name__ == "__main__":
