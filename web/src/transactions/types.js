@@ -41,6 +41,21 @@
  */
 
 /**
+ * @typedef {Object} NormalizedCancellationMeta
+ * @property {'manual'|'sap'|string|null} source
+ * @property {string|null} reason
+ * @property {string|null} notes
+ * @property {string|null} cancelledAt
+ * @property {string|null} cancelledByUserId
+ * @property {string|null} cancelledByName
+ * @property {string|null} restoredAt
+ * @property {string|null} restoredByUserId
+ * @property {string|null} restoredByName
+ * @property {boolean|null} upstreamCancelledFlag
+ * @property {string|null} lastEvaluatedAt
+ */
+
+/**
  * @typedef {Object} NormalizedTransactionViewModel
  * @property {string} id
  * @property {string|null} projectId
@@ -59,6 +74,8 @@
  * @property {string|null} sourceDb
  * @property {string|null} sourceSbo
  * @property {boolean} isSapSbo
+ * @property {boolean} isCancelled
+ * @property {NormalizedCancellationMeta|null} cancellation
  * @property {string} sapBadgeLabel
  * @property {NormalizedSapMeta|null} sapMeta
  */

@@ -133,4 +133,23 @@ assert.equal(sboProjectResolutionFields.sapMeta.isProjectResolutionSuspicious, t
 assert.deepEqual(sboProjectResolutionFields.sapMeta.projectResolutionSuspicionReasons, ['document_project_differs_from_payment_project']);
 assert.equal(sboProjectResolutionFields.projectDisplayName, 'CALDERON DE LA BARCA');
 
+const cancelledTx = normalizeTransaction({
+  id: 'cancel-1',
+  isCancelled: true,
+  cancellation: {
+    source: 'manual',
+    reason: 'Cancelado en SAP',
+    cancelledAt: '2026-01-01T12:00:00Z',
+    cancelledByName: 'Admin User',
+  },
+});
+
+assert.equal(cancelledTx.isCancelled, true);
+assert.equal(cancelledTx.cancellation.source, 'manual');
+assert.equal(cancelledTx.cancellation.reason, 'Cancelado en SAP');
+
+const legacyTx = normalizeTransaction({ id: 'legacy-1' });
+assert.equal(legacyTx.isCancelled, false);
+assert.equal(legacyTx.cancellation, null);
+
 console.log('ok');
