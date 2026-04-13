@@ -68,6 +68,7 @@ SAP_LATEST_ADMIN_RATE_LIMIT_SECONDS = 60
 sap_latest_admin_locks: dict[str, bool] = {}
 sap_latest_admin_last_request_at: dict[str, datetime] = {}
 sap_latest_admin_guard = threading.Lock()
+TRANSACTION_CANCELLATION_OVERRIDES_COLLECTION = "transaction_cancellation_overrides"
 
 
 # ---------- helpers ----------
@@ -2789,6 +2790,11 @@ def ensure_indexes():
     db.transactions.create_index([("dedupeKey", 1)], name="transactions_dedupe_key_idx")
     db.transactions.create_index([("projectId", 1), ("date", -1)])
     db.transactions.create_index([("projectId", 1)], name="transactions_project_id_idx")
+    db.transactions.create_index([("isCancelled", 1)], name="transactions_is_cancelled_idx")
+    db.transactions.update_many(
+        {"isCancelled": {"$exists": False}},
+        {"$set": {"isCancelled": False}},
+    )
     db.transactions.create_index(
         [("projectId", 1), ("sourceDb", 1), ("category_id", 1)],
         name="transactions_project_source_db_category_idx",
@@ -2804,6 +2810,19 @@ def ensure_indexes():
         name="vendors_project_supplier_card_code_unique",
         partialFilterExpression={"projectId": {"$exists": True}, "supplierCardCode": {"$exists": True, "$type": "string"}},
     )
+    db[TRANSACTION_CANCELLATION_OVERRIDES_COLLECTION].create_index(
+        [("dedupeKey", 1)],
+        unique=True,
+        name="tx_cancellation_overrides_dedupe_key_unique",
+        partialFilterExpression={"dedupeKey": {"$exists": True, "$type": "string", "$gt": ""}},
+    )
+    db[TRANSACTION_CANCELLATION_OVERRIDES_COLLECTION].create_index(
+        [("identityKey", 1)],
+        unique=True,
+        name="tx_cancellation_overrides_identity_key_unique",
+        partialFilterExpression={"identityKey": {"$exists": True, "$type": "string", "$gt": ""}},
+    )
+    db[TRANSACTION_CANCELLATION_OVERRIDES_COLLECTION].create_index([("isActive", 1), ("projectId", 1)], name="tx_cancellation_overrides_active_project_idx")
     text_index_name = "transactions_text_search"
     current_indexes = {idx.get("name"): idx for idx in db.transactions.list_indexes()}
     existing_text_index = current_indexes.get(text_index_name)
@@ -3663,6 +3682,228 @@ def normalize_non_empty_string(value) -> str | None:
     return normalized
 
 
+def parse_include_cancelled_flag(value) -> bool:
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "yes", "y", "on"}
+
+
+def build_sap_transaction_identity_key(
+    *,
+    source_db: str | None,
+    source_sbo: str | None,
+    type_value: str | None,
+    payment_doc_entry: str | None,
+    payment_num: str | None,
+    invoice_doc_entry: str | None,
+    invoice_num: str | None,
+    external_doc_num: str | None,
+) -> str:
+    parts = [
+        normalize_non_empty_string(source_db) or "",
+        normalize_non_empty_string(source_sbo) or "",
+        normalize_non_empty_string(type_value) or "",
+        normalize_non_empty_string(payment_doc_entry) or "",
+        normalize_non_empty_string(payment_num) or "",
+        normalize_non_empty_string(invoice_doc_entry) or "",
+        normalize_non_empty_string(invoice_num) or "",
+        normalize_non_empty_string(external_doc_num) or "",
+    ]
+    return "|".join(parts).lower()
+
+
+def extract_sap_identity_fields_from_transaction(tx: dict) -> dict:
+    sap = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+    return {
+        "source": normalize_non_empty_string(tx.get("source")),
+        "sourceDb": normalize_non_empty_string(tx.get("sourceDb")),
+        "sourceSbo": normalize_non_empty_string(tx.get("sourceSbo") or sap.get("sourceSbo")),
+        "type": normalize_non_empty_string(tx.get("type")),
+        "sapPaymentDocEntry": normalize_non_empty_string(sap.get("paymentDocEntry")),
+        "sapPaymentNum": normalize_non_empty_string(sap.get("paymentNum")),
+        "sapInvoiceDocEntry": normalize_non_empty_string(sap.get("invoiceDocEntry")),
+        "sapInvoiceNum": normalize_non_empty_string(sap.get("invoiceNum")),
+        "sapExternalDocNum": normalize_non_empty_string(sap.get("externalDocNum")),
+    }
+
+
+def find_active_transaction_cancellation_override(*, dedupe_key: str | None, identity_key: str | None):
+    clauses = []
+    normalized_dedupe_key = normalize_non_empty_string(dedupe_key)
+    normalized_identity_key = normalize_non_empty_string(identity_key)
+    if normalized_dedupe_key:
+        clauses.append({"dedupeKey": normalized_dedupe_key})
+    if normalized_identity_key:
+        clauses.append({"identityKey": normalized_identity_key})
+    if not clauses:
+        return None
+    return db[TRANSACTION_CANCELLATION_OVERRIDES_COLLECTION].find_one({"isActive": True, "$or": clauses})
+
+
+def upsert_transaction_cancellation_override(tx: dict, user: dict, reason: str | None = None, notes: str | None = None):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    identity = extract_sap_identity_fields_from_transaction(tx)
+    dedupe_key = normalize_non_empty_string(tx.get("dedupeKey"))
+    identity_key = build_sap_transaction_identity_key(
+        source_db=identity.get("sourceDb"),
+        source_sbo=identity.get("sourceSbo"),
+        type_value=identity.get("type"),
+        payment_doc_entry=identity.get("sapPaymentDocEntry"),
+        payment_num=identity.get("sapPaymentNum"),
+        invoice_doc_entry=identity.get("sapInvoiceDocEntry"),
+        invoice_num=identity.get("sapInvoiceNum"),
+        external_doc_num=identity.get("sapExternalDocNum"),
+    )
+    query_or = []
+    if dedupe_key:
+        query_or.append({"dedupeKey": dedupe_key})
+    if identity_key:
+        query_or.append({"identityKey": identity_key})
+    if not query_or:
+        raise HTTPException(status_code=400, detail="Transaction cannot be overridden without dedupe/identity fields")
+
+    actor_id = normalize_non_empty_string(user.get("id") or user.get("username"))
+    actor_name = normalize_non_empty_string(user.get("displayName") or user.get("name") or user.get("username"))
+    set_doc = {
+        "transactionId": str(tx.get("_id")),
+        "projectId": normalize_non_empty_string(tx.get("projectId")),
+        "dedupeKey": dedupe_key,
+        "identityKey": identity_key,
+        "source": identity.get("source"),
+        "sourceDb": identity.get("sourceDb"),
+        "sourceSbo": identity.get("sourceSbo"),
+        "type": identity.get("type"),
+        "sapPaymentDocEntry": identity.get("sapPaymentDocEntry"),
+        "sapPaymentNum": identity.get("sapPaymentNum"),
+        "sapInvoiceDocEntry": identity.get("sapInvoiceDocEntry"),
+        "sapInvoiceNum": identity.get("sapInvoiceNum"),
+        "sapExternalDocNum": identity.get("sapExternalDocNum"),
+        "mode": "cancelled",
+        "isActive": True,
+        "reason": normalize_non_empty_string(reason),
+        "notes": normalize_non_empty_string(notes),
+        "restoredAt": None,
+        "restoredByUserId": None,
+        "restoredByName": None,
+        "updatedAt": now_iso,
+    }
+    db[TRANSACTION_CANCELLATION_OVERRIDES_COLLECTION].update_one(
+        {"$or": query_or},
+        {
+            "$set": set_doc,
+            "$setOnInsert": {
+                "createdAt": now_iso,
+                "createdByUserId": actor_id,
+                "createdByName": actor_name,
+            },
+        },
+        upsert=True,
+    )
+
+
+def deactivate_transaction_cancellation_override(tx: dict, user: dict, notes: str | None = None):
+    identity = extract_sap_identity_fields_from_transaction(tx)
+    dedupe_key = normalize_non_empty_string(tx.get("dedupeKey"))
+    identity_key = build_sap_transaction_identity_key(
+        source_db=identity.get("sourceDb"),
+        source_sbo=identity.get("sourceSbo"),
+        type_value=identity.get("type"),
+        payment_doc_entry=identity.get("sapPaymentDocEntry"),
+        payment_num=identity.get("sapPaymentNum"),
+        invoice_doc_entry=identity.get("sapInvoiceDocEntry"),
+        invoice_num=identity.get("sapInvoiceNum"),
+        external_doc_num=identity.get("sapExternalDocNum"),
+    )
+    query_or = []
+    if dedupe_key:
+        query_or.append({"dedupeKey": dedupe_key})
+    if identity_key:
+        query_or.append({"identityKey": identity_key})
+    if not query_or:
+        return
+    now_iso = datetime.now(timezone.utc).isoformat()
+    actor_id = normalize_non_empty_string(user.get("id") or user.get("username"))
+    actor_name = normalize_non_empty_string(user.get("displayName") or user.get("name") or user.get("username"))
+    set_doc = {
+        "isActive": False,
+        "restoredAt": now_iso,
+        "restoredByUserId": actor_id,
+        "restoredByName": actor_name,
+        "updatedAt": now_iso,
+    }
+    normalized_notes = normalize_non_empty_string(notes)
+    if normalized_notes:
+        set_doc["notes"] = normalized_notes
+    db[TRANSACTION_CANCELLATION_OVERRIDES_COLLECTION].update_many(
+        {"isActive": True, "$or": query_or},
+        {"$set": set_doc},
+    )
+
+
+def parse_source_cancelled_flag(value) -> bool | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "t", "yes", "y", "si", "sí", "cancelled", "canceled"}:
+        return True
+    if normalized in {"0", "false", "f", "no", "n", "active", "open"}:
+        return False
+    return None
+
+
+def map_source_cancelled_flag_from_sbo_row(row: dict) -> bool | None:
+    # Future SQL/CSV compatibility: map a native upstream cancel column here.
+    candidate_keys = ["is_cancelled", "cancelled_flag", "source_status", "isCancelled", "cancelledFlag", "sourceStatus"]
+    for key in candidate_keys:
+        parsed = parse_source_cancelled_flag(row.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def resolve_cancellation_state(
+    *,
+    existing_transaction: dict | None,
+    override: dict | None,
+    source_cancelled_flag: bool | None,
+    evaluated_at: str,
+) -> dict:
+    existing_tx = existing_transaction if isinstance(existing_transaction, dict) else {}
+    existing_cancellation = existing_tx.get("cancellation") if isinstance(existing_tx.get("cancellation"), dict) else {}
+
+    if bool((override or {}).get("isActive")):
+        return {
+            "isCancelled": True,
+            "cancellation": {
+                **existing_cancellation,
+                "source": "manual",
+                "reason": normalize_non_empty_string((override or {}).get("reason")) or normalize_non_empty_string(existing_cancellation.get("reason")),
+                "notes": normalize_non_empty_string((override or {}).get("notes")) or normalize_non_empty_string(existing_cancellation.get("notes")),
+                "cancelledAt": normalize_non_empty_string(existing_cancellation.get("cancelledAt")) or normalize_non_empty_string((override or {}).get("createdAt")) or evaluated_at,
+                "cancelledByUserId": normalize_non_empty_string(existing_cancellation.get("cancelledByUserId")) or normalize_non_empty_string((override or {}).get("createdByUserId")),
+                "cancelledByName": normalize_non_empty_string(existing_cancellation.get("cancelledByName")) or normalize_non_empty_string((override or {}).get("createdByName")),
+                "upstreamCancelledFlag": source_cancelled_flag,
+                "lastEvaluatedAt": evaluated_at,
+            },
+        }
+
+    if source_cancelled_flag is True:
+        return {
+            "isCancelled": True,
+            "cancellation": {**existing_cancellation, "source": "sap", "upstreamCancelledFlag": True, "lastEvaluatedAt": evaluated_at},
+        }
+
+    if source_cancelled_flag is False:
+        return {
+            "isCancelled": False,
+            "cancellation": {**existing_cancellation, "source": None, "upstreamCancelledFlag": False, "lastEvaluatedAt": evaluated_at},
+        }
+
+    return {
+        "isCancelled": bool(existing_tx.get("isCancelled")),
+        "cancellation": {**existing_cancellation, "upstreamCancelledFlag": source_cancelled_flag, "lastEvaluatedAt": evaluated_at},
+    }
+
+
 def build_effective_category_fields(manual_code, manual_name, hint_code, hint_name) -> dict:
     normalized_manual_code = normalize_non_empty_string(manual_code)
     normalized_manual_name = normalize_non_empty_string(manual_name)
@@ -3779,8 +4020,11 @@ def build_transactions_query(
     source: str | None = None,
     source_db: str | None = None,
     search_query: str | None = None,
+    include_cancelled: bool = False,
 ):
     q = {}
+    if not include_cancelled:
+        q["isCancelled"] = {"$ne": True}
     if type_value:
         normalized_type = str(type_value).strip().upper()
         if normalized_type == "EXPENSE":
@@ -6803,6 +7047,17 @@ def import_sap_movements_by_sbo(
             existing_tx = db.transactions.find_one(
                 {"dedupeKey": dedupe_key},
                 {
+                    "isCancelled": 1,
+                    "cancellation": 1,
+                    "dedupeKey": 1,
+                    "sourceDb": 1,
+                    "sourceSbo": 1,
+                    "type": 1,
+                    "sap.paymentDocEntry": 1,
+                    "sap.paymentNum": 1,
+                    "sap.invoiceDocEntry": 1,
+                    "sap.invoiceNum": 1,
+                    "sap.externalDocNum": 1,
                     "sap.manualResolvedProjectId": 1,
                     "sap.manualResolvedProjectCode": 1,
                     "sap.manualResolvedProjectName": 1,
@@ -6823,6 +7078,30 @@ def import_sap_movements_by_sbo(
                 manual_value = normalize_non_empty_string(existing_sap.get(manual_key))
                 if manual_value:
                     tx_doc["sap"][manual_key] = manual_value
+
+            source_cancelled_flag = map_source_cancelled_flag_from_sbo_row(row)
+            identity_key = build_sap_transaction_identity_key(
+                source_db=source_db,
+                source_sbo=source_sbo,
+                type_value=tx_type,
+                payment_doc_entry=tx_doc["sap"].get("paymentDocEntry"),
+                payment_num=tx_doc["sap"].get("paymentNum"),
+                invoice_doc_entry=tx_doc["sap"].get("invoiceDocEntry"),
+                invoice_num=tx_doc["sap"].get("invoiceNum"),
+                external_doc_num=tx_doc["sap"].get("externalDocNum"),
+            )
+            active_override = find_active_transaction_cancellation_override(
+                dedupe_key=dedupe_key,
+                identity_key=identity_key,
+            )
+            cancellation_state = resolve_cancellation_state(
+                existing_transaction=existing_tx,
+                override=active_override,
+                source_cancelled_flag=source_cancelled_flag,
+                evaluated_at=now,
+            )
+            tx_doc["isCancelled"] = cancellation_state.get("isCancelled", False)
+            tx_doc["cancellation"] = cancellation_state.get("cancellation", {})
 
             update_doc = {"$set": tx_doc, "$setOnInsert": {"created_at": now}}
             update_result = db.transactions.update_one({"dedupeKey": dedupe_key}, update_doc, upsert=True)
@@ -8594,6 +8873,7 @@ def summary_expenses_by_supplier(
     source: str | None = None,
     sourceDb: str | None = None,
     include_iva: bool = False,
+    includeCancelled: str | None = None,
     user: dict = Depends(require_authenticated),
 ):
     project_id = resolve_project_id(projectId or project)
@@ -8612,6 +8892,7 @@ def summary_expenses_by_supplier(
         date_to=effective_date_to,
         source=source,
         source_db=sourceDb,
+        include_cancelled=parse_include_cancelled_flag(includeCancelled) and user.get("role") in {"SUPERADMIN", "ADMIN"},
     )
     movements_query = with_legacy_project_filter(movements_query, project_id)
     movements = list(
@@ -10013,6 +10294,12 @@ def create_transaction(
         "description": payload.get("description"),
         "reference": payload.get("reference"),
         "sourceDb": source_db,
+        "isCancelled": False,
+        "cancellation": {
+            "source": None,
+            "upstreamCancelledFlag": None,
+            "lastEvaluatedAt": datetime.now(timezone.utc).isoformat(),
+        },
         "created_at": datetime.utcnow().isoformat(),
         "projectId": active_project_id,
     }
@@ -10234,6 +10521,77 @@ def update_project_transaction(project_id: str, transaction_id: str, payload: di
     return serialize(db.transactions.find_one(transaction_filter))
 
 
+@app.patch("/api/admin/transactions/{transaction_id}/cancel")
+def cancel_transaction_admin(transaction_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    tx = db.transactions.find_one({"_id": oid(transaction_id)})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    reason = normalize_non_empty_string((payload or {}).get("reason"))
+    notes = normalize_non_empty_string((payload or {}).get("notes"))
+    actor_id = normalize_non_empty_string(user.get("id") or user.get("username"))
+    actor_name = normalize_non_empty_string(user.get("displayName") or user.get("name") or user.get("username"))
+    current_cancellation = tx.get("cancellation") if isinstance(tx.get("cancellation"), dict) else {}
+
+    update_fields = {
+        "isCancelled": True,
+        "cancellation": {
+            **current_cancellation,
+            "source": "manual",
+            "reason": reason or normalize_non_empty_string(current_cancellation.get("reason")),
+            "notes": notes or normalize_non_empty_string(current_cancellation.get("notes")),
+            "cancelledAt": now_iso,
+            "cancelledByUserId": actor_id,
+            "cancelledByName": actor_name,
+            "upstreamCancelledFlag": current_cancellation.get("upstreamCancelledFlag"),
+            "lastEvaluatedAt": now_iso,
+        },
+        "updated_at": now_iso,
+    }
+
+    db.transactions.update_one({"_id": tx["_id"]}, {"$set": update_fields})
+    refreshed = db.transactions.find_one({"_id": tx["_id"]})
+    upsert_transaction_cancellation_override(refreshed, user, reason=reason, notes=notes)
+    return serialize_transaction_with_supplier(db.transactions.find_one({"_id": tx["_id"]}))
+
+
+@app.patch("/api/admin/transactions/{transaction_id}/restore")
+def restore_transaction_admin(transaction_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    tx = db.transactions.find_one({"_id": oid(transaction_id)})
+    if not tx:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    notes = normalize_non_empty_string((payload or {}).get("notes"))
+    actor_id = normalize_non_empty_string(user.get("id") or user.get("username"))
+    actor_name = normalize_non_empty_string(user.get("displayName") or user.get("name") or user.get("username"))
+    current_cancellation = tx.get("cancellation") if isinstance(tx.get("cancellation"), dict) else {}
+
+    cancellation_doc = {
+        **current_cancellation,
+        "source": None,
+        "notes": notes or normalize_non_empty_string(current_cancellation.get("notes")),
+        "restoredAt": now_iso,
+        "restoredByUserId": actor_id,
+        "restoredByName": actor_name,
+        "lastEvaluatedAt": now_iso,
+    }
+    db.transactions.update_one(
+        {"_id": tx["_id"]},
+        {
+            "$set": {
+                "isCancelled": False,
+                "cancellation": cancellation_doc,
+                "updated_at": now_iso,
+            }
+        },
+    )
+    refreshed = db.transactions.find_one({"_id": tx["_id"]})
+    deactivate_transaction_cancellation_override(refreshed, user, notes=notes)
+    return serialize_transaction_with_supplier(db.transactions.find_one({"_id": tx["_id"]}))
+
+
 @app.post("/api/projects/{project_id}/transactions/bulk-update-category")
 def bulk_update_project_transactions_category(project_id: str, payload: dict, _: dict = Depends(require_admin)):
     ids = payload.get("ids") or []
@@ -10306,6 +10664,7 @@ def list_transactions(
     source: str | None = None,
     sourceDb: str | None = None,
     q: str | None = None,
+    includeCancelled: str | None = None,
     page: int = 1,
     limit: int = 50,
     user: dict = Depends(require_authenticated),
@@ -10347,6 +10706,7 @@ def list_transactions(
         source=source,
         source_db=sourceDb,
         search_query=q,
+        include_cancelled=parse_include_cancelled_flag(includeCancelled) and user.get("role") in {"SUPERADMIN", "ADMIN"},
     )
     match_query = with_legacy_project_filter(match_query, resolved_project_id)
 
@@ -10433,6 +10793,7 @@ def spend_by_category(
     include_iva: bool = False,
     projectId: str | None = None,
     project: str | None = None,
+    includeCancelled: str | None = None,
     user: dict = Depends(require_authenticated),
 ):
     active_project_id = resolve_project_id(projectId or project)
@@ -10442,6 +10803,8 @@ def spend_by_category(
         raise HTTPException(status_code=403, detail="Project access denied")
 
     match = with_legacy_project_filter({"type": "EXPENSE"}, active_project_id)
+    if not (parse_include_cancelled_flag(includeCancelled) and user.get("role") in {"SUPERADMIN", "ADMIN"}):
+        match["isCancelled"] = {"$ne": True}
     if vendor_id:
         match["vendor_id"] = vendor_id
     if date_from or date_to:
