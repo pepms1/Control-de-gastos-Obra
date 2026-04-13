@@ -264,6 +264,18 @@ export const api = {
     });
   },
 
+  cancelTransaction: (id, payload) =>
+    backendReq(`/api/admin/transactions/${id}/cancel`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload || {}),
+    }),
+
+  restoreTransaction: (id, payload) =>
+    backendReq(`/api/admin/transactions/${id}/restore`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload || {}),
+    }),
+
   createTransaction: (payload) =>
     req('/transactions', {
       method: 'POST',

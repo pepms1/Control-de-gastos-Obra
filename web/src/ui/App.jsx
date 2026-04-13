@@ -117,6 +117,25 @@ function getTransactionSourceLabel(transaction) {
   return `${transaction?.sapBadgeLabel || transaction?.source || '—'} ${transaction?.sourceSbo || ''}`.trim();
 }
 
+function formatDateTime(value) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString('es-MX', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getCancellationSourceLabel(source) {
+  if (source === 'manual') return 'Cancelado manualmente';
+  if (source === 'sap') return 'Cancelado desde SAP';
+  return 'Cancelado';
+}
+
 function normalizeSearchText(value) {
   return String(value || '')
     .normalize('NFD')
@@ -327,8 +346,8 @@ function Nav({
   const normalizedRole = normalizeRole(role);
   const canSeeSettings = !isViewer(normalizedRole);
   const canSeeBudgets = isSuperAdmin(normalizedRole) || isAdminRole(normalizedRole);
-  const canSeeTransactionsAdmin = isSuperAdmin(normalizedRole);
-  const showTransactionsAdminNav = false;
+  const canSeeTransactionsAdmin = isSuperAdmin(normalizedRole) || isAdminRole(normalizedRole);
+  const showTransactionsAdminNav = true;
   const items = [
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar', true],
@@ -525,6 +544,7 @@ export default function App() {
   const isAdminUser = isAdminRole(userRole);
   const canUseAdminPreferences = isAdminUser || isSuperAdminUser;
   const isAdmin = isSuperAdminUser;
+  const canSeeTransactionsAdmin = isSuperAdminUser || isAdminUser;
   const isDarkMode = themePreference === 'dark';
 
   useEffect(() => {
@@ -651,7 +671,7 @@ export default function App() {
   }, [session.token, personalizedProjects, selectedProjectId]);
 
   useEffect(() => {
-    if (!isSuperAdminUser && tab === 'transactions') {
+    if (!canSeeTransactionsAdmin && tab === 'transactions') {
       setTab('search');
     }
     if (!(isSuperAdminUser || isAdminUser) && tab === 'budgets') {
@@ -660,7 +680,7 @@ export default function App() {
     if (isViewerUser && tab === 'settings') {
       setTab('dashboard');
     }
-  }, [isSuperAdminUser, isAdminUser, isViewerUser, tab]);
+  }, [canSeeTransactionsAdmin, isSuperAdminUser, isAdminUser, isViewerUser, tab]);
 
   if (!session.token) return <Login onLogin={setSession} />;
 
@@ -693,9 +713,10 @@ export default function App() {
           />
         )}
 
-        {tab === 'transactions' && isSuperAdminUser && (
+        {tab === 'transactions' && canSeeTransactionsAdmin && (
           <Transactions
             isAdmin={isAdmin}
+            canManageCancellation={canSeeTransactionsAdmin}
             cats={cats}
             vendors={vendors}
             onCatalogChanged={refreshCatalog}
@@ -3280,7 +3301,7 @@ function EditModal({ title, children, onClose, onSave }) {
 }
 
 /* ================= TRANSACTIONS ================= */
-function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactionsChanged, selectedProjectId }) {
+function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalogChanged, onTransactionsChanged, selectedProjectId }) {
   const UNCATEGORIZED_FILTER = '__UNCATEGORIZED__';
   const getVendorIdentity = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
   const getVendorSupplierId = (vendor) => String(vendor?._id || vendor?.id || vendor?.vendorId || vendor?.supplierId || '').trim();
@@ -3313,6 +3334,14 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   const [selectedRows, setSelectedRows] = useState([]);
   const [bulkCategoryId, setBulkCategoryId] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [includeCancelled, setIncludeCancelled] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState(null);
+  const [cancelReason, setCancelReason] = useState('Cancelado en SAP');
+  const [cancelNotes, setCancelNotes] = useState('');
+  const [cancelSaving, setCancelSaving] = useState(false);
+  const [restoreTarget, setRestoreTarget] = useState(null);
+  const [restoreNotes, setRestoreNotes] = useState('');
+  const [restoreSaving, setRestoreSaving] = useState(false);
 
   const isUncategorizedFilter = categoryFilter === UNCATEGORIZED_FILTER;
   const isSapIvaTransaction = (transaction) =>
@@ -3342,6 +3371,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
         q: searchFilter.trim(),
         from: dateFrom,
         to: dateTo,
+        includeCancelled: canManageCancellation && includeCancelled ? '1' : '',
       };
       const response = await api.transactions(requestParams);
 
@@ -3360,7 +3390,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     setPage(1);
     setRows([]);
     load(1);
-  }, [filter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId, vendors]);
+  }, [filter, supplierFilter, sourceDbFilter, searchFilter, dateFrom, dateTo, selectedProjectId, vendors, includeCancelled, canManageCancellation]);
 
   useEffect(() => {
     setSelectedRows([]);
@@ -3485,6 +3515,45 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
     }
   }
 
+  function openCancelDialog(transaction) {
+    setCancelTarget(transaction);
+    setCancelReason(transaction?.cancellation?.reason || 'Cancelado en SAP');
+    setCancelNotes('');
+  }
+
+  async function submitCancel() {
+    if (!cancelTarget?.id) return;
+    setCancelSaving(true);
+    setErr('');
+    try {
+      await api.cancelTransaction(cancelTarget.id, { reason: cancelReason || 'Cancelado en SAP', notes: cancelNotes || '' });
+      await onTransactionsChanged?.();
+      setCancelTarget(null);
+      await load(page);
+    } catch (e) {
+      setErr(e.message || 'No se pudo cancelar el documento.');
+    } finally {
+      setCancelSaving(false);
+    }
+  }
+
+  async function submitRestore() {
+    if (!restoreTarget?.id) return;
+    setRestoreSaving(true);
+    setErr('');
+    try {
+      await api.restoreTransaction(restoreTarget.id, { notes: restoreNotes || '' });
+      await onTransactionsChanged?.();
+      setRestoreTarget(null);
+      setRestoreNotes('');
+      await load(page);
+    } catch (e) {
+      setErr(e.message || 'No se pudo restaurar el documento.');
+    } finally {
+      setRestoreSaving(false);
+    }
+  }
+
   function toggleSelected(id) {
     setSelectedRows((prev) => (prev.includes(id) ? prev.filter((rowId) => rowId !== id) : [...prev, id]));
   }
@@ -3500,6 +3569,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   }
 
   const allShownSelected = shown.length > 0 && shown.every((r) => selectedRows.includes(r.id));
+  const showActionsColumn = isAdmin || canManageCancellation;
+  const showSelectionColumn = isAdmin;
 
   async function applyBulkCategory() {
     if (!selectedRows.length) return;
@@ -3604,6 +3675,19 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <option value="created_desc">Fecha de añadido (más reciente)</option>
             <option value="supplier_asc">Proveedor (A-Z)</option>
           </select>
+          {canManageCancellation && (
+            <label className="row" style={{ gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={includeCancelled}
+                onChange={(e) => {
+                  setPage(1);
+                  setIncludeCancelled(e.target.checked);
+                }}
+              />
+              Mostrar cancelados
+            </label>
+          )}
           <button className="secondary" onClick={() => load(page)}>Refrescar</button>
         </div>
       </div>
@@ -3658,14 +3742,14 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <th>Total</th>
                 <th>Tipo</th>
                 <th>Origen / SBO</th>
-                {isAdmin && <th>Acciones</th>}
-                {isAdmin && <th>Seleccionar</th>}
+                {showActionsColumn && <th>Acciones</th>}
+                {showSelectionColumn && <th>Seleccionar</th>}
               </tr>
             </thead>
             <tbody>
-              {isAdmin && (
+              {showSelectionColumn && (
                 <tr>
-                  <td colSpan={isAdmin ? 13 : 11} style={{ textAlign: 'right' }}>
+                  <td colSpan={showSelectionColumn ? 13 : 11} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
                       Seleccionar todos (página actual)
@@ -3683,11 +3767,23 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 ).trim();
                 const resolvedCategory2Source = String(r.resolvedCategory2Source || '').trim();
                 return (
-                <tr key={getTransactionStableKey(r)}>
+                <tr key={getTransactionStableKey(r)} className={r.isCancelled ? 'transaction-row-cancelled' : ''}>
                   <td>{r.date || '—'}</td>
                   <td>{r.projectDisplayName || 'Sin proyecto'}</td>
                   <td>{r.supplierName || '—'}</td>
-                  <td>{r.description || ''}</td>
+                  <td>
+                    {r.description || ''}
+                    {r.isCancelled && (
+                      <div className="small" style={{ marginTop: 4 }}>
+                        <span className="badge badge-cancelled">Cancelado</span>
+                        {' '}
+                        <span>{getCancellationSourceLabel(r?.cancellation?.source)}</span>
+                        {r?.cancellation?.reason && <span> · {r.cancellation.reason}</span>}
+                        {r?.cancellation?.cancelledByName && <span> · por {r.cancellation.cancelledByName}</span>}
+                        {r?.cancellation?.cancelledAt && <span> · {formatDateTime(r.cancellation.cancelledAt)}</span>}
+                      </div>
+                    )}
+                  </td>
                   <td>
                     {getTransactionCategoryLabel(r, catMap)}
                     {r.categoryManualName && <span className="badge badge-manual" style={{ marginLeft: 6 }}>Manual</span>}
@@ -3707,7 +3803,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                   <td>
                     <SourceBadges transaction={r} />
                   </td>
-                  {isAdmin && (
+                  {showActionsColumn && (
                     <td>
                       {(r.source !== 'sap' || isSapIva) && (
                         <button
@@ -3721,15 +3817,27 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                           {isSapIva ? 'Editar' : 'Editar'}
                         </button>
                       )}
-                      {r.source !== 'sap' && (
+                      {isAdmin && r.source !== 'sap' && (
                         <>
                           {' '}
                           <button className="secondary" onClick={() => remove(r.id)}>Eliminar</button>
                         </>
                       )}
+                      {canManageCancellation && !r.isCancelled && (
+                        <>
+                          {' '}
+                          <button className="secondary" onClick={() => openCancelDialog(r)}>Cancelar</button>
+                        </>
+                      )}
+                      {canManageCancellation && r.isCancelled && (
+                        <>
+                          {' '}
+                          <button className="secondary" onClick={() => setRestoreTarget(r)}>Restaurar</button>
+                        </>
+                      )}
                     </td>
                   )}
-                  {isAdmin && (
+                  {showSelectionColumn && (
                     <td>
                       <input
                         type="checkbox"
@@ -3751,8 +3859,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 </td>
                 <td style={{ fontWeight: 700 }}>—</td>
                 <td style={{ fontWeight: 700 }}>—</td>
-                {isAdmin && <td style={{ fontWeight: 700 }}>Neto: {formatCurrency(backendTotals.net)}</td>}
-                {isAdmin && <td />}
+                {showActionsColumn && <td style={{ fontWeight: 700 }}>Neto: {formatCurrency(backendTotals.net)}</td>}
+                {showSelectionColumn && <td />}
               </tr>
             </tfoot>
           </table>
@@ -3824,6 +3932,50 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             {editErr && <div style={{ color: '#b91c1c' }}>{editErr}</div>}
           </div>
         </EditModal>
+      )}
+
+      {cancelTarget && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3>Cancelar transacción</h3>
+            <div className="small" style={{ marginBottom: 10 }}>
+              <div><strong>Fecha:</strong> {cancelTarget.date || '—'}</div>
+              <div><strong>Proyecto:</strong> {cancelTarget.projectDisplayName || 'Sin proyecto'}</div>
+              <div><strong>Proveedor:</strong> {cancelTarget.supplierName || '—'}</div>
+              <div><strong>Descripción:</strong> {cancelTarget.description || '—'}</div>
+              <div><strong>Total:</strong> {formatCurrency(getTransactionTotalValue(cancelTarget))}</div>
+              <div><strong>Tipo:</strong> {cancelTarget.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</div>
+              <div><strong>Origen / SBO:</strong> {getTransactionSourceLabel(cancelTarget)}</div>
+            </div>
+            <div className="grid">
+              <label>Motivo</label>
+              <input value={cancelReason} onChange={(e) => setCancelReason(e.target.value)} />
+              <label>Notas</label>
+              <input value={cancelNotes} onChange={(e) => setCancelNotes(e.target.value)} placeholder="Opcional" />
+            </div>
+            <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+              <button className="secondary" type="button" onClick={() => setCancelTarget(null)} disabled={cancelSaving}>Cancelar</button>
+              <button type="button" onClick={submitCancel} disabled={cancelSaving}>{cancelSaving ? 'Confirmando...' : 'Confirmar cancelación'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {restoreTarget && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <h3>Restaurar transacción</h3>
+            <p className="small">Esta acción reactivará el documento en listados normales.</p>
+            <div className="grid">
+              <label>Notas</label>
+              <input value={restoreNotes} onChange={(e) => setRestoreNotes(e.target.value)} placeholder="Opcional" />
+            </div>
+            <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+              <button className="secondary" type="button" onClick={() => setRestoreTarget(null)} disabled={restoreSaving}>Cancelar</button>
+              <button type="button" onClick={submitRestore} disabled={restoreSaving}>{restoreSaving ? 'Restaurando...' : 'Confirmar restauración'}</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

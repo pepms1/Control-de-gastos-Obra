@@ -62,6 +62,25 @@ function buildSapMeta(sap) {
   };
 }
 
+function normalizeCancellation(cancellation) {
+  if (!cancellation || typeof cancellation !== 'object') return null;
+  return {
+    source: toNullableString(cancellation.source),
+    reason: toNullableString(cancellation.reason),
+    notes: toNullableString(cancellation.notes),
+    cancelledAt: toNullableString(cancellation.cancelledAt),
+    cancelledByUserId: toNullableString(cancellation.cancelledByUserId),
+    cancelledByName: toNullableString(cancellation.cancelledByName),
+    restoredAt: toNullableString(cancellation.restoredAt),
+    restoredByUserId: toNullableString(cancellation.restoredByUserId),
+    restoredByName: toNullableString(cancellation.restoredByName),
+    upstreamCancelledFlag: cancellation.upstreamCancelledFlag === null
+      ? null
+      : (cancellation.upstreamCancelledFlag === undefined ? null : Boolean(cancellation.upstreamCancelledFlag)),
+    lastEvaluatedAt: toNullableString(cancellation.lastEvaluatedAt),
+  };
+}
+
 export function normalizeTransaction(transaction) {
   if (!transaction || typeof transaction !== 'object') return transaction;
 
@@ -86,6 +105,7 @@ export function normalizeTransaction(transaction) {
   const resolvedCategory2Source = toNullableString(transaction.resolvedCategory2Source);
 
   const normalizedType = resolveTransactionType(transaction);
+  const cancellation = normalizeCancellation(transaction.cancellation);
 
   return {
     ...transaction,
@@ -135,6 +155,8 @@ export function normalizeTransaction(transaction) {
     sourceDb: toNullableString(transaction.sourceDb) || '',
     sourceSbo: sourceSbo || '',
     isSapSbo,
+    isCancelled: Boolean(transaction.isCancelled),
+    cancellation,
     sapBadgeLabel: getSapBadgeLabel(transaction),
     sapMeta,
   };
