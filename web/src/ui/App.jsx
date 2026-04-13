@@ -820,7 +820,7 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
             className={section === 'financial-kind-reclassify' ? '' : 'secondary'}
             onClick={() => setSection('financial-kind-reclassify')}
           >
-            Clasificación semántica egresos
+            Quitar Retiros de inversion de Egresos
           </button>
         )}
         {isSuperAdmin && (
