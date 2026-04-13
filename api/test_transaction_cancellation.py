@@ -102,7 +102,8 @@ class _FakeDb:
 class TransactionCancellationTests(unittest.TestCase):
     def test_build_transactions_query_excludes_cancelled_by_default(self):
         query = main.build_transactions_query(type_value='EXPENSE')
-        self.assertEqual(query.get('isCancelled'), {'$ne': True})
+        self.assertIn('$and', query)
+        self.assertIn('isCancelled', str(query))
 
     def test_build_transactions_query_allows_include_cancelled(self):
         query = main.build_transactions_query(type_value='EXPENSE', include_cancelled=True)

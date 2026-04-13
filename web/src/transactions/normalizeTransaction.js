@@ -15,6 +15,11 @@ function toNullableString(value) {
   return normalized || null;
 }
 
+function toBoolean(value, fallback = false) {
+  if (value === null || value === undefined) return fallback;
+  return Boolean(value);
+}
+
 function buildSapMeta(sap) {
   if (!sap || typeof sap !== 'object') return null;
 
@@ -106,6 +111,9 @@ export function normalizeTransaction(transaction) {
 
   const normalizedType = resolveTransactionType(transaction);
   const cancellation = normalizeCancellation(transaction.cancellation);
+  const financialKind = toNullableString(transaction.financialKind) || 'expense';
+  const excludeFromExpenseViews = toBoolean(transaction.excludeFromExpenseViews, false)
+    || financialKind === 'contribution_withdrawal';
 
   return {
     ...transaction,
@@ -156,6 +164,10 @@ export function normalizeTransaction(transaction) {
     sourceSbo: sourceSbo || '',
     isSapSbo,
     isCancelled: Boolean(transaction.isCancelled),
+    financialKind,
+    excludeFromExpenseViews,
+    classificationSource: toNullableString(transaction.classificationSource) || 'default',
+    classificationReason: toNullableString(transaction.classificationReason),
     cancellation,
     sapBadgeLabel: getSapBadgeLabel(transaction),
     sapMeta,
