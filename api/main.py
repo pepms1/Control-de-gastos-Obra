@@ -4004,20 +4004,31 @@ def classify_financial_kind(
     category_hint_code = normalize_non_empty_string(tx_doc.get("categoryHintCode") or tx_doc.get("category_hint_code"))
     category_hint_name = normalize_text_for_matching(tx_doc.get("categoryHintName") or tx_doc.get("category_hint_name"))
     description = normalize_text_for_matching(tx_doc.get("description"))
+    movement_type = normalize_text_for_matching((tx_doc.get("sap") or {}).get("movementType"))
+    tx_type = normalize_non_empty_string(tx_doc.get("type"))
+    is_expense_like = tx_type == "EXPENSE" or movement_type == "egreso"
 
-    matched_by_code = category_hint_code == "3700-01-001"
-    matched_by_description = "retiro de aportacion" in description
-    matched_by_hint_name = "aportaciones calderon de la barca" in category_hint_name
+    matched_aportacion_rule = (
+        category_hint_code == "3700-01-001"
+        or "retiro de aportacion" in description
+        or "aportaciones calderon de la barca" in category_hint_name
+    )
+    matched_investment_rule = (
+        "retiro de inversion" in description
+        or "retiro de inversionistas" in description
+        or "retiro de inversionista" in category_hint_name
+        or "retiro de inversionistas" in category_hint_name
+    )
 
-    if matched_by_code or matched_by_description or matched_by_hint_name:
+    if is_expense_like and (matched_aportacion_rule or matched_investment_rule):
         return {
             "financialKind": "contribution_withdrawal",
             "excludeFromExpenseViews": True,
             "classificationSource": "rule",
-            "classificationReason": "Matched contribution withdrawal rule by categoryHintCode 3700-01-001 and/or description",
+            "classificationReason": "Matched contribution/investor withdrawal rule by description/categoryHintName",
             "classification": {
                 "source": "rule",
-                "reason": "Matched contribution withdrawal rule by categoryHintCode 3700-01-001 and/or description",
+                "reason": "Matched contribution/investor withdrawal rule by description/categoryHintName",
                 "lastEvaluatedAt": now_iso,
                 "upstreamFinancialKind": None,
             },
@@ -10845,10 +10856,12 @@ def reclassify_transactions_financial_kind(project_id: str | None = None, source
     projection = {
         "_id": 1,
         "description": 1,
+        "type": 1,
         "categoryHintCode": 1,
         "categoryHintName": 1,
         "category_hint_code": 1,
         "category_hint_name": 1,
+        "sap.movementType": 1,
         "financialKind": 1,
         "excludeFromExpenseViews": 1,
         "classificationSource": 1,
