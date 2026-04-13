@@ -17,18 +17,41 @@ import main  # noqa: E402
 
 class FinancialKindClassificationTests(unittest.TestCase):
     def test_classify_by_category_hint_code(self):
-        result = main.classify_financial_kind({"categoryHintCode": "3700-01-001"})
+        result = main.classify_financial_kind({"categoryHintCode": "3700-01-001", "type": "EXPENSE"})
         self.assertEqual(result["financialKind"], "contribution_withdrawal")
         self.assertTrue(result["excludeFromExpenseViews"])
         self.assertEqual(result["classificationSource"], "rule")
 
     def test_classify_by_description(self):
-        result = main.classify_financial_kind({"description": "RETIRO DE APORTACION"})
+        result = main.classify_financial_kind({"description": "RETIRO DE APORTACION", "type": "EXPENSE"})
         self.assertEqual(result["financialKind"], "contribution_withdrawal")
         self.assertTrue(result["excludeFromExpenseViews"])
 
+    def test_classify_investment_withdrawal_by_description(self):
+        result = main.classify_financial_kind({"description": "RETIRO DE INVERSION", "type": "EXPENSE"})
+        self.assertEqual(result["financialKind"], "contribution_withdrawal")
+        self.assertTrue(result["excludeFromExpenseViews"])
+        self.assertEqual(result["classificationSource"], "rule")
+
+    def test_classify_investor_withdrawal_by_hint_name(self):
+        result = main.classify_financial_kind(
+            {
+                "categoryHintName": "Retiro de Inversionistas José Hamui",
+                "sap": {"movementType": "egreso"},
+            }
+        )
+        self.assertEqual(result["financialKind"], "contribution_withdrawal")
+        self.assertTrue(result["excludeFromExpenseViews"])
+        self.assertEqual(result["classificationSource"], "rule")
+
     def test_classify_default_expense(self):
-        result = main.classify_financial_kind({"description": "Pago de proveedor"})
+        result = main.classify_financial_kind({"description": "Pago de proveedor", "type": "EXPENSE"})
+        self.assertEqual(result["financialKind"], "expense")
+        self.assertFalse(result["excludeFromExpenseViews"])
+        self.assertEqual(result["classificationSource"], "default")
+
+    def test_does_not_classify_when_not_expense_like(self):
+        result = main.classify_financial_kind({"description": "RETIRO DE INVERSION", "type": "INCOME"})
         self.assertEqual(result["financialKind"], "expense")
         self.assertFalse(result["excludeFromExpenseViews"])
         self.assertEqual(result["classificationSource"], "default")
@@ -162,6 +185,7 @@ class FinancialKindImportAndReclassifyTests(unittest.TestCase):
             "dedupeKey": "k1",
             "projectId": "p1",
             "description": "RETIRO DE APORTACION",
+            "type": "EXPENSE",
             "categoryHintCode": "3700-01-001",
             "financialKind": "expense",
             "excludeFromExpenseViews": False,
