@@ -69,6 +69,7 @@ sap_latest_admin_locks: dict[str, bool] = {}
 sap_latest_admin_last_request_at: dict[str, datetime] = {}
 sap_latest_admin_guard = threading.Lock()
 TRANSACTION_CANCELLATION_OVERRIDES_COLLECTION = "transaction_cancellation_overrides"
+EXPENSE_VIEW_EXCLUDED_FINANCIAL_KINDS = {"contribution_withdrawal"}
 
 
 # ---------- helpers ----------
@@ -213,6 +214,34 @@ def normalize_text_for_matching(value: str | None) -> str:
     normalized = unicodedata.normalize("NFD", str(value or "").strip().lower())
     normalized = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
     return re.sub(r"\s+", " ", normalized).strip()
+
+
+def build_expense_views_exclusion_query() -> dict:
+    return {
+        "$and": [
+            {
+                "$or": [
+                    {"excludeFromExpenseViews": {"$exists": False}},
+                    {"excludeFromExpenseViews": {"$ne": True}},
+                ]
+            },
+            {
+                "$or": [
+                    {"financialKind": {"$exists": False}},
+                    {"financialKind": None},
+                    {"financialKind": {"$nin": sorted(EXPENSE_VIEW_EXCLUDED_FINANCIAL_KINDS)}},
+                ]
+            },
+        ]
+    }
+
+
+def apply_expense_views_exclusion_filter(query: dict | None) -> dict:
+    base_query = dict(query or {})
+    filter_query = build_expense_views_exclusion_query()
+    if not base_query:
+        return filter_query
+    return {"$and": [base_query, filter_query]}
 
 
 TRABAJOS_ESPECIALES_PREFIX = "trabajos especiales"
@@ -488,6 +517,10 @@ def serialize_transaction_with_supplier(
 
     effective_project_fields = resolve_effective_sap_project_fields(tx_doc)
     tx_doc.update(effective_project_fields)
+    tx_doc["financialKind"] = normalize_non_empty_string(tx_doc.get("financialKind")) or "expense"
+    tx_doc["excludeFromExpenseViews"] = bool(tx_doc.get("excludeFromExpenseViews"))
+    tx_doc["classificationSource"] = normalize_non_empty_string(tx_doc.get("classificationSource")) or "default"
+    tx_doc["classificationReason"] = normalize_non_empty_string(tx_doc.get("classificationReason"))
 
     return tx_doc
 
@@ -2795,6 +2828,18 @@ def ensure_indexes():
         {"isCancelled": {"$exists": False}},
         {"$set": {"isCancelled": False}},
     )
+    db.transactions.update_many(
+        {"financialKind": {"$exists": False}},
+        {"$set": {"financialKind": "expense"}},
+    )
+    db.transactions.update_many(
+        {"excludeFromExpenseViews": {"$exists": False}},
+        {"$set": {"excludeFromExpenseViews": False}},
+    )
+    db.transactions.update_many(
+        {"classificationSource": {"$exists": False}},
+        {"$set": {"classificationSource": "default"}},
+    )
     db.transactions.create_index(
         [("projectId", 1), ("sourceDb", 1), ("category_id", 1)],
         name="transactions_project_source_db_category_idx",
@@ -3860,6 +3905,138 @@ def map_source_cancelled_flag_from_sbo_row(row: dict) -> bool | None:
     return None
 
 
+def map_source_financial_kind_from_sbo_row(row: dict) -> dict | None:
+    candidate_keys = ["financial_kind", "financialKind", "source_financial_kind", "sourceFinancialKind"]
+    for key in candidate_keys:
+        normalized_kind = normalize_non_empty_string(row.get(key))
+        if normalized_kind:
+            return {
+                "financialKind": normalized_kind.strip().lower(),
+                "classificationSource": "sap",
+                "classificationReason": f"Upstream financial kind from row field '{key}'",
+                "upstreamFinancialKind": normalized_kind,
+            }
+
+    withdrawal_keys = [
+        "is_contribution_withdrawal",
+        "isContributionWithdrawal",
+        "source_is_contribution_withdrawal",
+        "sourceIsContributionWithdrawal",
+    ]
+    for key in withdrawal_keys:
+        parsed = parse_source_cancelled_flag(row.get(key))
+        if parsed is True:
+            return {
+                "financialKind": "contribution_withdrawal",
+                "classificationSource": "sap",
+                "classificationReason": f"Upstream contribution-withdrawal flag from row field '{key}'",
+                "upstreamFinancialKind": "contribution_withdrawal",
+            }
+    return None
+
+
+def classify_financial_kind(
+    tx_like: dict | None,
+    *,
+    existing_transaction: dict | None = None,
+    manual_override: dict | None = None,
+    source_signal: dict | None = None,
+    evaluated_at: str | None = None,
+) -> dict:
+    tx_doc = tx_like if isinstance(tx_like, dict) else {}
+    existing_tx = existing_transaction if isinstance(existing_transaction, dict) else {}
+    existing_classification = existing_tx.get("classification") if isinstance(existing_tx.get("classification"), dict) else {}
+    now_iso = evaluated_at or datetime.now(timezone.utc).isoformat()
+
+    normalized_manual_kind = normalize_non_empty_string((manual_override or {}).get("financialKind"))
+    if normalized_manual_kind:
+        reason = normalize_non_empty_string((manual_override or {}).get("reason")) or "Manual override"
+        return {
+            "financialKind": normalized_manual_kind.strip().lower(),
+            "excludeFromExpenseViews": normalized_manual_kind.strip().lower() in EXPENSE_VIEW_EXCLUDED_FINANCIAL_KINDS,
+            "classificationSource": "manual",
+            "classificationReason": reason,
+            "classification": {
+                "source": "manual",
+                "reason": reason,
+                "lastEvaluatedAt": now_iso,
+                "upstreamFinancialKind": None,
+            },
+        }
+
+    existing_source = normalize_non_empty_string(existing_tx.get("classificationSource"))
+    existing_kind = normalize_non_empty_string(existing_tx.get("financialKind"))
+    if existing_source == "manual" and existing_kind:
+        existing_reason = normalize_non_empty_string(existing_tx.get("classificationReason"))
+        return {
+            "financialKind": existing_kind.strip().lower(),
+            "excludeFromExpenseViews": bool(existing_tx.get("excludeFromExpenseViews"))
+            or existing_kind.strip().lower() in EXPENSE_VIEW_EXCLUDED_FINANCIAL_KINDS,
+            "classificationSource": "manual",
+            "classificationReason": existing_reason or "Manual override",
+            "classification": {
+                **existing_classification,
+                "source": "manual",
+                "reason": existing_reason or normalize_non_empty_string(existing_classification.get("reason")) or "Manual override",
+                "lastEvaluatedAt": now_iso,
+                "upstreamFinancialKind": normalize_non_empty_string(existing_classification.get("upstreamFinancialKind")),
+            },
+        }
+
+    if isinstance(source_signal, dict) and normalize_non_empty_string(source_signal.get("financialKind")):
+        upstream_kind = normalize_non_empty_string(source_signal.get("financialKind")).strip().lower()
+        upstream_source = normalize_non_empty_string(source_signal.get("classificationSource")) or "sap"
+        upstream_reason = normalize_non_empty_string(source_signal.get("classificationReason")) or "Upstream financial kind signal"
+        return {
+            "financialKind": upstream_kind,
+            "excludeFromExpenseViews": bool(source_signal.get("excludeFromExpenseViews"))
+            or upstream_kind in EXPENSE_VIEW_EXCLUDED_FINANCIAL_KINDS,
+            "classificationSource": upstream_source,
+            "classificationReason": upstream_reason,
+            "classification": {
+                "source": upstream_source,
+                "reason": upstream_reason,
+                "lastEvaluatedAt": now_iso,
+                "upstreamFinancialKind": normalize_non_empty_string(source_signal.get("upstreamFinancialKind")) or upstream_kind,
+            },
+        }
+
+    category_hint_code = normalize_non_empty_string(tx_doc.get("categoryHintCode") or tx_doc.get("category_hint_code"))
+    category_hint_name = normalize_text_for_matching(tx_doc.get("categoryHintName") or tx_doc.get("category_hint_name"))
+    description = normalize_text_for_matching(tx_doc.get("description"))
+
+    matched_by_code = category_hint_code == "3700-01-001"
+    matched_by_description = "retiro de aportacion" in description
+    matched_by_hint_name = "aportaciones calderon de la barca" in category_hint_name
+
+    if matched_by_code or matched_by_description or matched_by_hint_name:
+        return {
+            "financialKind": "contribution_withdrawal",
+            "excludeFromExpenseViews": True,
+            "classificationSource": "rule",
+            "classificationReason": "Matched contribution withdrawal rule by categoryHintCode 3700-01-001 and/or description",
+            "classification": {
+                "source": "rule",
+                "reason": "Matched contribution withdrawal rule by categoryHintCode 3700-01-001 and/or description",
+                "lastEvaluatedAt": now_iso,
+                "upstreamFinancialKind": None,
+            },
+        }
+
+    return {
+        "financialKind": "expense",
+        "excludeFromExpenseViews": False,
+        "classificationSource": "default",
+        "classificationReason": None,
+        "classification": {
+            "source": "default",
+            "reason": None,
+            "lastEvaluatedAt": now_iso,
+            "upstreamFinancialKind": None,
+        },
+    }
+
+
 def resolve_cancellation_state(
     *,
     existing_transaction: dict | None,
@@ -4023,11 +4200,13 @@ def build_transactions_query(
     include_cancelled: bool = False,
 ):
     q = {}
+    should_apply_expense_views_filter = False
     if not include_cancelled:
         q["isCancelled"] = {"$ne": True}
     if type_value:
         normalized_type = str(type_value).strip().upper()
         if normalized_type == "EXPENSE":
+            should_apply_expense_views_filter = True
             type_filter = {
                 "$or": [
                     {"type": "EXPENSE"},
@@ -4302,6 +4481,8 @@ def build_transactions_query(
             q["$and"] = [{"$or": q.pop("$or")}, {"$or": search_conditions}]
         else:
             q["$or"] = search_conditions
+    if should_apply_expense_views_filter:
+        q = apply_expense_views_exclusion_filter(q)
     return q
 
 
@@ -4337,6 +4518,8 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
                     ]
                 },
                 "amount": {"$ifNull": ["$amount", 0]},
+                "excludeFromExpenseViewsNormalized": {"$eq": [{"$ifNull": ["$excludeFromExpenseViews", False]}, True]},
+                "financialKindNormalized": {"$toLower": {"$ifNull": ["$financialKind", "expense"]}},
                 "montoIva": {
                     "$let": {
                         "vars": {
@@ -4502,13 +4685,49 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
             "$group": {
                 "_id": None,
                 "expensesGross": {
-                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "EXPENSE"]}, "$amount", 0]}
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$eq": ["$typeNormalized", "EXPENSE"]},
+                                    {"$eq": ["$excludeFromExpenseViewsNormalized", False]},
+                                    {"$ne": ["$financialKindNormalized", "contribution_withdrawal"]},
+                                ]
+                            },
+                            "$amount",
+                            0,
+                        ]
+                    }
                 },
                 "expensesTax": {
-                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "EXPENSE"]}, "$montoIva", 0]}
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$eq": ["$typeNormalized", "EXPENSE"]},
+                                    {"$eq": ["$excludeFromExpenseViewsNormalized", False]},
+                                    {"$ne": ["$financialKindNormalized", "contribution_withdrawal"]},
+                                ]
+                            },
+                            "$montoIva",
+                            0,
+                        ]
+                    }
                 },
                 "expensesWithoutTax": {
-                    "$sum": {"$cond": [{"$eq": ["$typeNormalized", "EXPENSE"]}, "$montoSinIva", 0]}
+                    "$sum": {
+                        "$cond": [
+                            {
+                                "$and": [
+                                    {"$eq": ["$typeNormalized", "EXPENSE"]},
+                                    {"$eq": ["$excludeFromExpenseViewsNormalized", False]},
+                                    {"$ne": ["$financialKindNormalized", "contribution_withdrawal"]},
+                                ]
+                            },
+                            "$montoSinIva",
+                            0,
+                        ]
+                    }
                 },
                 "incomeGross": {
                     "$sum": {"$cond": [{"$eq": ["$typeNormalized", "INCOME"]}, "$amount", 0]}
@@ -7049,6 +7268,11 @@ def import_sap_movements_by_sbo(
                 {
                     "isCancelled": 1,
                     "cancellation": 1,
+                    "financialKind": 1,
+                    "excludeFromExpenseViews": 1,
+                    "classificationSource": 1,
+                    "classificationReason": 1,
+                    "classification": 1,
                     "dedupeKey": 1,
                     "sourceDb": 1,
                     "sourceSbo": 1,
@@ -7078,6 +7302,19 @@ def import_sap_movements_by_sbo(
                 manual_value = normalize_non_empty_string(existing_sap.get(manual_key))
                 if manual_value:
                     tx_doc["sap"][manual_key] = manual_value
+
+            source_financial_kind = map_source_financial_kind_from_sbo_row(row)
+            financial_classification = classify_financial_kind(
+                tx_doc,
+                existing_transaction=existing_tx,
+                source_signal=source_financial_kind,
+                evaluated_at=now,
+            )
+            tx_doc["financialKind"] = financial_classification.get("financialKind", "expense")
+            tx_doc["excludeFromExpenseViews"] = bool(financial_classification.get("excludeFromExpenseViews"))
+            tx_doc["classificationSource"] = financial_classification.get("classificationSource", "default")
+            tx_doc["classificationReason"] = financial_classification.get("classificationReason")
+            tx_doc["classification"] = financial_classification.get("classification", {})
 
             source_cancelled_flag = map_source_cancelled_flag_from_sbo_row(row)
             identity_key = build_sap_transaction_identity_key(
@@ -10295,6 +10532,10 @@ def create_transaction(
         "reference": payload.get("reference"),
         "sourceDb": source_db,
         "isCancelled": False,
+        "financialKind": "expense",
+        "excludeFromExpenseViews": False,
+        "classificationSource": "default",
+        "classificationReason": None,
         "cancellation": {
             "source": None,
             "upstreamCancelledFlag": None,
@@ -10592,6 +10833,75 @@ def restore_transaction_admin(transaction_id: str, payload: dict, user: dict = D
     return serialize_transaction_with_supplier(db.transactions.find_one({"_id": tx["_id"]}))
 
 
+def reclassify_transactions_financial_kind(project_id: str | None = None, source_sbo: str | None = None) -> dict:
+    query: dict = {}
+    normalized_project_id = normalize_non_empty_string(project_id)
+    normalized_source_sbo = normalize_non_empty_string(source_sbo)
+    if normalized_project_id:
+        query["projectId"] = normalized_project_id
+    if normalized_source_sbo:
+        query["sourceSbo"] = normalized_source_sbo
+
+    projection = {
+        "_id": 1,
+        "description": 1,
+        "categoryHintCode": 1,
+        "categoryHintName": 1,
+        "category_hint_code": 1,
+        "category_hint_name": 1,
+        "financialKind": 1,
+        "excludeFromExpenseViews": 1,
+        "classificationSource": 1,
+        "classificationReason": 1,
+        "classification": 1,
+    }
+
+    matched = 0
+    modified = 0
+    ops: list[UpdateOne] = []
+    for tx in db.transactions.find(query, projection):
+        matched += 1
+        classification = classify_financial_kind(tx, existing_transaction=tx)
+        next_doc = {
+            "financialKind": classification.get("financialKind", "expense"),
+            "excludeFromExpenseViews": bool(classification.get("excludeFromExpenseViews")),
+            "classificationSource": classification.get("classificationSource", "default"),
+            "classificationReason": classification.get("classificationReason"),
+            "classification": classification.get("classification", {}),
+        }
+        current_doc = {
+            "financialKind": normalize_non_empty_string(tx.get("financialKind")) or "expense",
+            "excludeFromExpenseViews": bool(tx.get("excludeFromExpenseViews")),
+            "classificationSource": normalize_non_empty_string(tx.get("classificationSource")) or "default",
+            "classificationReason": normalize_non_empty_string(tx.get("classificationReason")),
+            "classification": tx.get("classification") if isinstance(tx.get("classification"), dict) else {},
+        }
+        if current_doc == next_doc:
+            continue
+        ops.append(UpdateOne({"_id": tx["_id"]}, {"$set": next_doc}))
+        if len(ops) >= 500:
+            result = db.transactions.bulk_write(ops, ordered=False)
+            modified += (result.modified_count or 0) + (result.upserted_count or 0)
+            ops = []
+
+    if ops:
+        result = db.transactions.bulk_write(ops, ordered=False)
+        modified += (result.modified_count or 0) + (result.upserted_count or 0)
+
+    return {"matched": matched, "modified": modified, "projectId": normalized_project_id, "sourceSbo": normalized_source_sbo}
+
+
+@app.post("/api/admin/reclassify/financial-kind")
+def admin_reclassify_financial_kind(
+    project: str | None = None,
+    projectId: str | None = None,
+    sourceSbo: str | None = None,
+    _: dict = Depends(require_admin_or_superadmin),
+):
+    result = reclassify_transactions_financial_kind(project_id=projectId or project, source_sbo=sourceSbo)
+    return {"ok": True, **result}
+
+
 @app.post("/api/projects/{project_id}/transactions/bulk-update-category")
 def bulk_update_project_transactions_category(project_id: str, payload: dict, _: dict = Depends(require_admin)):
     ids = payload.get("ids") or []
@@ -10802,9 +11112,11 @@ def spend_by_category(
             return {"total_expenses": 0.0, "rows": []}
         raise HTTPException(status_code=403, detail="Project access denied")
 
-    match = with_legacy_project_filter({"type": "EXPENSE"}, active_project_id)
-    if not (parse_include_cancelled_flag(includeCancelled) and user.get("role") in {"SUPERADMIN", "ADMIN"}):
-        match["isCancelled"] = {"$ne": True}
+    match = build_transactions_query(
+        type_value="EXPENSE",
+        include_cancelled=parse_include_cancelled_flag(includeCancelled) and user.get("role") in {"SUPERADMIN", "ADMIN"},
+    )
+    match = with_legacy_project_filter(match, active_project_id)
     if vendor_id:
         match["vendor_id"] = vendor_id
     if date_from or date_to:

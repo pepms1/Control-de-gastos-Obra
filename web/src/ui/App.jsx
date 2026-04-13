@@ -2755,6 +2755,7 @@ function summarizeTransactionsByCategory(transactions, includeIva = false) {
   let total = 0;
 
   transactions.forEach((tx) => {
+    if (tx?.excludeFromExpenseViews || tx?.financialKind === 'contribution_withdrawal') return;
     const category2 = resolveTransactionCategory2(tx);
     const categoryId = String(category2.id || 'SIN_CATEGORIA_2');
     const categoryName = String(category2.name || 'Sin categoría 2');
@@ -2786,6 +2787,7 @@ function summarizeTransactionsBySupplier(transactions, includeIva = false) {
   const totalsBySupplier = new Map();
 
   transactions.forEach((tx) => {
+    if (tx?.excludeFromExpenseViews || tx?.financialKind === 'contribution_withdrawal') return;
     const supplierName = String(tx?.supplierName || tx?.sapMeta?.businessPartner || '(Sin proveedor)');
     const supplierId = String(tx?.supplierId || tx?.supplier_id || tx?.vendor_id || supplierName);
     const amount = Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
@@ -2822,6 +2824,7 @@ async function fetchTransactionsTotalByType(type, includeIva = false) {
     });
     const chunk = Array.isArray(response?.items) ? response.items : [];
     chunk.forEach((tx) => {
+      if (String(type || '').toUpperCase() === 'EXPENSE' && (tx?.excludeFromExpenseViews || tx?.financialKind === 'contribution_withdrawal')) return;
       total += Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
     });
     totalCount = Number(response?.totalCount) || 0;
