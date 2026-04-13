@@ -398,6 +398,14 @@ export function SuspiciousProjectResolutionScreen() {
     setFilters((prev) => ({ ...prev, [key]: value }));
   }
 
+  function openResolvedHistory() {
+    setFilters((prev) => ({ ...prev, status: 'resolved' }));
+  }
+
+  function openPendingList() {
+    setFilters((prev) => ({ ...prev, status: 'pending' }));
+  }
+
   async function resolveRow(row, resolution) {
     const target = getSuspiciousResolutionTarget(row);
     if (!target.canResolve) {
@@ -475,6 +483,14 @@ export function SuspiciousProjectResolutionScreen() {
     <div className="container grid">
       <div className="card">
         <h2 style={{ marginTop: 0 }}>Resolución de sospechosos</h2>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          <button type="button" className={filters.status === 'resolved' ? '' : 'secondary'} onClick={openResolvedHistory} disabled={loading}>
+            Ver históricos resueltos
+          </button>
+          <button type="button" className={filters.status === 'pending' ? '' : 'secondary'} onClick={openPendingList} disabled={loading}>
+            Volver a pendientes
+          </button>
+        </div>
         <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', marginBottom: 12 }}>
           <select value={filters.status} onChange={(e) => updateFilter('status', e.target.value)}>
             <option value="pending">Pendientes</option>
