@@ -817,6 +817,15 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
         {isSuperAdmin && (
           <button
             type="button"
+            className={section === 'financial-kind-reclassify' ? '' : 'secondary'}
+            onClick={() => setSection('financial-kind-reclassify')}
+          >
+            Clasificación semántica egresos
+          </button>
+        )}
+        {isSuperAdmin && (
+          <button
+            type="button"
             className={section === 'projects-unmatched' ? '' : 'secondary'}
             onClick={() => setSection('projects-unmatched')}
           >
@@ -905,6 +914,9 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
 
       {section === 'users-access' && isSuperAdmin && <AdminUsersAccessSection />}
 
+      {section === 'financial-kind-reclassify' && isSuperAdmin && (
+        <FinancialKindReclassifySection projects={allProjects} selectedProjectId={selectedProjectId} />
+      )}
 
       {section === 'edit-transactions' &&
         (isSuperAdmin ? (
@@ -923,6 +935,104 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
 
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los superadministradores pueden ver raw data.</div>)}
+    </div>
+  );
+}
+
+function FinancialKindReclassifySection({ projects, selectedProjectId }) {
+  const [projectId, setProjectId] = useState(() => String(selectedProjectId || '').trim());
+  const [scope, setScope] = useState('all');
+  const [sourceDb, setSourceDb] = useState('ALL');
+  const [sourceSbo, setSourceSbo] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [result, setResult] = useState(null);
+
+  const sortedProjects = useMemo(
+    () => (Array.isArray(projects) ? [...projects].sort((a, b) => getProjectDisplayName(a).localeCompare(getProjectDisplayName(b), 'es')) : []),
+    [projects],
+  );
+
+  async function runReclassify() {
+    setLoading(true);
+    setError('');
+    setResult(null);
+    try {
+      const payload = {};
+      if (scope === 'project' && projectId) payload.projectId = projectId;
+      if (String(sourceDb || '').toUpperCase() !== 'ALL') payload.sourceDb = String(sourceDb || '').trim().toUpperCase();
+      if (String(sourceSbo || '').trim()) payload.sourceSbo = String(sourceSbo || '').trim().toUpperCase();
+      const response = await api.adminReclassifyFinancialKind(payload);
+      setResult(response || null);
+    } catch (err) {
+      setError(err.message || 'No se pudo ejecutar la reclasificación.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="card" style={{ display: 'grid', gap: 12 }}>
+      <div>
+        <h2 style={{ margin: 0 }}>Reclasificar egresos (retiros de aportaciones)</h2>
+        <div className="small">Corre la API de clasificación semántica para todas las transacciones o filtrando por base de datos.</div>
+      </div>
+
+      <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span className="small">Alcance</span>
+          <select value={scope} onChange={(e) => setScope(e.target.value)}>
+            <option value="all">Todos los proyectos</option>
+            <option value="project">Solo un proyecto</option>
+          </select>
+        </label>
+
+        {scope === 'project' && (
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span className="small">Proyecto</span>
+            <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <option value="">Selecciona un proyecto</option>
+              {sortedProjects.map((project) => (
+                <option key={project?._id} value={project?._id}>
+                  {getProjectDisplayName(project)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span className="small">Base de datos</span>
+          <select value={sourceDb} onChange={(e) => setSourceDb(e.target.value)}>
+            <option value="ALL">Todas</option>
+            <option value="SBO">SBO</option>
+            <option value="IVA">IVA</option>
+            <option value="EFECTIVO">EFECTIVO</option>
+          </select>
+        </label>
+
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span className="small">SBO (opcional)</span>
+          <input
+            value={sourceSbo}
+            onChange={(e) => setSourceSbo(e.target.value)}
+            placeholder="Ej. SBO_GMDI"
+          />
+        </label>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button type="button" onClick={runReclassify} disabled={loading || (scope === 'project' && !projectId)}>
+          {loading ? 'Ejecutando…' : 'Ejecutar clasificación semántica'}
+        </button>
+        {error && <span style={{ color: '#b91c1c' }}>{error}</span>}
+      </div>
+
+      {result && (
+        <div className="small">
+          Resultado: {Number(result?.modified || 0)} actualizadas de {Number(result?.matched || 0)} transacciones revisadas.
+        </div>
+      )}
     </div>
   );
 }

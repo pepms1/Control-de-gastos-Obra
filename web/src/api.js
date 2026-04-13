@@ -379,6 +379,16 @@ export const api = {
       body: JSON.stringify({ projectId, sources }),
     }),
 
+  adminReclassifyFinancialKind: ({ projectId, sourceSbo, sourceDb } = {}) => {
+    const qs = new URLSearchParams();
+    if (projectId) qs.set('projectId', projectId);
+    if (sourceSbo) qs.set('sourceSbo', sourceSbo);
+    if (sourceDb) qs.set('sourceDb', sourceDb);
+    return backendReq(`/api/admin/reclassify/financial-kind${qs.toString() ? `?${qs.toString()}` : ''}`, {
+      method: 'POST',
+    });
+  },
+
   importSapMovementsBySbo: ({ sbo, mode, force = false }) => {
     const qs = new URLSearchParams({ sbo, mode });
     if (force) qs.set('force', '1');
