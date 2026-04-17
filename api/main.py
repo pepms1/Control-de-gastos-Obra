@@ -840,6 +840,67 @@ def with_legacy_project_filter(query: dict, project_id: str) -> dict:
     return {"$and": [effective_project_filter, query]}
 
 
+def with_legacy_projects_filter(query: dict, project_ids: list[str]) -> dict:
+    normalized_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for project_id in project_ids or []:
+        normalized = str(project_id or "").strip()
+        if not normalized or normalized in seen_ids:
+            continue
+        seen_ids.add(normalized)
+        normalized_ids.append(normalized)
+
+    if not normalized_ids:
+        impossible_filter = {"_id": {"$exists": False}}
+        if not query:
+            return impossible_filter
+        return {"$and": [impossible_filter, dict(query or {})]}
+
+    project_candidates: list[str | ObjectId] = []
+    for project_id in normalized_ids:
+        project_candidates.append(project_id)
+        if ObjectId.is_valid(project_id):
+            project_candidates.append(ObjectId(project_id))
+
+    effective_project_filter = {
+        "$or": [
+            {"sap.manualResolvedProjectId": {"$in": project_candidates}},
+            {
+                "$and": [
+                    {
+                        "$or": [
+                            {"sap.manualResolvedProjectId": {"$exists": False}},
+                            {"sap.manualResolvedProjectId": None},
+                            {"sap.manualResolvedProjectId": ""},
+                        ]
+                    },
+                    {
+                        "$or": [
+                            {"manualResolvedProjectId": {"$exists": False}},
+                            {"manualResolvedProjectId": None},
+                            {"manualResolvedProjectId": ""},
+                        ]
+                    },
+                    {
+                        "$or": [
+                            {"projectId": {"$in": project_candidates}},
+                            {"sap.projectId": {"$in": project_candidates}},
+                        ]
+                    },
+                ]
+            },
+        ]
+    }
+
+    normalized_query = dict(query or {})
+    normalized_query.pop("projectId", None)
+    normalized_query.pop("sap.projectId", None)
+
+    if not normalized_query:
+        return effective_project_filter
+    return {"$and": [effective_project_filter, normalized_query]}
+
+
 def ensure_default_users():
     users = db.users
     users.create_index("username", unique=True)
@@ -11006,30 +11067,45 @@ def list_transactions(
     sourceDb: str | None = None,
     q: str | None = None,
     includeCancelled: str | None = None,
+    allProjects: str | None = None,
     page: int = 1,
     limit: int = 50,
     user: dict = Depends(require_authenticated),
 ):
     normalized_page = max(page, 1)
-    resolved_project_id = resolve_project_id(project_id)
-    logger.info("transactions projectId=%s resolved=%s", project_id, resolved_project_id)
+    all_projects_enabled = str(allProjects or "").strip().lower() in {"1", "true", "yes"}
+    resolved_project_id = ""
+    resolved_project_ids: list[str] = []
 
-    if not can_access_project(user, resolved_project_id):
-        if is_viewer(user):
-            return {
-                "items": [],
-                "page": normalized_page,
-                "limit": min(max(limit, 1), 500),
-                "totalCount": 0,
-                "totals": {
-                    "expensesGross": 0.0,
-                    "expensesTax": 0.0,
-                    "expensesWithoutTax": 0.0,
-                    "incomeGross": 0.0,
-                    "net": 0.0,
-                },
-            }
-        raise HTTPException(status_code=403, detail="Project access denied")
+    if all_projects_enabled:
+        if user.get("role") not in {"SUPERADMIN", "ADMIN"}:
+            raise HTTPException(status_code=403, detail="ADMIN or SUPERADMIN role required")
+        accessible_project_ids = get_accessible_project_ids(user)
+        if accessible_project_ids is None:
+            resolved_project_ids = [str(row.get("_id")) for row in db.projects.find({}, {"_id": 1}) if row.get("_id")]
+        else:
+            resolved_project_ids = [pid for pid in accessible_project_ids if ObjectId.is_valid(pid)]
+        logger.info("transactions projectId=%s allProjects=true resolvedProjects=%s", project_id, len(resolved_project_ids))
+    else:
+        resolved_project_id = resolve_project_id(project_id)
+        logger.info("transactions projectId=%s resolved=%s", project_id, resolved_project_id)
+
+        if not can_access_project(user, resolved_project_id):
+            if is_viewer(user):
+                return {
+                    "items": [],
+                    "page": normalized_page,
+                    "limit": min(max(limit, 1), 500),
+                    "totalCount": 0,
+                    "totals": {
+                        "expensesGross": 0.0,
+                        "expensesTax": 0.0,
+                        "expensesWithoutTax": 0.0,
+                        "incomeGross": 0.0,
+                        "net": 0.0,
+                    },
+                }
+            raise HTTPException(status_code=403, detail="Project access denied")
     normalized_limit = min(max(limit, 1), 500)
     skip = (normalized_page - 1) * normalized_limit
     effective_date_from = from_date or date_from
@@ -11049,11 +11125,19 @@ def list_transactions(
         search_query=q,
         include_cancelled=parse_include_cancelled_flag(includeCancelled) and user.get("role") in {"SUPERADMIN", "ADMIN"},
     )
-    match_query = with_legacy_project_filter(match_query, resolved_project_id)
+    if all_projects_enabled:
+        match_query = with_legacy_projects_filter(match_query, resolved_project_ids)
+    else:
+        match_query = with_legacy_project_filter(match_query, resolved_project_id)
 
     total_count = db.transactions.count_documents(match_query)
     totals = build_transaction_totals(match_query, search_query=q)
-    logger.info("/transactions resolved projectId=%s totalCount=%s", resolved_project_id, total_count)
+    logger.info(
+        "/transactions resolved projectId=%s projectCount=%s totalCount=%s",
+        "ALL" if all_projects_enabled else resolved_project_id,
+        len(resolved_project_ids) if all_projects_enabled else 1,
+        total_count,
+    )
 
     txs = list(
         db.transactions.find(match_query)
