@@ -259,6 +259,7 @@ export function SearchTransactionsV2({
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
   const [category2Catalog, setCategory2Catalog] = useState([]);
+  const [catalogVendors, setCatalogVendors] = useState([]);
   const [supplierDebugEnabled, setSupplierDebugEnabled] = useState(false);
 
   useEffect(() => {
@@ -293,21 +294,54 @@ export function SearchTransactionsV2({
     return Object.fromEntries(map.entries());
   }, [cats, category2Catalog]);
 
+  const buildBaseParams = React.useCallback(() => {
+    const params = {
+      q: query.trim(),
+      type: typeFilter === 'ALL' ? '' : typeFilter,
+      page: '1',
+      limit: '500',
+    };
+    if (forceGlobalProjectScope) {
+      params.allProjects = '1';
+    } else if (selectedProjectId) {
+      params.projectId = String(selectedProjectId);
+    }
+    return params;
+  }, [query, typeFilter, forceGlobalProjectScope, selectedProjectId]);
+
   useEffect(() => {
+    if (forceGlobalProjectScope) {
+      setCategory2Catalog([]);
+      return;
+    }
     api.supplierCategories().then((data) => setCategory2Catalog(Array.isArray(data) ? data : [])).catch(() => setCategory2Catalog([]));
-  }, []);
+  }, [forceGlobalProjectScope]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const params = forceGlobalProjectScope
+      ? { allProjects: '1', type: 'EXPENSE' }
+      : (selectedProjectId ? { projectId: String(selectedProjectId), type: typeFilter === 'ALL' ? '' : typeFilter } : {});
+    api.vendors(params)
+      .then((data) => {
+        if (!isMounted) return;
+        setCatalogVendors(Array.isArray(data) ? data : []);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setCatalogVendors([]);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [forceGlobalProjectScope, selectedProjectId, typeFilter]);
 
   useEffect(() => {
     let isMounted = true;
     setLoading(true);
     setError('');
-    const transactionParams = {
-      q: query.trim(),
-      type: typeFilter === 'ALL' ? '' : typeFilter,
-      page: '1',
-      limit: '500',
-      projectId: forceGlobalProjectScope ? '' : String(selectedProjectId || ''),
-    }).then((data) => {
+    const transactionParams = buildBaseParams();
+    api.transactions(transactionParams).then((data) => {
       if (!isMounted) return;
       setRows(Array.isArray(data?.items) ? data.items : []);
     }).catch((err) => {
@@ -321,7 +355,7 @@ export function SearchTransactionsV2({
     return () => {
       isMounted = false;
     };
-  }, [query, typeFilter, selectedProjectId, forceGlobalProjectScope]);
+  }, [buildBaseParams]);
 
   const supplierOptions = useMemo(() => {
     const source = new Map();
@@ -350,7 +384,8 @@ export function SearchTransactionsV2({
       }
     };
 
-    vendors.forEach((vendor) => {
+    const optionVendors = forceGlobalProjectScope ? catalogVendors : vendors;
+    optionVendors.forEach((vendor) => {
       const identity = resolveVendorIdentity(vendor);
       registerPreferredKey({ supplierId: identity?.supplierId, key: identity?.key });
     });
@@ -366,7 +401,7 @@ export function SearchTransactionsV2({
       return identity?.key;
     };
 
-    vendors.forEach((vendor) => {
+    optionVendors.forEach((vendor) => {
       const identity = resolveVendorIdentity(vendor);
       if (!identity.key) return;
       const canonicalKey = getCanonicalKey(identity);
@@ -460,7 +495,7 @@ export function SearchTransactionsV2({
     }
 
     return sortedOptions;
-  }, [rows, vendors, supplierDebugEnabled]);
+  }, [rows, vendors, catalogVendors, supplierDebugEnabled, forceGlobalProjectScope]);
 
   const category2Options = useMemo(() => {
     const source = new Map();
@@ -496,7 +531,7 @@ export function SearchTransactionsV2({
     [visibleRows],
   );
 
-  function exportPdf() {
+  async function exportPdf() {
     setExporting(true);
     setError('');
     try {
@@ -508,14 +543,25 @@ export function SearchTransactionsV2({
         : (category2Options.find((option) => option.value === category2Filter)?.label || category2Filter);
       const typeLabel = typeFilter === 'ALL' ? 'Todos' : getTypeLabel(typeFilter);
 
+      const params = buildBaseParams();
+      const refreshed = await api.transactions(params);
+      const exportRows = Array.isArray(refreshed?.items) ? refreshed.items : rows;
+      const filteredExportRows = exportRows
+        .filter((row) => matchesSearch(row, query, categoryMap))
+        .filter((row) => (supplierFilter === 'ALL' ? true : resolveSupplierIdentity(row).key === supplierFilter))
+        .filter((row) => (category2Filter === 'ALL' ? true : resolveCategory2(row, categoryMap).id === category2Filter))
+        .filter((row) => (typeFilter === 'ALL' ? true : row?.type === typeFilter));
+      const exportTotalWithoutTax = filteredExportRows.reduce((acc, row) => acc + (getAmountWithoutTax(row) || 0), 0);
+      const exportTotalWithTax = filteredExportRows.reduce((acc, row) => acc + (getAmountWithTax(row) || 0), 0);
+
       const html = buildPdfContent({
         query: query.trim(),
         supplierLabel,
         categoryLabel,
         typeLabel,
-        rows: visibleRows,
-        totalWithoutTax,
-        totalWithTax,
+        rows: filteredExportRows,
+        totalWithoutTax: exportTotalWithoutTax,
+        totalWithTax: exportTotalWithTax,
       });
 
       const win = window.open('about:blank', '_blank');

@@ -895,7 +895,7 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
         <SearchTransactionsV2
           cats={cats}
           vendors={vendors}
-          selectedProjectId=""
+          selectedProjectId={null}
           title="Búsqueda Global de Egresos"
           forceGlobalProjectScope
           lockTypeTo="EXPENSE"
