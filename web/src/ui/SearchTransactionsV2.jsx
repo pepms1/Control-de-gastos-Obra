@@ -1,6 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
-import { matchesSearch, resolveCategory2, resolveSupplierIdentity, resolveVendorIdentity, getTypeLabel } from './searchV2.helpers.js';
+import {
+  matchesSearch,
+  resolveCategory2,
+  resolveProjectDisplayName,
+  resolveSupplierIdentity,
+  resolveVendorIdentity,
+  getTypeLabel,
+} from './searchV2.helpers.js';
 
 const moneyFormatter = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -24,6 +31,11 @@ function getAmountWithTax(row) {
   return Number.isFinite(total) ? total : null;
 }
 
+function getTaxAmount(row) {
+  const iva = Number(row?.iva ?? row?.montoIva ?? row?.tax?.iva);
+  return Number.isFinite(iva) ? iva : null;
+}
+
 function formatCurrencyWithFallback(value) {
   return Number.isFinite(value) ? formatCurrency(value) : '—';
 }
@@ -41,14 +53,18 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
   const rowsHtml = rows.map((row) => {
     const supplier = resolveSupplierIdentity(row);
     const category2 = resolveCategory2(row, {});
+    const projectDisplayName = resolveProjectDisplayName(row);
+    const sourceSbo = String(row?.sourceSbo || '').trim() || '—';
     return `<tr>
       <td>${row?.date || '—'}</td>
+      <td class="wrap project-cell">${projectDisplayName}</td>
+      <td>${sourceSbo}</td>
       <td>${supplier?.name || '—'}</td>
-      <td>${row?.description || '—'}</td>
+      <td class="wrap description-cell">${row?.description || '—'}</td>
       <td>${category2?.name || '—'}</td>
       <td class="amount">${formatCurrencyWithFallback(getAmountWithoutTax(row))}</td>
+      <td class="amount">${formatCurrencyWithFallback(getTaxAmount(row))}</td>
       <td class="amount">${formatCurrencyWithFallback(getAmountWithTax(row))}</td>
-      <td><span class="type-badge">${getTypeLabel(row?.type)}</span></td>
     </tr>`;
   }).join('');
 
@@ -58,6 +74,7 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
       <meta charset="utf-8" />
       <title>Buscar V2</title>
       <style>
+        @page { size: A4 landscape; margin: 12mm; }
         :root {
           --bg: #f1f5f9;
           --paper: #ffffff;
@@ -72,7 +89,7 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
         * { box-sizing: border-box; }
         body {
           margin: 0;
-          padding: 22px;
+          padding: 14px;
           color: var(--text);
           background: var(--bg);
           font-family: 'Segoe UI', Roboto, Arial, sans-serif;
@@ -157,13 +174,25 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
         table {
           width: 100%;
           border-collapse: collapse;
-          font-size: 12px;
+          font-size: 11px;
         }
         th, td {
           border-bottom: 1px solid var(--line);
           padding: 8px 7px;
           vertical-align: top;
           text-align: left;
+        }
+        .wrap {
+          white-space: normal;
+          word-break: break-word;
+        }
+        .project-cell {
+          min-width: 140px;
+          max-width: 220px;
+        }
+        .description-cell {
+          min-width: 180px;
+          max-width: 300px;
         }
         thead th {
           background: #eff6ff;
@@ -179,15 +208,6 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
           font-weight: 700;
           color: #1e293b;
           white-space: nowrap;
-        }
-        .type-badge {
-          border-radius: 999px;
-          font-size: 10px;
-          display: inline-block;
-          padding: 3px 8px;
-          background: #e2e8f0;
-          color: #334155;
-          font-weight: 700;
         }
       </style>
     </head>
@@ -223,15 +243,17 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
             <thead>
               <tr>
                 <th>Fecha</th>
+                <th>Proyecto</th>
+                <th>SBO</th>
                 <th>Proveedor</th>
                 <th>Descripción</th>
-                <th>Categoría 2</th>
-                <th style="text-align:right">Sin IVA</th>
-                <th style="text-align:right">Con IVA</th>
-                <th>Tipo</th>
+                <th>Categoría</th>
+                <th style="text-align:right">Subtotal</th>
+                <th style="text-align:right">IVA</th>
+                <th style="text-align:right">Total</th>
               </tr>
             </thead>
-            <tbody>${rowsHtml || '<tr><td colspan="7">Sin resultados</td></tr>'}</tbody>
+            <tbody>${rowsHtml || '<tr><td colspan="9">Sin resultados</td></tr>'}</tbody>
           </table>
         </div>
       </section>
@@ -658,39 +680,44 @@ export function SearchTransactionsV2({
           <thead>
             <tr>
               <th>Fecha</th>
+              <th>Proyecto</th>
+              <th>SBO</th>
               <th>Proveedor</th>
               <th>Descripción</th>
-              <th>Categoría 2</th>
-              <th>Sin IVA</th>
-              <th>Con IVA</th>
-              <th>Tipo</th>
+              <th>Categoría</th>
+              <th>Subtotal</th>
+              <th>IVA</th>
+              <th>Total</th>
             </tr>
           </thead>
           <tbody>
             {visibleRows.map((row) => {
               const supplier = resolveSupplierIdentity(row);
               const category2 = resolveCategory2(row, categoryMap);
+              const projectDisplayName = resolveProjectDisplayName(row);
               return (
                 <tr key={row.id}>
                   <td>{row.date || '—'}</td>
+                  <td>{projectDisplayName || 'Sin proyecto'}</td>
+                  <td>{row.sourceSbo || '—'}</td>
                   <td>{supplier?.name || '—'}</td>
                   <td>{row.description || '—'}</td>
                   <td>{category2?.name || '—'}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{formatCurrencyWithFallback(getAmountWithoutTax(row))}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{formatCurrencyWithFallback(getTaxAmount(row))}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{formatCurrencyWithFallback(getAmountWithTax(row))}</td>
-                  <td>{getTypeLabel(row?.type)}</td>
                 </tr>
               );
             })}
-            {!visibleRows.length && !loading && <tr><td colSpan={7} className="small">Sin resultados</td></tr>}
+            {!visibleRows.length && !loading && <tr><td colSpan={9} className="small">Sin resultados</td></tr>}
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={3} />
+              <td colSpan={5} />
               <td style={{ textAlign: 'right', fontWeight: 700 }}>Totales visibles</td>
               <td style={{ fontWeight: 700 }}>{formatCurrency(totalWithoutTax)}</td>
+              <td style={{ fontWeight: 700 }}>{formatCurrency(totalWithTax - totalWithoutTax)}</td>
               <td style={{ fontWeight: 700 }}>{formatCurrency(totalWithTax)}</td>
-              <td />
             </tr>
           </tfoot>
         </table>

@@ -99,11 +99,28 @@ export function resolveCategory2(transaction, categoryMap = {}) {
   return { id: CATEGORY2_UNCLASSIFIED_ID, name: CATEGORY2_UNCLASSIFIED_NAME };
 }
 
+export function resolveProjectDisplayName(transaction) {
+  const sap = transaction?.sap || {};
+  const candidates = [
+    transaction?.projectDisplayName,
+    sap?.rawProjectName,
+    sap?.normalizedProjectName,
+  ];
+  for (const candidate of candidates) {
+    const normalized = String(candidate || '').trim();
+    if (!normalized) continue;
+    if (/^[a-f0-9]{24}$/i.test(normalized)) continue;
+    return normalized;
+  }
+  return 'Sin proyecto';
+}
+
 export function buildSearchHaystack(transaction, categoryMap) {
   const sap = transaction?.sap || {};
   const sapMeta = transaction?.sapMeta || {};
   const supplier = resolveSupplierIdentity(transaction);
   const category2 = resolveCategory2(transaction, categoryMap);
+  const projectDisplayName = resolveProjectDisplayName(transaction);
 
   const fields = [
     transaction?.description,
@@ -134,7 +151,7 @@ export function buildSearchHaystack(transaction, categoryMap) {
     transaction?.categoryCode,
     transaction?.category_hint_name,
     transaction?.category_hint_code,
-    transaction?.projectDisplayName,
+    projectDisplayName,
     transaction?.projectName,
     transaction?.sourceSbo,
   ];

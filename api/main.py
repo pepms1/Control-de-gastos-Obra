@@ -525,6 +525,29 @@ def serialize_transaction_with_supplier(
     return tx_doc
 
 
+def resolve_transaction_project_display_name(tx_doc: dict, projects_by_id: dict[str, dict] | None = None) -> str:
+    normalized_project_id = normalize_non_empty_string(tx_doc.get("projectId") or tx_doc.get("effectiveProjectId"))
+    project_name_from_id = None
+    if normalized_project_id and projects_by_id:
+        project_doc = projects_by_id.get(normalized_project_id) or {}
+        project_name_from_id = normalize_non_empty_string(project_doc.get("displayName") or project_doc.get("name"))
+
+    sap_doc = tx_doc.get("sap") if isinstance(tx_doc.get("sap"), dict) else {}
+    raw_candidates = [
+        project_name_from_id,
+        normalize_non_empty_string(tx_doc.get("projectDisplayName")),
+        normalize_non_empty_string(sap_doc.get("rawProjectName")),
+        normalize_non_empty_string(sap_doc.get("normalizedProjectName")),
+    ]
+    for candidate in raw_candidates:
+        if not candidate:
+            continue
+        if ObjectId.is_valid(candidate):
+            continue
+        return candidate
+    return "Sin proyecto"
+
+
 def serialize_user(user):
     user_doc = serialize(user)
     user_doc.pop("password_hash", None)
@@ -11292,6 +11315,19 @@ def list_transactions(
         .limit(normalized_limit)
     )
 
+    transaction_project_ids = {
+        str(tx.get("projectId")).strip()
+        for tx in txs
+        if normalize_non_empty_string(tx.get("projectId")) and ObjectId.is_valid(str(tx.get("projectId")).strip())
+    }
+    projects_by_id: dict[str, dict] = {}
+    if transaction_project_ids:
+        for project in db.projects.find(
+            {"_id": {"$in": [ObjectId(project_id) for project_id in transaction_project_ids]}},
+            {"displayName": 1, "name": 1},
+        ):
+            projects_by_id[str(project.get("_id"))] = project
+
     supplier_ids = []
     for tx in txs:
         supplier_id = tx.get("supplierId")
@@ -11345,6 +11381,9 @@ def list_transactions(
             "iva": tx_doc["iva"],
             "totalFactura": tx_doc["totalFactura"],
         }
+        resolved_project_name = resolve_transaction_project_display_name(tx_doc, projects_by_id=projects_by_id)
+        tx_doc["projectDisplayName"] = resolved_project_name
+        tx_doc["projectName"] = resolved_project_name
         items.append(tx_doc)
 
     return {
