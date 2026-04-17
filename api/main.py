@@ -762,14 +762,24 @@ def get_active_project_id(request: FastAPIRequest) -> str:
     return active_project_id
 
 
+def is_default_project_id_literal(project_id: str | None) -> bool:
+    return str(project_id or "").strip().upper() == "DEFAULT_PROJECT_ID"
+
+
 def resolve_project_id(project_id: str | None = None) -> str:
     requested_project_id = (project_id or "").strip()
     using_default = not requested_project_id
+
+    if requested_project_id and is_default_project_id_literal(requested_project_id):
+        logger.warning("Literal DEFAULT_PROJECT_ID received as projectId; rejecting request")
+        raise HTTPException(status_code=400, detail="Invalid projectId")
 
     if using_default:
         requested_project_id = (os.getenv("DEFAULT_PROJECT_ID") or "").strip()
         if not requested_project_id:
             raise HTTPException(status_code=500, detail="DEFAULT_PROJECT_ID env var is required")
+        if is_default_project_id_literal(requested_project_id):
+            raise HTTPException(status_code=500, detail="DEFAULT_PROJECT_ID must be a valid ObjectId")
 
     if not ObjectId.is_valid(requested_project_id):
         if using_default:
@@ -6468,7 +6478,44 @@ def create_supplier_category(payload: dict, _: dict = Depends(require_admin)):
 
 
 @app.get("/api/suppliers")
-def list_suppliers(uncategorized: int = 0, request: FastAPIRequest = None, user: dict = Depends(require_authenticated)):
+def list_suppliers(
+    uncategorized: int = 0,
+    allProjects: str | None = None,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_authenticated),
+):
+    all_projects_enabled = str(allProjects or "").strip().lower() in {"1", "true", "yes"}
+    request_query_params = getattr(request, "query_params", {}) if request is not None else {}
+    request_headers = getattr(request, "headers", {}) if request is not None else {}
+    requested_project_id = (request_query_params.get("projectId") or "").strip()
+    header_project_id = (request_headers.get("X-Project-Id") or "").strip()
+    if is_default_project_id_literal(requested_project_id) or is_default_project_id_literal(header_project_id):
+        logger.warning(
+            "api/suppliers received literal DEFAULT_PROJECT_ID (query=%s header=%s allProjects=%s)",
+            requested_project_id,
+            header_project_id,
+            all_projects_enabled,
+        )
+
+    if all_projects_enabled:
+        if user.get("role") not in {"SUPERADMIN", "ADMIN"}:
+            raise HTTPException(status_code=403, detail="ADMIN or SUPERADMIN role required")
+        accessible_project_ids = get_accessible_project_ids(user)
+        if accessible_project_ids is None:
+            resolved_project_ids = [str(row.get("_id")) for row in db.projects.find({}, {"_id": 1}) if row.get("_id")]
+        else:
+            resolved_project_ids = [pid for pid in accessible_project_ids if ObjectId.is_valid(pid)]
+
+        project_candidates: list[str | ObjectId] = []
+        for pid in resolved_project_ids:
+            project_candidates.append(pid)
+            if ObjectId.is_valid(pid):
+                project_candidates.append(ObjectId(pid))
+        query = {"$and": [{"$or": [{"projectId": {"$in": project_candidates}}, {"projectIds": {"$in": project_candidates}}]}]}
+        if uncategorized == 1:
+            query["$and"].append({"$or": [{"categoryId": None}, {"categoryId": {"$exists": False}}]})
+        return [serialize(s) for s in db.suppliers.find(query).sort("name", 1)]
+
     active_project_id = get_active_project_id(request)
     if not can_access_project(user, active_project_id):
         if is_viewer(user):
@@ -10374,9 +10421,99 @@ def list_vendors(
     active_only: bool = True,
     category_id: str | None = None,
     include_sap: bool = True,
+    type: str | None = None,
+    allProjects: str | None = None,
     request: FastAPIRequest = None,
     user: dict = Depends(require_authenticated),
 ):
+    all_projects_enabled = str(allProjects or "").strip().lower() in {"1", "true", "yes"}
+    request_query_params = getattr(request, "query_params", {}) if request is not None else {}
+    request_headers = getattr(request, "headers", {}) if request is not None else {}
+    requested_project_id = (request_query_params.get("projectId") or "").strip()
+    header_project_id = (request_headers.get("X-Project-Id") or "").strip()
+    if is_default_project_id_literal(requested_project_id) or is_default_project_id_literal(header_project_id):
+        logger.warning(
+            "vendors endpoint received literal DEFAULT_PROJECT_ID (query=%s header=%s allProjects=%s)",
+            requested_project_id,
+            header_project_id,
+            all_projects_enabled,
+        )
+
+    if all_projects_enabled:
+        if user.get("role") not in {"SUPERADMIN", "ADMIN"}:
+            raise HTTPException(status_code=403, detail="ADMIN or SUPERADMIN role required")
+        accessible_project_ids = get_accessible_project_ids(user)
+        if accessible_project_ids is None:
+            project_ids = [str(row.get("_id")) for row in db.projects.find({}, {"_id": 1}) if row.get("_id")]
+        else:
+            project_ids = [pid for pid in accessible_project_ids if ObjectId.is_valid(pid)]
+        if not project_ids:
+            return []
+
+        vendor_query: dict = {"projectId": {"$in": project_ids}}
+        if active_only:
+            vendor_query["active"] = True
+        if category_id:
+            vendor_query["category_ids"] = category_id
+        if include_sap:
+            vendor_query["$or"] = [{"source": {"$exists": False}}, {"source": "manual"}, {"source": "sap"}, {"source": "sap-sbo"}]
+        else:
+            vendor_query["$or"] = [{"source": {"$exists": False}}, {"source": "manual"}]
+
+        grouped: dict[str, dict] = {}
+
+        def upsert_vendor(raw_key: str | None, name: str | None, card_code: str | None, business_partner: str | None, project_id: str | None):
+            supplier_key = normalize_non_empty_string(raw_key)
+            if not supplier_key:
+                supplier_key = build_supplier_key(card_code, business_partner, name)
+            if str(supplier_key or "").startswith("cardcode:"):
+                supplier_key = f"card:{str(supplier_key).split(':', 1)[1]}"
+            if not supplier_key:
+                return
+            entry = grouped.get(supplier_key)
+            if entry is None:
+                entry = {
+                    "id": supplier_key,
+                    "name": normalize_non_empty_string(name) or normalize_non_empty_string(business_partner) or normalize_non_empty_string(card_code) or supplier_key,
+                    "cardCode": normalize_non_empty_string(card_code),
+                    "supplierCardCode": normalize_non_empty_string(card_code),
+                    "businessPartner": normalize_non_empty_string(business_partner),
+                    "source": "global",
+                    "active": True,
+                    "projectIds": [],
+                    "category_ids": [],
+                }
+                grouped[supplier_key] = entry
+
+            normalized_project = normalize_non_empty_string(project_id)
+            if normalized_project and normalized_project not in entry["projectIds"]:
+                entry["projectIds"].append(normalized_project)
+            if not entry.get("name"):
+                entry["name"] = normalize_non_empty_string(name) or normalize_non_empty_string(business_partner) or normalize_non_empty_string(card_code) or supplier_key
+
+        for vendor in db.vendors.find(vendor_query, {"name": 1, "cardCode": 1, "supplierCardCode": 1, "projectId": 1, "businessPartner": 1, "externalIds": 1}):
+            ext = vendor.get("externalIds") if isinstance(vendor.get("externalIds"), dict) else {}
+            card_code = vendor.get("supplierCardCode") or vendor.get("cardCode") or ext.get("sapCardCode")
+            business_partner = vendor.get("businessPartner") or ext.get("sapBusinessPartner")
+            upsert_vendor(None, vendor.get("name"), card_code, business_partner, vendor.get("projectId"))
+
+        tx_query = build_transactions_query(type_value=type or None)
+        tx_query = with_legacy_projects_filter(tx_query, project_ids)
+        projection = {"supplierName": 1, "supplierCardCode": 1, "businessPartner": 1, "sap": 1, "projectId": 1}
+        for tx in db.transactions.find(tx_query, projection):
+            identity = build_supplier_identity_from_transaction(tx)
+            upsert_vendor(
+                identity.get("supplierKey"),
+                identity.get("supplierName"),
+                identity.get("supplierCardCode"),
+                identity.get("businessPartner"),
+                tx.get("projectId"),
+            )
+
+        vendors = list(grouped.values())
+        vendors.sort(key=lambda v: normalize_category_name(str(v.get("name") or "")))
+        return vendors
+
     active_project_id = get_active_project_id(request)
     if not can_access_project(user, active_project_id):
         if is_viewer(user):
@@ -11074,6 +11211,15 @@ def list_transactions(
 ):
     normalized_page = max(page, 1)
     all_projects_enabled = str(allProjects or "").strip().lower() in {"1", "true", "yes"}
+    request_headers = getattr(request, "headers", {}) if request is not None else {}
+    header_project_id = (request_headers.get("X-Project-Id") or "").strip()
+    if is_default_project_id_literal(project_id) or is_default_project_id_literal(header_project_id):
+        logger.warning(
+            "transactions received literal DEFAULT_PROJECT_ID (query=%s header=%s allProjects=%s)",
+            project_id,
+            header_project_id,
+            all_projects_enabled,
+        )
     resolved_project_id = ""
     resolved_project_ids: list[str] = []
 

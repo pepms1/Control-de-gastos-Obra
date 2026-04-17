@@ -50,6 +50,8 @@ function withProjectId(path, opts = {}) {
 
   const [pathname, queryString = ''] = path.split('?');
   const qs = new URLSearchParams(queryString);
+  const allProjects = String(qs.get('allProjects') || '').trim().toLowerCase();
+  if (allProjects === '1' || allProjects === 'true' || allProjects === 'yes') return path;
   if (qs.has('projectId')) return path;
 
   const selectedProjectId = getSelectedProjectId();
@@ -106,9 +108,14 @@ async function request(baseUrl, path, opts = {}) {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const cleanPath = withProjectId(normalizedPath, opts);
   const cleanPathname = cleanPath.split('?')[0] || '';
+  const cleanQueryString = cleanPath.includes('?') ? cleanPath.split('?')[1] : '';
+  const queryParams = new URLSearchParams(cleanQueryString);
+  const allProjects = String(queryParams.get('allProjects') || '').trim().toLowerCase();
+  const isAllProjectsRequest = allProjects === '1' || allProjects === 'true' || allProjects === 'yes';
   const selectedProjectId = getSelectedProjectId();
   const shouldAttachProjectHeader = Boolean(
     selectedProjectId
+      && !isAllProjectsRequest
       && !cleanPathname.startsWith('/auth/')
       && cleanPathname !== '/api/projects'
       && !cleanPathname.startsWith('/api/admin/projects')
@@ -232,7 +239,10 @@ export const api = {
       method: 'DELETE',
     }),
 
-  vendors: () => req('/vendors'),
+  vendors: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return req(`/vendors${qs ? `?${qs}` : ''}`);
+  },
   createVendor: (payload) =>
     req('/vendors', {
       method: 'POST',
@@ -406,9 +416,15 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
 
-  unclassifiedSuppliers: () => backendReq('/api/suppliers?uncategorized=1'),
+  unclassifiedSuppliers: (params = {}) => {
+    const qs = new URLSearchParams({ uncategorized: '1', ...params }).toString();
+    return backendReq(`/api/suppliers?${qs}`);
+  },
 
-  suppliers: () => backendReq('/api/suppliers'),
+  suppliers: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/suppliers${qs ? `?${qs}` : ''}`);
+  },
 
   adminTrabajosEspecialesSuppliers: () => backendReq('/api/admin/trabajos-especiales/suppliers'),
 
