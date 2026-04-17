@@ -301,7 +301,7 @@ export function SearchTransactionsV2({
     let isMounted = true;
     setLoading(true);
     setError('');
-    api.transactions({
+    const transactionParams = {
       q: query.trim(),
       type: typeFilter === 'ALL' ? '' : typeFilter,
       page: '1',
