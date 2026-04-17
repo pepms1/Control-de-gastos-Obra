@@ -239,13 +239,21 @@ function buildPdfContent({ query, supplierLabel, categoryLabel, typeLabel, rows,
   </html>`;
 }
 
-export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
+export function SearchTransactionsV2({
+  cats,
+  vendors,
+  selectedProjectId,
+  title = 'BUSCAR V2',
+  forceGlobalProjectScope = false,
+  lockTypeTo = '',
+}) {
   const searchInputRef = useRef(null);
   const [query, setQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
   const [supplierFilter, setSupplierFilter] = useState('ALL');
   const [category2Filter, setCategory2Filter] = useState('ALL');
-  const [typeFilter, setTypeFilter] = useState('EXPENSE');
+  const initialType = String(lockTypeTo || '').trim().toUpperCase() || 'EXPENSE';
+  const [typeFilter, setTypeFilter] = useState(initialType);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -256,6 +264,12 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
   useEffect(() => {
     searchInputRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    const nextType = String(lockTypeTo || '').trim().toUpperCase();
+    if (!nextType) return;
+    setTypeFilter(nextType);
+  }, [lockTypeTo]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -292,7 +306,7 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
       type: typeFilter === 'ALL' ? '' : typeFilter,
       page: '1',
       limit: '500',
-      projectId: String(selectedProjectId || ''),
+      projectId: forceGlobalProjectScope ? '' : String(selectedProjectId || ''),
     }).then((data) => {
       if (!isMounted) return;
       setRows(Array.isArray(data?.items) ? data.items : []);
@@ -307,7 +321,7 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
     return () => {
       isMounted = false;
     };
-  }, [query, typeFilter, selectedProjectId]);
+  }, [query, typeFilter, selectedProjectId, forceGlobalProjectScope]);
 
   const supplierOptions = useMemo(() => {
     const source = new Map();
@@ -535,9 +549,11 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
     }
   }
 
+  const typeSelectorVisible = !String(lockTypeTo || '').trim();
+
   return (
     <div className="card">
-      <h2 style={{ marginTop: 0 }}>BUSCAR V2</h2>
+      <h2 style={{ marginTop: 0 }}>{title}</h2>
       <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
         <input
           ref={searchInputRef}
@@ -576,11 +592,13 @@ export function SearchTransactionsV2({ cats, vendors, selectedProjectId }) {
             <option value="ALL">Categoría 2 (todas)</option>
             {category2Options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
-          <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
-            <option value="ALL">Ingreso / Egreso (todos)</option>
-            <option value="INCOME">Ingreso</option>
-            <option value="EXPENSE">Egreso</option>
-          </select>
+          {typeSelectorVisible && (
+            <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+              <option value="ALL">Ingreso / Egreso (todos)</option>
+              <option value="INCOME">Ingreso</option>
+              <option value="EXPENSE">Egreso</option>
+            </select>
+          )}
         </div>
       )}
 

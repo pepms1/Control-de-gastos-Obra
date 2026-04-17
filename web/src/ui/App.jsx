@@ -787,6 +787,15 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
         <button type="button" className={section === 'catalog' ? '' : 'secondary'} onClick={() => setSection('catalog')}>
           Catálogo
         </button>
+        {canUseAdminPreferences && (
+          <button
+            type="button"
+            className={section === 'global-search' ? '' : 'secondary'}
+            onClick={() => setSection('global-search')}
+          >
+            Búsqueda Global
+          </button>
+        )}
         <button
           type="button"
           className={section === 'import-sap' ? '' : 'secondary'}
@@ -882,6 +891,16 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
       )}
 
       {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
+      {section === 'global-search' && canUseAdminPreferences && (
+        <SearchTransactionsV2
+          cats={cats}
+          vendors={vendors}
+          selectedProjectId=""
+          title="Búsqueda Global de Egresos"
+          forceGlobalProjectScope
+          lockTypeTo="EXPENSE"
+        />
+      )}
 
       {section === 'import-sap' &&
         (isSuperAdmin ? (
