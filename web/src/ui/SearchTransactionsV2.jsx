@@ -306,9 +306,8 @@ export function SearchTransactionsV2({
       type: typeFilter === 'ALL' ? '' : typeFilter,
       page: '1',
       limit: '500',
-      ...(forceGlobalProjectScope ? { allProjects: '1' } : { projectId: String(selectedProjectId || '') }),
-    };
-    api.transactions(transactionParams).then((data) => {
+      projectId: forceGlobalProjectScope ? '' : String(selectedProjectId || ''),
+    }).then((data) => {
       if (!isMounted) return;
       setRows(Array.isArray(data?.items) ? data.items : []);
     }).catch((err) => {
