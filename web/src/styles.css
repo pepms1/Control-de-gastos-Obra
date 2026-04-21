@@ -204,7 +204,7 @@ body.theme-dark .nav {
 .nav-links-desktop button {
   font-size: 20px;
   font-weight: 600;
-  padding: 11px 28px;
+  padding: 11px 44px;
   min-height: 48px;
   border-radius: var(--radius-lg);
   /* solid white background + border = clearly a button */
