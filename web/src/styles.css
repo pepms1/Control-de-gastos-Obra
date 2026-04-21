@@ -119,7 +119,7 @@ a { color: inherit; }
   flex-wrap: wrap;
   gap: 8px 14px;
   align-items: center;
-  padding: 12px 20px;
+  padding: 12px 20px 68px;   /* bottom padding = space for tabs row */
   background: rgba(255, 255, 255, .97);
   border-bottom: 1px solid var(--gray-150);
   position: sticky;
@@ -127,8 +127,6 @@ a { color: inherit; }
   z-index: 1000;
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(10px);
-  /* needed for absolute-centered tabs */
-  position: sticky;
 }
 body.theme-dark .nav {
   background: rgba(15, 23, 42, .97);
@@ -191,13 +189,14 @@ body.theme-dark .nav {
   padding: 6px 10px;
 }
 
-/* Desktop nav links — centered absolutely in the nav bar */
+/* Desktop nav links — own row at the bottom of the nav, full width centered */
 .nav-links-desktop {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
+  bottom: 10px;
+  left: 0;
+  right: 0;
   display: flex;
+  justify-content: center;
   gap: 10px;
   align-items: center;
 }
