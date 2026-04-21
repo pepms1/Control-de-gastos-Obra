@@ -204,11 +204,11 @@ body.theme-dark .nav {
 .nav-links-desktop button {
   font-size: 20px;
   font-weight: 600;
-  padding: 11px 44px;
+  padding: 12px 56px;
   min-height: 48px;
   border-radius: var(--radius-lg);
-  /* solid white background + border = clearly a button */
-  background: #fff;
+  /* solid gray background = clearly a button even on white nav */
+  background: var(--gray-100);
   color: var(--gray-600);
   border: 1.5px solid var(--gray-200);
   cursor: pointer;
