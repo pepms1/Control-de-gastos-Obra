@@ -197,10 +197,10 @@ body.theme-dark .nav {
   margin-left: 4px;
 }
 .nav-links-desktop button {
-  font-size: 14px;
+  font-size: 15.5px;
   font-weight: 600;
-  padding: 7px 14px;
-  min-height: 36px;
+  padding: 8px 18px;
+  min-height: 38px;
   border-radius: var(--radius-full);
   background: transparent;
   color: var(--gray-600);
@@ -559,30 +559,46 @@ body.theme-dark .modal {
   display: inline-flex;
   width: fit-content;
 }
+/* ── Egresos / Ingresos switch ───────────────────────────
+   JSX pattern: active = no class (default button = primary blue)
+                inactive = className="secondary"
+   ─────────────────────────────────────────────────────── */
 .dashboard-primary-switch {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px;
+  gap: 4px;
   padding: 4px;
   border: 1.5px solid var(--gray-200);
   border-radius: var(--radius-full);
-  background: var(--gray-50);
+  background: var(--gray-100);
+  width: fit-content;
 }
 .dashboard-primary-switch button {
-  min-height: 32px;
-  padding: 5px 10px;
+  /* Active state — no extra class in JSX */
+  min-height: 34px;
+  padding: 6px 20px;
   border-radius: var(--radius-full);
-  font-size: 13px;
-  background: transparent;
-  color: var(--gray-600);
-}
-.dashboard-primary-switch button.active {
+  font-size: 14px;
+  font-weight: 700;
   background: var(--primary);
   color: #fff;
   box-shadow: var(--shadow-sm);
+  transform: none;
 }
-.dashboard-primary-switch button:hover:not(.active):not(:disabled) {
-  background: var(--gray-100);
+.dashboard-primary-switch button:hover:not(:disabled) {
+  background: var(--primary-mid);
+  transform: none;
+}
+.dashboard-primary-switch button.secondary {
+  /* Inactive state */
+  background: transparent;
+  color: var(--gray-600);
+  box-shadow: none;
+  font-weight: 600;
+}
+.dashboard-primary-switch button.secondary:hover:not(:disabled) {
+  background: var(--gray-50);
+  color: var(--primary);
   box-shadow: none;
   transform: none;
 }
@@ -602,6 +618,13 @@ body.theme-dark .modal {
 }
 body.theme-dark .dashboard-state { background: var(--gray-100); }
 body.theme-dark .dashboard-state-error { background: #3f1d2e; color: #fecdd3; border-color: #be123c; }
+body.theme-dark .dashboard-primary-switch { background: var(--gray-100); border-color: var(--gray-200); }
+body.theme-dark .dashboard-primary-switch button.secondary { color: var(--gray-500); }
+body.theme-dark .dashboard-primary-switch button.secondary:hover:not(:disabled) { background: var(--gray-150); color: var(--primary-dark); }
+body.theme-dark .dashboard-tabs { border-bottom-color: var(--gray-200); }
+body.theme-dark .dashboard-tabs button { background: var(--primary-soft); color: var(--primary-dark); }
+body.theme-dark .dashboard-tabs button.secondary { background: transparent; color: var(--gray-500); }
+body.theme-dark .dashboard-tabs button.secondary:hover:not(:disabled) { background: var(--gray-100); color: var(--primary-dark); }
 
 /* KPI grid */
 .dashboard-summary { display: grid; gap: var(--space-4); }
@@ -710,22 +733,45 @@ body.theme-dark .dashboard-column-track { background: var(--gray-100); }
 }
 .dashboard-column-label { font-size: 11px; text-align: center; color: var(--gray-500); font-weight: 600; }
 
-.dashboard-tabs { display: flex; gap: 5px; overflow: auto; padding-bottom: 2px; }
+/* ── Resumen / Categoría 2 / Proveedor tabs ──────────────
+   JSX pattern: active = no class (default button = primary)
+                inactive = className="secondary"
+   ─────────────────────────────────────────────────────── */
+.dashboard-tabs {
+  display: flex;
+  gap: 6px;
+  overflow: auto;
+  padding-bottom: 2px;
+  border-bottom: 1.5px solid var(--gray-150);
+  padding-bottom: 10px;
+}
 .dashboard-tabs button {
-  min-height: 32px;
-  padding: 5px 12px;
+  /* Active state */
+  min-height: 34px;
+  padding: 6px 16px;
   border-radius: var(--radius-full);
   font-size: 13px;
+  font-weight: 700;
   white-space: nowrap;
-  background: transparent;
-  color: var(--gray-600);
-}
-.dashboard-tabs button.active {
   background: var(--primary-soft);
   color: var(--primary);
+  box-shadow: none;
+  transform: none;
 }
-.dashboard-tabs button:hover:not(.active):not(:disabled) {
+.dashboard-tabs button:hover:not(:disabled) {
+  background: var(--primary-soft-hover);
+  box-shadow: none;
+  transform: none;
+}
+.dashboard-tabs button.secondary {
+  /* Inactive state */
+  background: transparent;
+  color: var(--gray-500);
+  font-weight: 600;
+}
+.dashboard-tabs button.secondary:hover:not(:disabled) {
   background: var(--gray-100);
+  color: var(--primary);
   box-shadow: none;
   transform: none;
 }
@@ -854,10 +900,11 @@ body.theme-dark .budgets-assignment-panel {
     border-color: var(--gray-200);
   }
   .mobile-bottom-nav button {
-    min-height: 38px;
+    min-height: 40px;
     padding: 6px 4px;
     border-radius: var(--radius-sm);
-    font-size: 12px;
+    font-size: 13px;
+    font-weight: 600;
     background: transparent;
     color: var(--gray-500);
     box-shadow: none;
@@ -867,6 +914,7 @@ body.theme-dark .budgets-assignment-panel {
   .mobile-bottom-nav button.active {
     background: var(--primary-soft);
     color: var(--primary);
+    font-weight: 700;
   }
 }
 
