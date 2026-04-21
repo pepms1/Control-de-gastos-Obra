@@ -747,22 +747,56 @@ export default function App() {
 
 function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects, session, canUseAdminPreferences, selectedProjectId, onCatalogChanged, onTransactionsChanged, onProjectCreated, onSessionUpdated, onSelectedProjectSaved }) {
   const [section, setSection] = useState('catalog');
-  const settingsSections = [
-    { key: 'my-project-visibility', label: 'Mi visualización de proyectos', enabled: canUseAdminPreferences },
-    { key: 'catalog', label: 'Catálogo', enabled: true },
-    { key: 'global-search', label: 'Búsqueda Global', enabled: canUseAdminPreferences },
-    { key: 'users-access', label: 'Usuarios y accesos', enabled: isSuperAdmin },
-    { key: 'projects-visibility', label: 'Visibilidad de proyectos', enabled: isSuperAdmin },
-    { key: 'import-sap', label: 'Subir CSV', enabled: isSuperAdmin, disabled: !isSuperAdmin, disabledTitle: 'Solo disponible para superadministradores' },
-    { key: 'sap-latest', label: 'SAP Import', enabled: isSuperAdmin, disabled: !isSuperAdmin, disabledTitle: 'Solo disponible para superadministradores' },
-    { key: 'latest-imports', label: 'Últimos imports', enabled: isSuperAdmin },
-    { key: 'special-work-suppliers', label: 'Proveedores de Trabajos Especiales', enabled: isSuperAdmin },
-    { key: 'financial-kind-reclassify', label: 'Quitar Retiros de inversion de Egresos', enabled: isSuperAdmin },
-    { key: 'projects-unmatched', label: 'Proyectos unmatched', enabled: isSuperAdmin },
-    { key: 'suspicious-project-resolutions', label: 'Resolución de sospechosos', enabled: isSuperAdmin },
-    { key: 'edit-transactions', label: 'Editar movimientos', enabled: isSuperAdmin },
-    { key: 'raw-data', label: 'Raw data', enabled: isSuperAdmin, disabled: !isSuperAdmin, disabledTitle: 'Solo disponible para superadministradores' },
+  const settingsSectionsByCategory = [
+    {
+      title: 'Preferencias',
+      items: [
+        { key: 'my-project-visibility', label: 'Mi visualización de proyectos', enabled: canUseAdminPreferences },
+      ],
+    },
+    {
+      title: 'Operación diaria',
+      items: [
+        { key: 'catalog', label: 'Catálogo', enabled: true },
+        { key: 'global-search', label: 'Búsqueda Global', enabled: canUseAdminPreferences },
+      ],
+    },
+    {
+      title: 'Administración',
+      items: [
+        { key: 'users-access', label: 'Usuarios y accesos', enabled: isSuperAdmin },
+        { key: 'projects-visibility', label: 'Visibilidad de proyectos', enabled: isSuperAdmin },
+        { key: 'projects-unmatched', label: 'Proyectos unmatched', enabled: isSuperAdmin },
+      ],
+    },
+    {
+      title: 'Importaciones SAP',
+      items: [
+        { key: 'import-sap', label: 'Subir CSV', enabled: isSuperAdmin, disabled: !isSuperAdmin, disabledTitle: 'Solo disponible para superadministradores' },
+        { key: 'sap-latest', label: 'SAP Import', enabled: isSuperAdmin, disabled: !isSuperAdmin, disabledTitle: 'Solo disponible para superadministradores' },
+        { key: 'latest-imports', label: 'Últimos imports', enabled: isSuperAdmin },
+      ],
+    },
+    {
+      title: 'Calidad y reglas',
+      items: [
+        { key: 'special-work-suppliers', label: 'Proveedores de Trabajos Especiales', enabled: isSuperAdmin },
+        { key: 'financial-kind-reclassify', label: 'Quitar Retiros de inversion de Egresos', enabled: isSuperAdmin },
+        { key: 'suspicious-project-resolutions', label: 'Resolución de sospechosos', enabled: isSuperAdmin },
+      ],
+    },
+    {
+      title: 'Edición avanzada',
+      items: [
+        { key: 'edit-transactions', label: 'Editar movimientos', enabled: isSuperAdmin },
+        { key: 'raw-data', label: 'Raw data', enabled: isSuperAdmin, disabled: !isSuperAdmin, disabledTitle: 'Solo disponible para superadministradores' },
+      ],
+    },
   ];
+  const settingsSections = settingsSectionsByCategory.flatMap((category) => category.items);
+  const visibleCategories = settingsSectionsByCategory
+    .map((category) => ({ ...category, items: category.items.filter((item) => item.enabled || item.disabled) }))
+    .filter((category) => category.items.length > 0);
 
   useEffect(() => {
     if (!isSuperAdmin && section === 'edit-transactions') {
@@ -777,20 +811,25 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
           <h3>Ajustes</h3>
           <span className="small">Selecciona una sección para configurarla.</span>
         </div>
-        <div className="settings-sidebar-menu">
-          {settingsSections.filter((item) => item.enabled || item.disabled).map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              className={`settings-menu-button ${section === item.key ? 'active' : ''}`}
-              onClick={() => setSection(item.key)}
-              disabled={item.disabled}
-              title={item.disabledTitle}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
+        {visibleCategories.map((category) => (
+          <div key={category.title} className="settings-sidebar-category">
+            <div className="settings-sidebar-category-title">{category.title}</div>
+            <div className="settings-sidebar-menu">
+              {category.items.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={`settings-menu-button ${section === item.key ? 'active' : ''}`}
+                  onClick={() => setSection(item.key)}
+                  disabled={item.disabled}
+                  title={item.disabledTitle}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
       </aside>
 
       <div className="settings-content">
