@@ -192,31 +192,34 @@ body.theme-dark .nav {
 /* Desktop nav links */
 .nav-links-desktop {
   display: flex;
-  gap: 4px;
+  gap: 10px;
   align-items: center;
-  margin-left: 4px;
+  margin-left: 6px;
 }
 .nav-links-desktop button {
-  font-size: 36px;
+  font-size: 22px;
   font-weight: 600;
-  padding: 8px 22px;
-  min-height: 52px;
-  border-radius: var(--radius-full);
-  background: transparent;
+  padding: 10px 26px;
+  min-height: 48px;
+  border-radius: var(--radius-lg);
+  background: var(--gray-100);
   color: var(--gray-500);
-  border: none;
+  border: 1.5px solid transparent;
   cursor: pointer;
   letter-spacing: .01em;
-  transition: background var(--transition), color var(--transition);
+  transition: background var(--transition), color var(--transition), border-color var(--transition), box-shadow var(--transition);
 }
 .nav-links-desktop button:hover {
-  background: var(--gray-100);
+  background: var(--primary-soft);
   color: var(--primary);
+  border-color: var(--primary-soft-hover);
 }
 .nav-links-desktop button.active {
   background: var(--primary-soft);
   color: var(--primary);
   font-weight: 800;
+  border-color: var(--primary-soft-hover);
+  box-shadow: var(--shadow-sm);
 }
 body.theme-dark .nav-links-desktop button { color: var(--gray-600); }
 body.theme-dark .nav-links-desktop button:hover { background: var(--gray-100); color: var(--primary-dark); }
@@ -292,7 +295,7 @@ label {
   margin-bottom: 5px;
 }
 .small { font-size: 12px; color: var(--gray-500); }
-h2 { margin: 0 0 var(--space-3); font-size: 48px; font-weight: 800; color: var(--primary-dark); letter-spacing: -.02em; line-height: 1.1; }
+h2 { margin: 0 0 var(--space-3); font-size: 30px; font-weight: 800; color: var(--primary-dark); letter-spacing: -.02em; line-height: 1.1; }
 h3 { margin: 0; font-size: 16px; font-weight: 700; color: var(--primary-dark); }
 
 /* ── Form Fields ─────────────────────────────────────── */
