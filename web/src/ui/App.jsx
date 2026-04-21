@@ -754,127 +754,60 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
     }
   }, [isSuperAdmin, section]);
 
+  const navItem = (key, label, disabled = false) => (
+    <button
+      type="button"
+      className={`settings-nav-item${section === key ? ' active' : ''}`}
+      onClick={() => setSection(key)}
+      disabled={disabled}
+      title={disabled ? 'Solo disponible para superadministradores' : undefined}
+    >
+      {label}
+    </button>
+  );
+
   return (
-    <div className="grid" style={{ gap: 14 }}>
-      <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        {canUseAdminPreferences && (
-          <button type="button" className={section === 'my-project-visibility' ? '' : 'secondary'} onClick={() => setSection('my-project-visibility')}>
-            Mi visualización de proyectos
-          </button>
-        )}
-        {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'users-access' ? '' : 'secondary'}
-            onClick={() => setSection('users-access')}
-          >
-            Usuarios y accesos
-          </button>
-        )}
-        {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'projects-visibility' ? '' : 'secondary'}
-            onClick={() => setSection('projects-visibility')}
-          >
-            Visibilidad de proyectos
-          </button>
-        )}
-        <button type="button" className={section === 'catalog' ? '' : 'secondary'} onClick={() => setSection('catalog')}>
-          Catálogo
-        </button>
-        {canUseAdminPreferences && (
-          <button
-            type="button"
-            className={section === 'global-search' ? '' : 'secondary'}
-            onClick={() => setSection('global-search')}
-          >
-            Búsqueda Global
-          </button>
-        )}
-        <button
-          type="button"
-          className={section === 'import-sap' ? '' : 'secondary'}
-          onClick={() => setSection('import-sap')}
-          disabled={!isSuperAdmin}
-          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
-        >
-          Subir CSV
-        </button>
-        <button
-          type="button"
-          className={section === 'sap-latest' ? '' : 'secondary'}
-          onClick={() => setSection('sap-latest')}
-          disabled={!isSuperAdmin}
-          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
-        >
-          SAP Import
-        </button>
-        {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'special-work-suppliers' ? '' : 'secondary'}
-            onClick={() => setSection('special-work-suppliers')}
-          >
-            Proveedores de Trabajos Especiales
-          </button>
-        )}
-        {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'financial-kind-reclassify' ? '' : 'secondary'}
-            onClick={() => setSection('financial-kind-reclassify')}
-          >
-            Quitar Retiros de inversion de Egresos
-          </button>
-        )}
-        {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'projects-unmatched' ? '' : 'secondary'}
-            onClick={() => setSection('projects-unmatched')}
-          >
-            Proyectos unmatched
-          </button>
-        )}
-        {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'suspicious-project-resolutions' ? '' : 'secondary'}
-            onClick={() => setSection('suspicious-project-resolutions')}
-          >
-            Resolución de sospechosos
-          </button>
-        )}
-        {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'latest-imports' ? '' : 'secondary'}
-            onClick={() => setSection('latest-imports')}
-          >
-            Últimos imports
-          </button>
-        )}
+    <div className="settings-layout">
+      {/* ── Sidebar ── */}
+      <aside className="settings-sidebar card">
+        <div className="settings-nav-group">
+          <div className="settings-nav-label">General</div>
+          {navItem('catalog', 'Catálogo')}
+          {canUseAdminPreferences && navItem('my-project-visibility', 'Mi visualización')}
+          {canUseAdminPreferences && navItem('global-search', 'Búsqueda Global')}
+        </div>
 
         {isSuperAdmin && (
-          <button
-            type="button"
-            className={section === 'edit-transactions' ? '' : 'secondary'}
-            onClick={() => setSection('edit-transactions')}
-          >
-            Editar movimientos
-          </button>
+          <div className="settings-nav-group">
+            <div className="settings-nav-label">Administración</div>
+            {navItem('users-access', 'Usuarios y accesos')}
+            {navItem('projects-visibility', 'Visibilidad de proyectos')}
+          </div>
         )}
-        <button
-          type="button"
-          className={section === 'raw-data' ? '' : 'secondary'}
-          onClick={() => setSection('raw-data')}
-          disabled={!isSuperAdmin}
-          title={!isSuperAdmin ? 'Solo disponible para superadministradores' : undefined}
-        >
-          Raw data
-        </button>
-      </div>
+
+        <div className="settings-nav-group">
+          <div className="settings-nav-label">SAP / Imports</div>
+          {navItem('import-sap', 'Subir CSV', !isSuperAdmin)}
+          {navItem('sap-latest', 'SAP Import', !isSuperAdmin)}
+          {isSuperAdmin && navItem('latest-imports', 'Últimos imports')}
+        </div>
+
+        {isSuperAdmin && (
+          <div className="settings-nav-group">
+            <div className="settings-nav-label">Avanzado</div>
+            {navItem('special-work-suppliers', 'Proveedores especiales')}
+            {navItem('financial-kind-reclassify', 'Retiros de inversión')}
+            {navItem('projects-unmatched', 'Proyectos unmatched')}
+            {navItem('suspicious-project-resolutions', 'Resolución sospechosos')}
+            {navItem('edit-transactions', 'Editar movimientos')}
+            {navItem('raw-data', 'Raw data', !isSuperAdmin)}
+          </div>
+        )}
+        {!isSuperAdmin && navItem('raw-data', 'Raw data', true)}
+      </aside>
+
+      {/* ── Content ── */}
+      <div className="settings-content">
 
       {section === 'my-project-visibility' && canUseAdminPreferences && (
         <MyProjectVisibilitySection
@@ -950,7 +883,8 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
 
       {section === 'raw-data' &&
         (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los superadministradores pueden ver raw data.</div>)}
-    </div>
+      </div>{/* settings-content */}
+    </div>{/* settings-layout */}
   );
 }
 
