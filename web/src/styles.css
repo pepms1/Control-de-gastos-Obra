@@ -187,31 +187,27 @@ body.theme-dark .nav {
   flex-shrink: 1;
 }
 
-/* Desktop nav links — segmented control style */
+/* Desktop nav links — full-width centering row (always on its own line) */
 .nav-links-desktop {
   order: 10;
-  flex-basis: 100%;
+  flex-basis: 100%;   /* forces own row in flex-wrap:wrap */
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 6px 0 8px;
+  padding: 4px 0 8px;
+  background: transparent;
 }
-/* The pill container that wraps all buttons */
-.nav-links-desktop > * {
-  /* gap between buttons handled by the container padding */
-}
-.nav-links-desktop {
-  gap: 0;
+
+/* Segmented control pill — visual container only */
+.nav-tabs-pill {
+  display: inline-flex;
+  gap: 2px;
   background: var(--gray-100);
   border-radius: var(--radius-full);
   padding: 4px;
-  width: fit-content;
-  margin: 0 auto;
-  /* override the flex-basis so it doesn't stretch full width */
-  flex-basis: auto;
 }
 
-.nav-links-desktop button {
+.nav-tabs-pill button {
   font-size: 18px;
   font-weight: 600;
   padding: 9px 36px;
@@ -225,35 +221,35 @@ body.theme-dark .nav {
   transition: background var(--transition), color var(--transition),
               box-shadow var(--transition);
 }
-.nav-links-desktop button:hover:not(.active) {
-  background: rgba(255,255,255,.6);
+.nav-tabs-pill button:hover:not(.active) {
+  background: rgba(255,255,255,.7);
   color: var(--primary);
   transform: none;
   box-shadow: none;
 }
-.nav-links-desktop button.active {
+.nav-tabs-pill button.active {
   background: #fff;
   color: var(--primary);
   font-weight: 700;
-  box-shadow: 0 1px 4px rgba(27,20,100,.15), 0 0 0 1px rgba(27,20,100,.06);
+  box-shadow: 0 1px 6px rgba(27,20,100,.14), 0 0 0 1px rgba(27,20,100,.06);
   transform: none;
 }
 
 /* Dark mode */
-body.theme-dark .nav-links-desktop {
+body.theme-dark .nav-tabs-pill {
   background: var(--gray-100);
 }
-body.theme-dark .nav-links-desktop button {
+body.theme-dark .nav-tabs-pill button {
   color: var(--gray-500);
 }
-body.theme-dark .nav-links-desktop button:hover:not(.active) {
+body.theme-dark .nav-tabs-pill button:hover:not(.active) {
   background: rgba(255,255,255,.08);
   color: var(--primary-dark);
 }
-body.theme-dark .nav-links-desktop button.active {
+body.theme-dark .nav-tabs-pill button.active {
   background: var(--gray-200);
   color: var(--primary-dark);
-  box-shadow: 0 1px 4px rgba(0,0,0,.4);
+  box-shadow: 0 1px 6px rgba(0,0,0,.4);
 }
 
 /* Nav user actions */

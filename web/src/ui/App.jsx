@@ -400,19 +400,21 @@ function Nav({
           </select>
 
           <div className="nav-links-desktop">
-            {items
-              .filter(([, , show]) => show)
-              .map(([k, label]) => (
-                <button
-                  key={k}
-                  type="button"
-                  className={tab === k ? 'active' : ''}
-                  onClick={() => setTab(k)}
-                  style={linkStyle(tab === k)}
-                >
-                  {label}
-                </button>
-              ))}
+            <div className="nav-tabs-pill">
+              {items
+                .filter(([, , show]) => show)
+                .map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    className={tab === k ? 'active' : ''}
+                    onClick={() => setTab(k)}
+                    style={linkStyle(tab === k)}
+                  >
+                    {label}
+                  </button>
+                ))}
+            </div>
           </div>
         </div>
 
