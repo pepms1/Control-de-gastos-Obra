@@ -451,6 +451,24 @@ button.btn-danger:hover:not(:disabled) {
 .search-toolbar button:hover:not(:disabled) {
   background: linear-gradient(135deg, var(--primary-mid), var(--primary-dark));
 }
+/* Secondary buttons inside toolbar must not inherit the gradient */
+.search-toolbar button.secondary {
+  background: var(--gray-100);
+  color: var(--gray-700);
+  box-shadow: none;
+}
+.search-toolbar button.secondary:hover:not(:disabled) {
+  background: var(--gray-150);
+  box-shadow: none;
+  transform: none;
+}
+body.theme-dark .search-toolbar button.secondary {
+  background: var(--gray-100);
+  color: var(--gray-700);
+}
+body.theme-dark .search-toolbar button.secondary:hover:not(:disabled) {
+  background: var(--gray-150);
+}
 
 .date-filter-inline {
   display: grid;
