@@ -895,6 +895,85 @@ body.theme-dark .budgets-assignment-panel {
   transform: none;
 }
 
+/* ── Settings Layout ─────────────────────────────────── */
+.settings-layout {
+  display: grid;
+  gap: 14px;
+  align-items: start;
+}
+.settings-sidebar {
+  padding: 14px;
+  position: sticky;
+  top: 82px;
+}
+.settings-sidebar-header {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.settings-sidebar-menu {
+  display: grid;
+  gap: 8px;
+}
+.settings-sidebar-category + .settings-sidebar-category {
+  margin-top: 12px;
+}
+.settings-sidebar-category-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--gray-500);
+  margin: 0 0 8px;
+}
+.settings-menu-button {
+  width: 100%;
+  text-align: left;
+  justify-content: flex-start;
+  background: transparent;
+  color: var(--gray-700);
+  border: 1px solid transparent;
+  box-shadow: none;
+  transform: none;
+}
+.settings-menu-button:hover:not(:disabled) {
+  background: var(--gray-50);
+  color: var(--primary);
+  border-color: var(--gray-150);
+  box-shadow: none;
+  transform: none;
+}
+.settings-menu-button.active {
+  background: var(--primary-soft);
+  color: var(--primary);
+  border-color: rgba(27, 20, 100, .16);
+}
+.settings-content {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.settings-content-header {
+  padding: 12px 16px;
+}
+
+body.theme-dark .settings-menu-button {
+  color: var(--gray-600);
+}
+body.theme-dark .settings-sidebar-category-title {
+  color: var(--gray-500);
+}
+body.theme-dark .settings-menu-button:hover:not(:disabled) {
+  background: var(--gray-100);
+  border-color: var(--gray-200);
+  color: var(--primary-dark);
+}
+body.theme-dark .settings-menu-button.active {
+  background: var(--gray-100);
+  color: var(--primary-dark);
+  border-color: var(--gray-200);
+}
+
 /* ── Responsive ──────────────────────────────────────── */
 @media (max-width: 680px) {
   .container { padding: 10px; }
@@ -965,8 +1044,14 @@ body.theme-dark .budgets-assignment-panel {
     color: var(--primary);
     font-weight: 700;
   }
+
+  .settings-sidebar {
+    position: static;
+    top: auto;
+  }
 }
 
 @media (min-width: 860px) {
   .dashboard-summary-grid { grid-template-columns: 1.6fr 1fr; }
+  .settings-layout { grid-template-columns: minmax(230px, 280px) minmax(0, 1fr); }
 }
