@@ -202,7 +202,7 @@ body.theme-dark .nav {
   font-size: 20px;
   font-weight: 600;
   /* min-width guarantees air regardless of any flex/padding override */
-  min-width: 220px;
+  min-width: 110px;
   height: 48px;
   padding: 0 32px;
   border-radius: var(--radius-full);
