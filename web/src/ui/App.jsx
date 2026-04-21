@@ -745,6 +745,16 @@ export default function App() {
   );
 }
 
+function SettingsNavItem({ navKey, label, activeSection, onSelect, disabled }) {
+  const cls = activeSection === navKey ? 'settings-nav-item active' : 'settings-nav-item';
+  const tip = disabled ? 'Solo disponible para superadministradores' : undefined;
+  return (
+    <button type="button" className={cls} onClick={() => onSelect(navKey)} disabled={disabled} title={tip}>
+      {label}
+    </button>
+  );
+}
+
 function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects, session, canUseAdminPreferences, selectedProjectId, onCatalogChanged, onTransactionsChanged, onProjectCreated, onSessionUpdated, onSelectedProjectSaved }) {
   const [section, setSection] = useState('catalog');
 
@@ -754,59 +764,55 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
     }
   }, [isSuperAdmin, section]);
 
-  const navItem = (key, label, disabled = false) => (
-    <button
-      type="button"
-      className={`settings-nav-item${section === key ? ' active' : ''}`}
-      onClick={() => setSection(key)}
-      disabled={disabled}
-      title={disabled ? 'Solo disponible para superadministradores' : undefined}
-    >
-      {label}
-    </button>
-  );
-
   return (
     <div className="settings-layout">
-      {/* ── Sidebar ── */}
+      {/* Sidebar */}
       <aside className="settings-sidebar card">
         <div className="settings-nav-group">
           <div className="settings-nav-label">General</div>
-          {navItem('catalog', 'Catálogo')}
-          {canUseAdminPreferences && navItem('my-project-visibility', 'Mi visualización')}
-          {canUseAdminPreferences && navItem('global-search', 'Búsqueda Global')}
+          <SettingsNavItem navKey="catalog" label="Catálogo" activeSection={section} onSelect={setSection} />
+          {canUseAdminPreferences && (
+            <SettingsNavItem navKey="my-project-visibility" label="Mi visualización" activeSection={section} onSelect={setSection} />
+          )}
+          {canUseAdminPreferences && (
+            <SettingsNavItem navKey="global-search" label="Búsqueda Global" activeSection={section} onSelect={setSection} />
+          )}
         </div>
 
         {isSuperAdmin && (
           <div className="settings-nav-group">
             <div className="settings-nav-label">Administración</div>
-            {navItem('users-access', 'Usuarios y accesos')}
-            {navItem('projects-visibility', 'Visibilidad de proyectos')}
+            <SettingsNavItem navKey="users-access" label="Usuarios y accesos" activeSection={section} onSelect={setSection} />
+            <SettingsNavItem navKey="projects-visibility" label="Visibilidad de proyectos" activeSection={section} onSelect={setSection} />
           </div>
         )}
 
         <div className="settings-nav-group">
           <div className="settings-nav-label">SAP / Imports</div>
-          {navItem('import-sap', 'Subir CSV', !isSuperAdmin)}
-          {navItem('sap-latest', 'SAP Import', !isSuperAdmin)}
-          {isSuperAdmin && navItem('latest-imports', 'Últimos imports')}
+          <SettingsNavItem navKey="import-sap" label="Subir CSV" activeSection={section} onSelect={setSection} disabled={!isSuperAdmin} />
+          <SettingsNavItem navKey="sap-latest" label="SAP Import" activeSection={section} onSelect={setSection} disabled={!isSuperAdmin} />
+          {isSuperAdmin && (
+            <SettingsNavItem navKey="latest-imports" label="Últimos imports" activeSection={section} onSelect={setSection} />
+          )}
         </div>
 
         {isSuperAdmin && (
           <div className="settings-nav-group">
             <div className="settings-nav-label">Avanzado</div>
-            {navItem('special-work-suppliers', 'Proveedores especiales')}
-            {navItem('financial-kind-reclassify', 'Retiros de inversión')}
-            {navItem('projects-unmatched', 'Proyectos unmatched')}
-            {navItem('suspicious-project-resolutions', 'Resolución sospechosos')}
-            {navItem('edit-transactions', 'Editar movimientos')}
-            {navItem('raw-data', 'Raw data', !isSuperAdmin)}
+            <SettingsNavItem navKey="special-work-suppliers" label="Proveedores especiales" activeSection={section} onSelect={setSection} />
+            <SettingsNavItem navKey="financial-kind-reclassify" label="Retiros de inversión" activeSection={section} onSelect={setSection} />
+            <SettingsNavItem navKey="projects-unmatched" label="Proyectos unmatched" activeSection={section} onSelect={setSection} />
+            <SettingsNavItem navKey="suspicious-project-resolutions" label="Resolución sospechosos" activeSection={section} onSelect={setSection} />
+            <SettingsNavItem navKey="edit-transactions" label="Editar movimientos" activeSection={section} onSelect={setSection} />
+            <SettingsNavItem navKey="raw-data" label="Raw data" activeSection={section} onSelect={setSection} disabled={!isSuperAdmin} />
           </div>
         )}
-        {!isSuperAdmin && navItem('raw-data', 'Raw data', true)}
+        {!isSuperAdmin && (
+          <SettingsNavItem navKey="raw-data" label="Raw data" activeSection={section} onSelect={setSection} disabled />
+        )}
       </aside>
 
-      {/* ── Content ── */}
+      {/* Content */}
       <div className="settings-content">
 
       {section === 'my-project-visibility' && canUseAdminPreferences && (
