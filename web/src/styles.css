@@ -201,23 +201,15 @@ body.theme-dark .nav {
 .nav-links-desktop button {
   font-size: 20px;
   font-weight: 600;
-  /* padding horizontal is the air — same on every button regardless of text length */
-  padding: 0 48px;
-  height: 48px;
+  padding: 11px 48px;
   border-radius: var(--radius-full);
-  /* white bg + visible border so inactive buttons read as buttons on white nav */
-  background: #fff;
+  background: var(--gray-100);   /* #ebeced — visible sobre nav blanco */
   color: var(--gray-600);
-  border: 2px solid var(--gray-300);
+  border: 2px solid var(--gray-200);
   cursor: pointer;
-  letter-spacing: .01em;
-  box-shadow: var(--shadow-xs);
+  white-space: nowrap;
   flex-shrink: 0;
   flex-grow: 0;
-  white-space: nowrap;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   transition: background var(--transition), color var(--transition),
               border-color var(--transition), box-shadow var(--transition),
               transform var(--transition);
