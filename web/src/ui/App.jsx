@@ -359,16 +359,10 @@ function Nav({
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
+  // Only keep truly dynamic values here — background/border/padding
+  // are handled by CSS so they must NOT be set as inline styles.
   const linkStyle = (active) => ({
-    background: 'transparent',
-    border: 'none',
-    padding: 0,
-    cursor: 'pointer',
-    textAlign: 'center',
-    fontFamily: 'inherit',
-    color: 'inherit',
-    opacity: active ? 1 : 0.85,
-    fontWeight: active ? 800 : 600,
+    opacity: active ? 1 : 0.9,
   });
 
   return (
