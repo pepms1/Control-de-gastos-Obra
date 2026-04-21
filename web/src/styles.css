@@ -201,19 +201,23 @@ body.theme-dark .nav {
 .nav-links-desktop button {
   font-size: 20px;
   font-weight: 600;
-  padding: 12px 52px;
-  min-height: 48px;
-  border-radius: var(--radius-lg);
+  /* min-width guarantees air regardless of any flex/padding override */
+  min-width: 220px;
+  height: 48px;
+  padding: 0 32px;
+  border-radius: var(--radius-full);
   background: var(--gray-100);
   color: var(--gray-600);
   border: 1.5px solid var(--gray-200);
   cursor: pointer;
   letter-spacing: .01em;
   box-shadow: var(--shadow-xs);
-  /* never shrink — the padding must stay fully visible */
   flex-shrink: 0;
   flex-grow: 0;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: background var(--transition), color var(--transition),
               border-color var(--transition), box-shadow var(--transition),
               transform var(--transition);
