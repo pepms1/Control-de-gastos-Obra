@@ -379,7 +379,7 @@ function Nav({
             }}
           />
           <div className="nav-title-wrap">
-            <div className="nav-title">Control de Gastos V2</div>
+            <div className="nav-title">Control de Gastos MDI</div>
             <div className="nav-subtitle">Grupo MDI</div>
           </div>
 
