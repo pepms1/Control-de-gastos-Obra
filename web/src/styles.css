@@ -203,16 +203,19 @@ body.theme-dark .nav {
 .nav-links-desktop button {
   font-size: 20px;
   font-weight: 600;
-  padding: 12px 90px;
+  padding: 12px 52px;
   min-height: 48px;
   border-radius: var(--radius-lg);
-  /* solid gray background = clearly a button even on white nav */
   background: var(--gray-100);
   color: var(--gray-600);
   border: 1.5px solid var(--gray-200);
   cursor: pointer;
   letter-spacing: .01em;
   box-shadow: var(--shadow-xs);
+  /* prevent flex from squishing the button — padding must stay visible */
+  flex-shrink: 0;
+  white-space: nowrap;
+  width: max-content;
   transition: background var(--transition), color var(--transition),
               border-color var(--transition), box-shadow var(--transition),
               transform var(--transition);
