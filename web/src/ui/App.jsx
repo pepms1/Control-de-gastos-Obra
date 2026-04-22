@@ -2159,6 +2159,11 @@ function SpecialWorkSuppliersReviewSection() {
         projects.map((project) => project?.projectName).join(' '),
       ].join(' '));
       return haystack.includes(normalizedQuery);
+    }).sort((a, b) => {
+      const movementsA = Number(a?.transactionCount) || 0;
+      const movementsB = Number(b?.transactionCount) || 0;
+      if (movementsA !== movementsB) return movementsB - movementsA;
+      return String(a?.supplierName || '').localeCompare(String(b?.supplierName || ''), 'es', { sensitivity: 'base' });
     });
   }, [items, search, sboFilter, assignmentFilter]);
 
