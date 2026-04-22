@@ -552,30 +552,6 @@ export function SearchTransactionsV2({
     () => visibleRows.reduce((acc, row) => acc + (getAmountWithTax(row) || 0), 0),
     [visibleRows],
   );
-  const topSuppliersBySpend = useMemo(() => {
-    const totalsBySupplier = new Map();
-
-    visibleRows.forEach((row) => {
-      const supplier = resolveSupplierIdentity(row);
-      const supplierKey = String(supplier?.key || supplier?.supplierId || supplier?.name || 'SIN_PROVEEDOR');
-      const supplierName = String(supplier?.name || supplier?.businessPartner || 'Sin proveedor');
-      const current = totalsBySupplier.get(supplierKey) || { key: supplierKey, name: supplierName, total: 0, count: 0 };
-      const amount = getAmountWithTax(row);
-      const safeAmount = Number.isFinite(amount) ? Math.abs(amount) : Math.abs(getAmountWithoutTax(row) || 0);
-
-      current.total += safeAmount;
-      current.count += 1;
-      if ((!current.name || current.name === 'Sin proveedor') && supplierName) current.name = supplierName;
-      totalsBySupplier.set(supplierKey, current);
-    });
-
-    return Array.from(totalsBySupplier.values())
-      .sort((a, b) => {
-        if (b.total !== a.total) return b.total - a.total;
-        return a.name.localeCompare(b.name, 'es', { sensitivity: 'base' });
-      })
-      .slice(0, 5);
-  }, [visibleRows]);
 
   async function exportPdf() {
     setExporting(true);
@@ -698,33 +674,6 @@ export function SearchTransactionsV2({
         {loading ? 'Buscando...' : `${visibleRows.length} resultados visibles`}
       </div>
       {!!error && <div className="small" style={{ marginTop: 8, color: '#b91c1c' }}>{error}</div>}
-
-      {!loading && !!topSuppliersBySpend.length && (
-        <div style={{ marginTop: 12 }}>
-          <div className="small" style={{ fontWeight: 700, marginBottom: 6 }}>
-            Top 5 proveedores por sumatoria de gasto
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 8 }}>
-            {topSuppliersBySpend.map((item, index) => (
-              <div
-                key={item.key}
-                style={{
-                  border: '1px solid var(--line)',
-                  borderRadius: 10,
-                  padding: '8px 10px',
-                  background: 'var(--surface)',
-                }}
-              >
-                <div className="small" style={{ fontWeight: 700, color: 'var(--primary)', marginBottom: 3 }}>
-                  #{index + 1} {item.name}
-                </div>
-                <div style={{ fontWeight: 700 }}>{formatCurrency(item.total)}</div>
-                <div className="small">{item.count} movs.</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       <div style={{ overflowX: 'auto', marginTop: 10 }}>
         <table>
