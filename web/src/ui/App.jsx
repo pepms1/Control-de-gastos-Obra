@@ -122,64 +122,70 @@ function Nav({
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
-  const linkStyle = (active) => ({
-    background: 'transparent',
-    border: 'none',
-    padding: 0,
-    cursor: 'pointer',
-    textAlign: 'left',
-    font: 'inherit',
-    color: 'inherit',
-    opacity: active ? 1 : 0.85,
-    fontWeight: active ? 800 : 600,
-  });
+  const initials = (displayName || username || '?').slice(0, 2).toUpperCase();
 
   return (
     <div className="nav">
+      {/* Left: logo + title + divider + project select */}
       <div className="nav-header">
         <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="nav-logo" />
         <div className="nav-title-wrap">
           <div className="nav-title">Grupo MDI</div>
-          <div className="nav-subtitle">Control de Gastos de Obra</div>
+          <div className="nav-subtitle">Control de Gastos</div>
         </div>
-      </div>
-
-      <div className="nav-items">
-        <div className="small" style={{ marginBottom: 6 }}>Proyecto</div>
-        <select value={selectedProjectId} onChange={(e) => onProjectChange(e.target.value)} disabled={!projects.length}>
+        <div className="nav-divider" />
+        <select
+          className="nav-select"
+          value={selectedProjectId}
+          onChange={(e) => onProjectChange(e.target.value)}
+          disabled={!projects.length}
+        >
           {!projects.length && <option value="">Sin proyectos</option>}
           {projects.map((project) => (
-            <option key={project._id} value={project._id}>
-              {project.name}
-            </option>
+            <option key={project._id} value={project._id}>{project.name}</option>
           ))}
         </select>
-
-        {items
-          .filter(([, , show]) => show)
-          .map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              className={tab === k ? 'active' : ''}
-              onClick={() => setTab(k)}
-              style={linkStyle(tab === k)}
-            >
-              {label}
-            </button>
-          ))}
       </div>
 
-      <div className="nav-user-actions">
-        <button className="secondary theme-toggle" type="button" onClick={onToggleTheme}>
-          {isDarkMode ? '☀️ Modo día' : '🌙 Modo noche'}
-        </button>
-
-        <div className="small nav-user">
-          {displayName || username} ({role})
+      {/* Center: nav tabs pill — absolutely centered */}
+      <div className="nav-tabs-row">
+        <div className="nav-tabs-pill">
+          {items
+            .filter(([, , show]) => show)
+            .map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                className={`nav-tab-btn${tab === k ? ' active' : ''}`}
+                onClick={() => setTab(k)}
+              >
+                {label}
+              </button>
+            ))}
         </div>
+      </div>
 
-        <button className="secondary" type="button" onClick={onLogout}>
+      {/* Right: theme toggle + avatar + name/role + divider + logout */}
+      <div className="nav-user-area">
+        <button
+          type="button"
+          onClick={onToggleTheme}
+          style={{ padding: '5px 8px', background: 'transparent', border: '1px solid var(--gray-200)', borderRadius: 8, cursor: 'pointer', fontSize: 15, lineHeight: 1 }}
+        >
+          {isDarkMode ? '☀️' : '🌙'}
+        </button>
+        <div className="nav-avatar">{initials}</div>
+        <div className="nav-user-info">
+          <div className="nav-user-name">{displayName || username}</div>
+          <div className="nav-user-role">{role}</div>
+        </div>
+        <div className="nav-divider" />
+        <button
+          className="secondary"
+          type="button"
+          onClick={onLogout}
+          style={{ padding: '6px 12px', fontSize: 13 }}
+        >
           Salir
         </button>
       </div>
@@ -412,97 +418,66 @@ export default function App() {
 function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatalogChanged, onProjectCreated }) {
   const [section, setSection] = useState('catalog');
 
+  const menuItems = [
+    { id: 'catalog', label: 'Catálogo', show: true },
+    { id: 'import-sap', label: 'Subir CSV', show: true, adminOnly: true },
+    { id: 'sap-latest', label: 'SAP Import', show: true, adminOnly: true },
+    { id: 'supplier-category2', label: 'Proveedor → Cat. 2', show: true, adminOnly: true },
+    { id: 'projects', label: 'Agregar proyecto', show: isAdmin },
+    { id: 's3-prefix', label: 'Crear carpeta S3', show: isAdmin },
+    { id: 'raw-data', label: 'Raw data', show: true, adminOnly: true },
+  ];
+
   return (
-    <div className="grid" style={{ gap: 14 }}>
-      <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        <button type="button" className={section === 'catalog' ? '' : 'secondary'} onClick={() => setSection('catalog')}>
-          Catálogo
-        </button>
-        <button
-          type="button"
-          className={section === 'import-sap' ? '' : 'secondary'}
-          onClick={() => setSection('import-sap')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
-        >
-          Subir CSV
-        </button>
-        <button
-          type="button"
-          className={section === 'sap-latest' ? '' : 'secondary'}
-          onClick={() => setSection('sap-latest')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
-        >
-          SAP Import
-        </button>
-        <button
-          type="button"
-          className={section === 'supplier-category2' ? '' : 'secondary'}
-          onClick={() => setSection('supplier-category2')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
-        >
-          Proveedor → Categoría 2
-        </button>
-        {isAdmin && (
-          <button
-            type="button"
-            className={section === 'projects' ? '' : 'secondary'}
-            onClick={() => setSection('projects')}
-          >
-            Agregar proyecto
-          </button>
-        )}
-        {isAdmin && (
-          <button
-            type="button"
-            className={section === 's3-prefix' ? '' : 'secondary'}
-            onClick={() => setSection('s3-prefix')}
-          >
-            Crear carpeta S3
-          </button>
-        )}
-        <button
-          type="button"
-          className={section === 'raw-data' ? '' : 'secondary'}
-          onClick={() => setSection('raw-data')}
-          disabled={!isAdmin}
-          title={!isAdmin ? 'Solo disponible para administradores' : undefined}
-        >
-          Raw data
-        </button>
+    <div className="settings-layout">
+      <aside className="settings-sidebar">
+        {menuItems
+          .filter((m) => m.show)
+          .map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              className={`settings-menu-button${section === m.id ? ' active' : ''}`}
+              onClick={() => setSection(m.id)}
+              disabled={m.adminOnly && !isAdmin}
+              title={m.adminOnly && !isAdmin ? 'Solo disponible para administradores' : undefined}
+            >
+              {m.label}
+            </button>
+          ))}
+      </aside>
+
+      <div>
+        {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
+
+        {section === 'import-sap' &&
+          (isAdmin ? (
+            <ImportSapScreen />
+          ) : (
+            <div className="card">Solo los administradores pueden importar pagos SAP.</div>
+          ))}
+
+        {section === 'sap-latest' &&
+          (isAdmin ? (
+            <SapLatestImportSection projects={projects} selectedProjectId={selectedProjectId} />
+          ) : (
+            <div className="card">Solo los administradores pueden ejecutar el import SAP latest.</div>
+          ))}
+
+        {section === 'supplier-category2' &&
+          (isAdmin ? (
+            <SupplierCategory2Assignment cats={cats} selectedProjectId={selectedProjectId} />
+          ) : (
+            <div className="card">Solo los administradores pueden asignar categoría por proveedor.</div>
+          ))}
+
+        {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
+
+        {section === 's3-prefix' && isAdmin && <AdminS3PrefixCreateSection />}
+
+        {section === 'raw-data' &&
+          (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
       </div>
-
-      {section === 'catalog' && <Catalog isAdmin={isAdmin} cats={cats} vendors={vendors} onChanged={onCatalogChanged} />}
-
-      {section === 'import-sap' &&
-        (isAdmin ? (
-          <ImportSapScreen />
-        ) : (
-          <div className="card">Solo los administradores pueden importar pagos SAP.</div>
-        ))}
-
-      {section === 'sap-latest' &&
-        (isAdmin ? (
-          <SapLatestImportSection projects={projects} selectedProjectId={selectedProjectId} />
-        ) : (
-          <div className="card">Solo los administradores pueden ejecutar el import SAP latest.</div>
-        ))}
-
-      {section === 'supplier-category2' &&
-        (isAdmin ? (
-          <SupplierCategory2Assignment cats={cats} selectedProjectId={selectedProjectId} />
-        ) : (
-          <div className="card">Solo los administradores pueden asignar categoría por proveedor.</div>
-        ))}
-
-      {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
-
-      {section === 's3-prefix' && isAdmin && <AdminS3PrefixCreateSection />}
-
-      {section === 'raw-data' &&
-        (isAdmin ? <RawDataAdmin /> : <div className="card">Solo los administradores pueden ver raw data.</div>)}
     </div>
   );
 }
@@ -1024,28 +999,34 @@ function RawDataAdmin() {
 /* ================= DASHBOARD ================= */
 function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
   const [stats, setStats] = useState(null);
+  const [totalConIva, setTotalConIva] = useState(0);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
   const [viewMode, setViewMode] = useState('experimental');
-  const [showCategoryIva, setShowCategoryIva] = useState(false);
   const [showSupplierIva, setShowSupplierIva] = useState(false);
   const [supplierSortMode, setSupplierSortMode] = useState('alpha');
   const [loading, setLoading] = useState(true);
+  const [m2, setM2] = useState(2500);
 
   useEffect(() => {
     let ok = true;
     setLoading(true);
 
     Promise.allSettled([
-      api.spendByCategory({ include_iva: showCategoryIva ? 'true' : 'false' }),
+      api.spendByCategory({ include_iva: 'false' }),
+      api.spendByCategory({ include_iva: 'true' }),
       api.expensesSummaryBySupplier({ include_iva: showSupplierIva ? 'true' : 'false' }),
-    ]).then(([categoryResult, supplierResult]) => {
+    ]).then(([categoryResult, categoryIvaResult, supplierResult]) => {
       if (!ok) return;
 
       if (categoryResult.status === 'fulfilled') {
         setStats(categoryResult.value);
       } else {
         setStats({ error: categoryResult.reason?.message || 'No se pudo cargar el dashboard.' });
+      }
+
+      if (categoryIvaResult.status === 'fulfilled') {
+        setTotalConIva(Number(categoryIvaResult.value?.total_expenses) || 0);
       }
 
       if (supplierResult.status === 'fulfilled') {
@@ -1062,7 +1043,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
     return () => {
       ok = false;
     };
-  }, [showCategoryIva, showSupplierIva, selectedProjectId, refreshKey]);
+  }, [showSupplierIva, selectedProjectId, refreshKey]);
 
   const supplierTotal = supplierSummary.reduce((acc, row) => acc + (Number(row.totalAmount) || 0), 0);
   const sortedSupplierSummary = useMemo(() => {
@@ -1109,7 +1090,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
 
   const renderCategorySummaryHeader = () => (
     <div className="row" style={{ justifyContent: 'space-between' }}>
-      <div className="badge">Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}: ${formatMoney(stats.total_expenses || 0)}</div>
+      <div className="badge">Total egresos sin IVA: ${formatMoney(stats.total_expenses || 0)}</div>
       {isAdmin && (
         <button
           className="secondary"
@@ -1174,19 +1155,37 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
         <div style={{ marginTop: 12 }} className="dashboard-experimental">
           <div className="dashboard-kpi-grid">
             <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">💰</div>
-              <strong>${formatMoney(stats.total_expenses || 0)}</strong>
-              <span>Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}</span>
+              <div className="kpi-icon">💰</div>
+              <div className="kpi-body">
+                <div className="kpi-label">Total de egresos</div>
+                <div className="kpi-value">${formatMoney(stats.total_expenses || 0)}</div>
+                <div className="kpi-sub">{categoryRows.length} categorías · sin IVA</div>
+              </div>
             </div>
             <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">📊</div>
-              <strong>{categoryRows.length}</strong>
-              <span>Categorías con movimiento</span>
+              <div className="kpi-icon">📋</div>
+              <div className="kpi-body">
+                <div className="kpi-label">Total de egresos con IVA</div>
+                <div className="kpi-value">${formatMoney(totalConIva || 0)}</div>
+                <div className="kpi-sub">IVA: ${formatMoney(Math.max(0, (totalConIva || 0) - (stats.total_expenses || 0)))}</div>
+              </div>
             </div>
             <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">🏷️</div>
-              <strong>{biggestCategory?.category_name || 'Sin datos'}</strong>
-              <span>Mayor categoría (${formatMoney(biggestCategory?.amount || 0)})</span>
+              <div className="kpi-icon">📐</div>
+              <div className="kpi-body">
+                <div className="kpi-label">Costo por m²</div>
+                <div className="kpi-value">${formatMoney(m2 > 0 ? (stats.total_expenses || 0) / m2 : 0)}</div>
+                <div className="kpi-sub" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <span>m²:</span>
+                  <input
+                    type="number"
+                    value={m2}
+                    onChange={(e) => setM2(Math.max(1, Number(e.target.value) || 1))}
+                    min="1"
+                    style={{ width: 64, minHeight: 'auto', padding: '1px 4px', fontSize: 11, borderRadius: 4, border: '1px solid var(--gray-200)', background: 'transparent', display: 'inline-block' }}
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1307,7 +1306,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       </div>
       <div className="small">{subtitle}</div>
 
-      {viewMode === 'supplier' ? (
+      {viewMode === 'supplier' && (
         <div className="row" style={{ marginTop: 8 }}>
           <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <input type="checkbox" checked={showSupplierIva} onChange={(e) => setShowSupplierIva(e.target.checked)} />
@@ -1322,11 +1321,6 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
             Ordenar por monto (mayor a menor)
           </label>
         </div>
-      ) : (
-        <label className="small" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <input type="checkbox" checked={showCategoryIva} onChange={(e) => setShowCategoryIva(e.target.checked)} />
-          Mostrar IVA
-        </label>
       )}
 
       {dashboardContent}
@@ -2026,6 +2020,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
   const [loading, setLoading] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [error, setError] = useState('');
+  const [typeFilter, setTypeFilter] = useState('EXPENSE');
   const limit = 50;
   const catMap = useMemo(() => Object.fromEntries(cats.map((c) => [c.id, c.name])), [cats]);
   const vendorMap = useMemo(() => Object.fromEntries(vendors.map((v) => [v.id, v.name])), [vendors]);
@@ -2037,13 +2032,13 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
 
   useEffect(() => {
     setPage(1);
-  }, [query]);
+  }, [query, typeFilter]);
 
   useEffect(() => {
     setLoading(true);
     setError('');
     api.transactions({
-      type: 'EXPENSE',
+      type: typeFilter !== 'ALL' ? typeFilter : '',
       page: String(page),
       limit: String(limit),
       q: query.trim(),
@@ -2058,7 +2053,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         setError(err?.message || 'No se pudo buscar movimientos');
       })
       .finally(() => setLoading(false));
-  }, [page, query, selectedProjectId]);
+  }, [page, query, typeFilter, selectedProjectId]);
 
   const getAmountWithoutIva = (row) => {
     const totalAmount = Number(row.amount) || 0;
@@ -2072,6 +2067,15 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
 
   const filteredTotal = useMemo(
     () => rows.reduce((acc, r) => acc + getAmountWithoutIva(r), 0),
+    [rows],
+  );
+  const filteredTotalConIva = useMemo(
+    () => rows.reduce((acc, r) => acc + (Number(r.amount) || 0), 0),
+    [rows],
+  );
+  const filteredIva = filteredTotalConIva - filteredTotal;
+  const distinctProjects = useMemo(
+    () => new Set(rows.map((r) => r.project_id || r.projectId || '')).size,
     [rows],
   );
   const rangeStart = totalCount === 0 ? 0 : (page - 1) * limit + 1;
@@ -2187,7 +2191,47 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
 
   return (
     <div className="card">
-      <h2 style={{ marginTop: 0 }}>Buscar movimientos</h2>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+        <h2 style={{ margin: 0, flex: 1 }}>Buscar movimientos</h2>
+        <div className="type-switch">
+          <button type="button" className={`type-btn${typeFilter === 'EXPENSE' ? ' active' : ''}`} onClick={() => setTypeFilter('EXPENSE')}>Egresos</button>
+          <button type="button" className={`type-btn${typeFilter === 'INCOME' ? ' active' : ''}`} onClick={() => setTypeFilter('INCOME')}>Ingresos</button>
+          <button type="button" className={`type-btn${typeFilter === 'ALL' ? ' active' : ''}`} onClick={() => setTypeFilter('ALL')}>Todos</button>
+        </div>
+      </div>
+
+      {/* KPI bar */}
+      <div className="kpi-grid" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+        <div className="kpi-card">
+          <div className="kpi-icon">💰</div>
+          <div className="kpi-body">
+            <div className="kpi-label">Total sin IVA</div>
+            <div className="kpi-value">${formatMoney(filteredTotal)}</div>
+          </div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-icon">📋</div>
+          <div className="kpi-body">
+            <div className="kpi-label">Total con IVA</div>
+            <div className="kpi-value">${formatMoney(filteredTotalConIva)}</div>
+          </div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-icon">🏷️</div>
+          <div className="kpi-body">
+            <div className="kpi-label">IVA acumulado</div>
+            <div className="kpi-value">${formatMoney(Math.max(0, filteredIva))}</div>
+          </div>
+        </div>
+        <div className="kpi-card">
+          <div className="kpi-icon">📁</div>
+          <div className="kpi-body">
+            <div className="kpi-label">Proyectos</div>
+            <div className="kpi-value">{distinctProjects}</div>
+          </div>
+        </div>
+      </div>
+
       <div className="search-toolbar">
         <input
           placeholder="Buscar por proveedor, concepto o categoría"
@@ -2200,7 +2244,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         </button>
       </div>
       <div className="small" style={{ marginTop: 8 }}>
-        {loading ? 'Buscando...' : `${totalCount} resultados en egresos${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''}`}
+        {loading ? 'Buscando...' : `${totalCount} resultados${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''}`}
       </div>
       {!!error && <div className="small" style={{ marginTop: 8, color: '#b91c1c' }}>{error}</div>}
       <div style={{ overflowX: 'auto', marginTop: 10 }}>
@@ -2213,11 +2257,11 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
           <tbody>
             {rows.map((r) => (
               <tr key={r.id}>
-                <td>{r.date}</td>
-                <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{r.date}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
                 <td>{r.description || r.concept || ''}</td>
-                <td>{getTransactionCategoryLabel(r, catMap)}</td>
-                <td>${formatMoney(getAmountWithoutIva(r))}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>{getTransactionCategoryLabel(r, catMap)}</td>
+                <td style={{ whiteSpace: 'nowrap' }}>${formatMoney(getAmountWithoutIva(r))}</td>
               </tr>
             ))}
             {!rows.length && !loading && (
@@ -2227,7 +2271,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
           <tfoot>
             <tr>
               <td colSpan={4} style={{ textAlign: 'right', fontWeight: 700 }}>Total filtrado sin IVA</td>
-              <td style={{ fontWeight: 700 }}>${formatMoney(filteredTotal)}</td>
+              <td style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>${formatMoney(filteredTotal)}</td>
             </tr>
           </tfoot>
         </table>
