@@ -119,6 +119,14 @@ export function BudgetsSection({ projects, selectedProjectId }) {
       .sort((a, b) => a.supplierName.localeCompare(b.supplierName, 'es'));
   }, [rows]);
 
+  const grandTotals = useMemo(() => {
+    const budgetAmount = groupedRows.reduce((a, g) => a + g.totals.budgetAmount, 0);
+    const paidAmount = groupedRows.reduce((a, g) => a + g.totals.paidAmount, 0);
+    const remainingAmount = budgetAmount - paidAmount;
+    const progressPct = budgetAmount > 0 ? (paidAmount / budgetAmount) * 100 : 0;
+    return { budgetAmount, paidAmount, remainingAmount, progressPct };
+  }, [groupedRows]);
+
   function toggleSupplierExpand(groupKey) {
     setExpandedSuppliers((prev) => {
       const next = new Set(prev);
@@ -371,65 +379,108 @@ export function BudgetsSection({ projects, selectedProjectId }) {
 
   const selectedProject = projectsById.get(String(selectedProjectId || '')) || null;
   const areaM2 = selectedProject?.areaM2 ?? null;
-
-  const grandTotals = useMemo(() => {
-    const totals = { budgetAmount: 0, paidAmount: 0, remainingAmount: 0, progressPct: 0 };
-    rows.forEach((row) => {
-      totals.budgetAmount += Number(row?.budgetAmount) || 0;
-      totals.paidAmount += Number(row?.paidAmount) || 0;
-      totals.remainingAmount += Number(row?.remainingAmount) || 0;
-    });
-    totals.progressPct = totals.budgetAmount > 0 ? (totals.paidAmount / totals.budgetAmount) * 100 : 0;
-    return totals;
-  }, [rows]);
-
   const costoM2 = areaM2 && areaM2 > 0 ? grandTotals.paidAmount / areaM2 : null;
 
+  const grandKpis = [
+    {
+      label: 'Presupuesto total',
+      value: formatCurrency(grandTotals.budgetAmount),
+      sub: 'comprometido',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
+      ),
+      danger: false,
+    },
+    {
+      label: 'Total pagado',
+      value: formatCurrency(grandTotals.paidAmount),
+      sub: 'ejecutado',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>
+        </svg>
+      ),
+      danger: false,
+    },
+    {
+      label: 'Saldo disponible',
+      value: formatCurrency(grandTotals.remainingAmount),
+      sub: grandTotals.remainingAmount < 0 ? '⚠ excedido' : 'restante',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={grandTotals.remainingAmount < 0 ? 'var(--danger-text, #b91c1c)' : 'var(--primary)'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>
+        </svg>
+      ),
+      danger: grandTotals.remainingAmount < 0,
+    },
+    {
+      label: 'Avance global',
+      value: `${Math.round(grandTotals.progressPct)}%`,
+      sub: classifyBudgetStatus(grandTotals.progressPct).label,
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M16 6h.01M8 10h.01M16 10h.01M8 14h.01M16 14h.01"/>
+        </svg>
+      ),
+      danger: false,
+    },
+    {
+      label: 'Costo / m²',
+      value: costoM2 != null ? formatCurrency(costoM2) : '—',
+      sub: costoM2 != null ? `${Number(areaM2).toLocaleString('es-MX')} m²` : 'Sin área configurada',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+        </svg>
+      ),
+      danger: false,
+    },
+  ];
+
   return (
-    <div className="card budgets-card" style={{ display: 'grid', gap: 12 }}>
-      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-        <h2 style={{ margin: 0 }}>Presupuestos</h2>
-        <button type="button" onClick={startCreate}>Nuevo presupuesto</button>
-      </div>
-
-      {rows.length > 0 && (
-        <div className="dashboard-kpi-grid">
-          {[
-            { label: 'Presupuesto total', value: formatCurrency(grandTotals.budgetAmount), helper: 'comprometido' },
-            { label: 'Total pagado', value: formatCurrency(grandTotals.paidAmount), helper: 'ejecutado' },
-            { label: 'Saldo disponible', value: formatCurrency(grandTotals.remainingAmount), helper: grandTotals.remainingAmount < 0 ? '⚠ excedido' : 'restante' },
-            { label: 'Avance global', value: `${Math.round(grandTotals.progressPct)}%`, helper: classifyBudgetStatus(grandTotals.progressPct).label },
-            {
-              label: 'Costo / m²',
-              value: costoM2 != null ? formatCurrency(costoM2) : '—',
-              helper: costoM2 != null ? `${Number(areaM2).toLocaleString('es-MX')} m²` : 'Sin área configurada',
-            },
-          ].map((kpi) => (
-            <div key={kpi.label} className="dashboard-kpi-card">
-              <span>{kpi.label}</span>
-              <strong style={kpi.label === 'Saldo disponible' && grandTotals.remainingAmount < 0 ? { color: 'var(--danger-text, #b91c1c)' } : undefined}>{kpi.value}</strong>
-              <div className="small">{kpi.helper}</div>
+    <div style={{ display: 'grid', gap: 14 }}>
+      {/* KPI bar */}
+      <div className="kpi-grid">
+        {grandKpis.map((k) => (
+          <div className="kpi-card" key={k.label}>
+            <div className="kpi-icon" style={k.danger ? { background: 'var(--danger-bg, #fee2e2)' } : undefined}>
+              {k.icon}
             </div>
-          ))}
-        </div>
-      )}
-
-      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-        <input
-          value={supplierFilter}
-          onChange={(e) => setSupplierFilter(e.target.value)}
-          placeholder="Filtrar por proveedor"
-          style={{ minWidth: 220 }}
-        />
-        <button type="button" className="secondary" onClick={loadBudgets}>Buscar</button>
-        <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
-          Mostrar inactivos
-        </label>
+            <div>
+              <div className="kpi-label">{k.label}</div>
+              <div className="kpi-value" style={k.danger ? { color: 'var(--danger-text, #b91c1c)' } : undefined}>{k.value}</div>
+              <div className="kpi-sub">{k.sub}</div>
+            </div>
+          </div>
+        ))}
       </div>
+
+      <div className="card budgets-card" style={{ overflow: 'hidden' }}>
+        {/* Toolbar */}
+        <div className="card-header">
+          <div className="search-input-wrap" style={{ maxWidth: 360 }}>
+            <input
+              className="search-input"
+              value={supplierFilter}
+              onChange={(e) => setSupplierFilter(e.target.value)}
+              placeholder="Filtrar por proveedor"
+            />
+          </div>
+          <button type="button" className="secondary" onClick={loadBudgets}>Buscar</button>
+          <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
+            Mostrar inactivos
+          </label>
+          <div style={{ flex: 1 }} />
+          <button type="button" onClick={showForm ? resetForm : startCreate} style={{ fontSize: 13 }}>
+            {showForm ? '✕ Cancelar' : '+ Nuevo presupuesto'}
+          </button>
+        </div>
 
       {(showForm || !rows.length) && (
-        <form className="grid" style={{ gap: 8, border: '1px solid #e2e8f0', borderRadius: 10, padding: 12 }} onSubmit={submitForm}>
+        <form className="grid" style={{ gap: 8, borderBottom: '1px solid var(--gray-100)', padding: 16 }} onSubmit={submitForm}>
           <div>
             <label>Obra</label>
             <select
@@ -568,8 +619,15 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                       <td>{group.items.length}</td>
                       <td>{formatCurrency(group.totals.budgetAmount)}</td>
                       <td>{formatCurrency(group.totals.paidAmount)}</td>
-                      <td style={{ color: group.totals.remainingAmount < 0 ? '#b91c1c' : undefined }}>{formatCurrency(group.totals.remainingAmount)}</td>
-                      <td><span className={`budget-badge budget-progress ${status.className}`}>{formatPct(group.totals.progressPct)}</span></td>
+                      <td style={{ color: group.totals.remainingAmount < 0 ? 'var(--danger-text, #b91c1c)' : undefined }}>{formatCurrency(group.totals.remainingAmount)}</td>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <div style={{ flex: 1, height: 6, background: 'var(--gray-150)', borderRadius: 99, overflow: 'hidden', minWidth: 60 }}>
+                            <div style={{ height: '100%', width: `${Math.min(group.totals.progressPct, 100)}%`, background: group.totals.progressPct > 100 ? 'var(--danger-text, #b91c1c)' : 'var(--primary)', borderRadius: 99, transition: 'width .4s' }} />
+                          </div>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--gray-600)', whiteSpace: 'nowrap' }}>{Math.round(group.totals.progressPct)}%</span>
+                        </div>
+                      </td>
                       <td><span className={`budget-badge budget-status ${status.className}`}>{status.label}</span></td>
                       <td>
                         <button type="button" className="secondary" onClick={() => toggleSupplierExpand(group.key)}>
@@ -717,6 +775,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
           )}
         </div>
       )}
+    </div>
     </div>
   );
 }
