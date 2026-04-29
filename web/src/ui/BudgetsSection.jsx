@@ -58,6 +58,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   const [areaM2Input, setAreaM2Input] = useState('');
   const [savingAreaM2, setSavingAreaM2] = useState(false);
   const [areaM2Error, setAreaM2Error] = useState('');
+  const [localAreaM2Override, setLocalAreaM2Override] = useState(null);
   const [editingBudget, setEditingBudget] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [assigningBudget, setAssigningBudget] = useState(null);
@@ -387,7 +388,6 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   }
 
   const selectedProject = projectsById.get(String(selectedProjectId || '')) || null;
-  const [localAreaM2Override, setLocalAreaM2Override] = useState(null);
   const areaM2 = localAreaM2Override ?? selectedProject?.areaM2 ?? null;
   const costoM2 = areaM2 && areaM2 > 0 ? grandTotals.paidAmount / areaM2 : null;
 
