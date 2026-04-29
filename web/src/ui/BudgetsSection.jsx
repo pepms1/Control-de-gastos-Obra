@@ -59,6 +59,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   const [savingAreaM2, setSavingAreaM2] = useState(false);
   const [areaM2Error, setAreaM2Error] = useState('');
   const [localAreaM2Override, setLocalAreaM2Override] = useState(null);
+  const [totalEgresosSinIva, setTotalEgresosSinIva] = useState(0);
   const [editingBudget, setEditingBudget] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [assigningBudget, setAssigningBudget] = useState(null);
@@ -167,6 +168,16 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   useEffect(() => {
     setLocalAreaM2Override(null);
     setEditingAreaM2(false);
+    setTotalEgresosSinIva(0);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    let active = true;
+    api.spendByCategory({ include_iva: 'false' })
+      .then((data) => { if (active) setTotalEgresosSinIva(Number(data?.total_expenses) || 0); })
+      .catch(() => {});
+    return () => { active = false; };
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -389,7 +400,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
 
   const selectedProject = projectsById.get(String(selectedProjectId || '')) || null;
   const areaM2 = localAreaM2Override ?? selectedProject?.areaM2 ?? null;
-  const costoM2 = areaM2 && areaM2 > 0 ? grandTotals.paidAmount / areaM2 : null;
+  const costoM2 = areaM2 && areaM2 > 0 ? totalEgresosSinIva / areaM2 : null;
 
   async function saveAreaM2() {
     const raw = areaM2Input.trim();
