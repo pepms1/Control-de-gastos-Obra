@@ -342,7 +342,6 @@ function Nav({
   selectedProjectId,
   onProjectChange,
 }) {
-  const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const normalizedRole = normalizeRole(role);
   const canSeeSettings = !isViewer(normalizedRole);
   const canSeeBudgets = isSuperAdmin(normalizedRole) || isAdminRole(normalizedRole);
@@ -352,87 +351,77 @@ function Nav({
     ['budgets', 'Presupuestos', canSeeBudgets],
     ['settings', 'Ajustes', canSeeSettings],
   ];
-  const mobileBottomItems = [
-    ['dashboard', 'Dashboard', true],
-    ['search', 'Buscar', true],
-    ['budgets', 'Presupuestos', canSeeBudgets],
-    ['settings', 'Ajustes', canSeeSettings],
-  ];
 
-  // Only keep truly dynamic values here — background/border/padding
-  // are handled by CSS so they must NOT be set as inline styles.
-  const linkStyle = (active) => ({
-    opacity: active ? 1 : 0.9,
-  });
+  const initials = (displayName || username || '?')
+    .split(' ')
+    .map((w) => w[0] || '')
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
 
   return (
     <>
       <div className="nav">
+        {/* Logo + brand */}
         <div className="nav-header">
-          <img
-            src="/LOGO%20GRUPO%20MDI.jpg"
-            alt="Logo Grupo MDI"
-            className="nav-logo"
-            onError={(event) => {
-              event.currentTarget.onerror = null;
-              event.currentTarget.src = '/logo-grupo-mdi.svg';
-            }}
-          />
+          <div className="nav-logo-box">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.9">
+              <rect x="4" y="2" width="16" height="20" rx="2" />
+              <path d="M9 22v-4h6v4M8 6h.01M16 6h.01M8 10h.01M16 10h.01M8 14h.01M16 14h.01" />
+            </svg>
+          </div>
           <div className="nav-title-wrap">
-            <div className="nav-title">Control de Gastos MDI</div>
+            <div className="nav-title">Control de Gastos</div>
             <div className="nav-subtitle">Grupo MDI</div>
           </div>
-
-          <button className="secondary nav-profile-trigger" type="button" onClick={() => setProfileMenuOpen((prev) => !prev)}>
-            ☰
-          </button>
         </div>
 
-        <div className="nav-items">
-          <div className="small nav-project-label">Proyecto activo</div>
-          <select value={selectedProjectId} onChange={(e) => onProjectChange(e.target.value)} disabled={!projects.length}>
-            {!projects.length && <option value="">Sin proyectos</option>}
-            {projects.map((project) => (
-              <option key={project._id} value={project._id}>
-                {getProjectDisplayName(project)}
-              </option>
-            ))}
-          </select>
+        <div className="nav-divider" />
 
-          <div className="nav-links-desktop">
-            <div className="nav-tabs-pill">
-              {items
-                .filter(([, , show]) => show)
-                .map(([k, label]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    className={tab === k ? 'active' : ''}
-                    onClick={() => setTab(k)}
-                    style={linkStyle(tab === k)}
-                  >
-                    {label}
-                  </button>
-                ))}
-            </div>
+        {/* Project selector */}
+        <select
+          className="nav-select"
+          value={selectedProjectId}
+          onChange={(e) => onProjectChange(e.target.value)}
+          disabled={!projects.length}
+        >
+          {!projects.length && <option value="">Sin proyectos</option>}
+          {projects.map((project) => (
+            <option key={project._id} value={project._id}>
+              {getProjectDisplayName(project)}
+            </option>
+          ))}
+        </select>
+
+        {/* Centered pill tabs (absolute positioned) */}
+        <div className="nav-links-desktop">
+          <div className="nav-tabs-pill">
+            {items
+              .filter(([, , show]) => show)
+              .map(([k, label]) => (
+                <button
+                  key={k}
+                  type="button"
+                  className={tab === k ? 'active' : ''}
+                  onClick={() => setTab(k)}
+                >
+                  {label}
+                </button>
+              ))}
           </div>
         </div>
 
-        <div className={`nav-user-actions ${profileMenuOpen ? 'open' : ''}`}>
-          <button className="secondary theme-toggle" type="button" onClick={onToggleTheme}>
-            {isDarkMode ? '☀️ Modo día' : '🌙 Modo noche'}
+        {/* User area */}
+        <div className="nav-user-actions">
+          <button className="secondary theme-toggle" type="button" onClick={onToggleTheme} title={isDarkMode ? 'Modo día' : 'Modo noche'}>
+            {isDarkMode ? '☀️' : '🌙'}
           </button>
-
-          <div className="small nav-user">
-            {displayName || username} ({role})
+          <div className="nav-avatar">{initials}</div>
+          <div>
+            <div className="nav-user-name">{displayName || username}</div>
+            <div className="nav-user-role">{role}</div>
           </div>
-
-          {canSeeSettings && (
-            <button className="secondary" type="button" onClick={() => { setTab('settings'); setProfileMenuOpen(false); }}>
-              Ajustes
-            </button>
-          )}
-
+          <div className="nav-divider" />
           <button className="secondary" type="button" onClick={onLogout}>
             Salir
           </button>
@@ -440,15 +429,12 @@ function Nav({
       </div>
 
       <div className="mobile-bottom-nav">
-        {mobileBottomItems.filter(([, , show]) => show).map(([key, label]) => (
+        {items.filter(([, , show]) => show).map(([key, label]) => (
           <button
             key={key}
             type="button"
             className={tab === key ? 'active' : ''}
-            onClick={() => {
-              setProfileMenuOpen(false);
-              setTab(key);
-            }}
+            onClick={() => setTab(key)}
           >
             {label}
           </button>
@@ -701,6 +687,7 @@ export default function App() {
             onDashboardTypeChange={setDashboardType}
             isAdmin={isAdmin}
             selectedProjectId={selectedProjectId}
+            projects={projects}
             refreshKey={dataVersion}
           />
         )}
@@ -1733,6 +1720,7 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
   const [visibilityFilter, setVisibilityFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState('');
+  const [editingAreaM2, setEditingAreaM2] = useState({});
   const [error, setError] = useState('');
 
   async function loadProjects() {
@@ -1764,6 +1752,23 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
     } catch (e) {
       setProjects(previous);
       setError(e.message || 'No se pudo actualizar la visibilidad');
+    } finally {
+      setSavingId('');
+    }
+  }
+
+  async function onSaveAreaM2(projectId) {
+    const raw = String(editingAreaM2[projectId] ?? '').trim();
+    setSavingId(projectId);
+    setError('');
+    try {
+      await api.updateAdminProjectAreaM2(projectId, raw);
+      const areaM2 = raw === '' ? null : Number(raw);
+      setProjects((prev) => prev.map((row) => (row._id === projectId ? { ...row, areaM2 } : row)));
+      setEditingAreaM2((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      await onProjectUpdated?.();
+    } catch (e) {
+      setError(e.message || 'No se pudo guardar el área m²');
     } finally {
       setSavingId('');
     }
@@ -1813,6 +1818,7 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
             <th>slug</th>
             <th>sourceSbo</th>
             <th>rawProjectName</th>
+            <th>m² obra</th>
             <th>visibleInFrontend</th>
           </tr>
         </thead>
@@ -1820,12 +1826,39 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
           {filtered.map((row) => {
             const isVisible = row?.visibleInFrontend !== false;
             const rowId = String(row?._id || '');
+            const isEditingArea = rowId in editingAreaM2;
+            const areaValue = isEditingArea ? editingAreaM2[rowId] : (row?.areaM2 != null ? String(row.areaM2) : '');
             return (
               <tr key={rowId}>
                 <td>{row?.displayName || row?.name || ''}</td>
                 <td>{row?.slug || ''}</td>
                 <td>{row?.sap?.sourceSbo || ''}</td>
                 <td>{row?.sap?.rawProjectName || ''}</td>
+                <td>
+                  <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="ej. 5000"
+                      value={areaValue}
+                      disabled={savingId === rowId}
+                      style={{ width: 90 }}
+                      onChange={(e) => setEditingAreaM2((prev) => ({ ...prev, [rowId]: e.target.value }))}
+                    />
+                    {isEditingArea && (
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={savingId === rowId}
+                        style={{ padding: '2px 8px', fontSize: 12 }}
+                        onClick={() => onSaveAreaM2(rowId)}
+                      >
+                        {savingId === rowId ? '...' : 'Guardar'}
+                      </button>
+                    )}
+                  </div>
+                </td>
                 <td>
                   <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <input
@@ -1843,12 +1876,12 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
 
           {!loading && filtered.length === 0 && (
             <tr>
-              <td colSpan={5} className="small">Sin proyectos para mostrar.</td>
+              <td colSpan={6} className="small">Sin proyectos para mostrar.</td>
             </tr>
           )}
           {loading && (
             <tr>
-              <td colSpan={5} className="small">Cargando proyectos...</td>
+              <td colSpan={6} className="small">Cargando proyectos...</td>
             </tr>
           )}
         </tbody>
@@ -2467,39 +2500,46 @@ function RawDataAdmin() {
 }
 
 
-function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selectedProjectId, refreshKey }) {
+function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selectedProjectId, projects, refreshKey }) {
   const isIncome = dashboardType === 'income';
+  const selectedProject = (projects || []).find((p) => String(p._id) === String(selectedProjectId)) || null;
+  const areaM2 = selectedProject?.areaM2 ?? null;
 
   return (
     <div className="grid" style={{ gap: 10 }}>
-      <div className="dashboard-primary-switch">
-        <button
-          type="button"
-          className={isIncome ? 'secondary' : ''}
-          onClick={() => onDashboardTypeChange('expenses')}
-        >
-          Egresos
-        </button>
-        <button
-          type="button"
-          className={isIncome ? '' : 'secondary'}
-          onClick={() => onDashboardTypeChange('income')}
-        >
-          Ingresos
-        </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 22, fontWeight: 800, color: 'var(--primary-dark)', letterSpacing: '-.02em', flex: 1 }}>
+          Dashboard
+        </h2>
+        <div className="dashboard-primary-switch">
+          <button
+            type="button"
+            className={isIncome ? 'secondary' : ''}
+            onClick={() => onDashboardTypeChange('expenses')}
+          >
+            Egresos
+          </button>
+          <button
+            type="button"
+            className={isIncome ? '' : 'secondary'}
+            onClick={() => onDashboardTypeChange('income')}
+          >
+            Ingresos
+          </button>
+        </div>
       </div>
 
       {isIncome ? (
-        <DashboardIngresos selectedProjectId={selectedProjectId} refreshKey={refreshKey} />
+        <DashboardIngresos selectedProjectId={selectedProjectId} areaM2={areaM2} refreshKey={refreshKey} />
       ) : (
-        <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={refreshKey} />
+        <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} areaM2={areaM2} refreshKey={refreshKey} />
       )}
     </div>
   );
 }
 
 /* ================= DASHBOARD ================= */
-function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
+function Dashboard({ isAdmin, selectedProjectId, areaM2, refreshKey }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
@@ -2605,10 +2645,13 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
         ? 'KPIs y visuales de Categoría 2 para seguimiento diario.'
         : 'Detalle por Categoría 2 con proporción sobre el total de egresos.';
 
+  const totalExpenses = stats?.total_expenses || 0;
+  const costoM2 = areaM2 && areaM2 > 0 ? totalExpenses / areaM2 : null;
+
   const dashboardTotals = [
     {
       label: 'Total mes',
-      value: formatCurrency(stats?.total_expenses || 0),
+      value: formatCurrency(totalExpenses),
       helper: showCategoryIva ? 'Egresos con IVA' : 'Egresos sin IVA',
     },
     {
@@ -2620,6 +2663,11 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       label: 'Proveedores',
       value: String(supplierSummary.length),
       helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+    {
+      label: 'Costo / m²',
+      value: costoM2 != null ? formatCurrency(costoM2) : '—',
+      helper: costoM2 != null ? `${areaM2.toLocaleString('es-MX')} m²` : 'Sin área configurada',
     },
     {
       label: 'Última importación SAP',
@@ -2929,7 +2977,7 @@ async function fetchTransactionsTotalByType(type, includeIva = false) {
   return Number(total.toFixed(2));
 }
 
-function DashboardIngresos({ selectedProjectId, refreshKey }) {
+function DashboardIngresos({ selectedProjectId, areaM2, refreshKey }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
@@ -3036,10 +3084,13 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
         ? 'KPIs y visuales de Categoría 2 para seguimiento diario de ingresos.'
         : 'Detalle por Categoría 2 con proporción sobre el total de ingresos.';
 
+  const totalIngresos = stats?.total_expenses || 0;
+  const costoM2Ingresos = areaM2 && areaM2 > 0 ? totalIngresos / areaM2 : null;
+
   const dashboardTotals = [
     {
       label: 'Total mes',
-      value: formatCurrency(stats?.total_expenses || 0),
+      value: formatCurrency(totalIngresos),
       helper: showCategoryIva ? 'Ingresos con IVA' : 'Ingresos sin IVA',
     },
     {
@@ -3051,6 +3102,11 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
       label: 'Proveedores',
       value: String(supplierSummary.length),
       helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+    {
+      label: 'Ingreso / m²',
+      value: costoM2Ingresos != null ? formatCurrency(costoM2Ingresos) : '—',
+      helper: costoM2Ingresos != null ? `${areaM2.toLocaleString('es-MX')} m²` : 'Sin área configurada',
     },
     {
       label: 'Balance proyecto',

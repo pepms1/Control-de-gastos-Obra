@@ -552,6 +552,11 @@ export function SearchTransactionsV2({
     () => visibleRows.reduce((acc, row) => acc + (getAmountWithTax(row) || 0), 0),
     [visibleRows],
   );
+  const totalIva = totalWithTax - totalWithoutTax;
+  const uniqueProjectsCount = useMemo(
+    () => new Set(visibleRows.map((r) => r.projectId || r.project)).size,
+    [visibleRows],
+  );
 
   async function exportPdf() {
     setExporting(true);
@@ -619,108 +624,181 @@ export function SearchTransactionsV2({
 
   const typeSelectorVisible = !String(lockTypeTo || '').trim();
 
+  const kpiItems = [
+    {
+      label: 'Total sin IVA filtrado',
+      value: formatCurrency(totalWithoutTax),
+      sub: `${visibleRows.length} registro${visibleRows.length !== 1 ? 's' : ''}`,
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>
+        </svg>
+      ),
+    },
+    {
+      label: 'Total con IVA',
+      value: formatCurrency(totalWithTax),
+      sub: 'base total',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>
+        </svg>
+      ),
+    },
+    {
+      label: 'IVA acumulado',
+      value: formatCurrency(totalIva),
+      sub: '16%',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
+      ),
+    },
+    {
+      label: 'Proyectos',
+      value: String(uniqueProjectsCount),
+      sub: 'con resultados',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M16 6h.01M8 10h.01M16 10h.01M8 14h.01M16 14h.01"/>
+        </svg>
+      ),
+    },
+  ];
+
   return (
-    <div className="card">
-      <h2 style={{ marginTop: 0 }}>{title}</h2>
-      <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
-        <input
-          ref={searchInputRef}
-          type="search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Buscar por proveedor, SAP, categoría 2, descripción o referencias"
-          style={{ minWidth: 320, flex: 1 }}
-        />
-        <button type="button" className="secondary" onClick={() => setShowFilters((value) => !value)}>
-          {showFilters ? 'Ocultar filtros' : 'Mostrar filtros'}
-        </button>
-        <button type="button" onClick={exportPdf} disabled={!visibleRows.length || loading || exporting}>
-          {exporting ? 'Exportando...' : 'Exportar PDF'}
-        </button>
-      </div>
-      <div
-        className="small"
-        style={{
-          marginTop: 6,
-          color: 'var(--primary)',
-          fontSize: '16px',
-          fontWeight: 700,
-        }}
-      >
-        Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}
+    <div>
+      {/* KPI bar */}
+      <div className="kpi-grid">
+        {kpiItems.map((k) => (
+          <div className="kpi-card" key={k.label}>
+            <div className="kpi-icon">{k.icon}</div>
+            <div>
+              <div className="kpi-label">{k.label}</div>
+              <div className="kpi-value">{k.value}</div>
+              <div className="kpi-sub">{k.sub}</div>
+            </div>
+          </div>
+        ))}
       </div>
 
-      {showFilters && (
-        <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-          <select value={supplierFilter} onChange={(event) => setSupplierFilter(event.target.value)}>
-            <option value="ALL">Proveedor (todos)</option>
-            {supplierOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-          <select value={category2Filter} onChange={(event) => setCategory2Filter(event.target.value)}>
-            <option value="ALL">Categoría 2 (todas)</option>
-            {category2Options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
+      <div className="card" style={{ overflow: 'hidden' }}>
+        {/* Toolbar */}
+        <div className="card-header">
+          <div className="search-input-wrap">
+            <input
+              ref={searchInputRef}
+              type="search"
+              className="search-input"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Buscar por proveedor, categoría 2, descripción…"
+            />
+          </div>
+
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setShowFilters((value) => !value)}
+            style={showFilters ? { background: 'var(--primary-soft)', color: 'var(--primary)' } : undefined}
+          >
+            {showFilters ? 'Ocultar filtros' : 'Mostrar filtros'}
+          </button>
+
+          <div style={{ flex: 1 }} />
+
           {typeSelectorVisible && (
-            <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
-              <option value="ALL">Ingreso / Egreso (todos)</option>
-              <option value="INCOME">Ingreso</option>
-              <option value="EXPENSE">Egreso</option>
-            </select>
+            <div className="type-switch">
+              {[['EXPENSE', 'Egresos'], ['INCOME', 'Ingresos'], ['ALL', 'Todos']].map(([v, l]) => (
+                <button
+                  key={v}
+                  type="button"
+                  className={`type-btn${typeFilter === v ? ' active' : ''}`}
+                  onClick={() => setTypeFilter(v)}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
           )}
+
+          <button type="button" onClick={exportPdf} disabled={!visibleRows.length || loading || exporting}>
+            {exporting ? 'Exportando...' : 'Exportar PDF'}
+          </button>
         </div>
-      )}
 
-      <div className="small" style={{ marginTop: 8 }}>
-        {loading ? 'Buscando...' : `${visibleRows.length} resultados visibles`}
-      </div>
-      {!!error && <div className="small" style={{ marginTop: 8, color: '#b91c1c' }}>{error}</div>}
+        {/* Filters */}
+        {showFilters && (
+          <div className="filter-bar">
+            <select value={supplierFilter} onChange={(event) => setSupplierFilter(event.target.value)}>
+              <option value="ALL">Proveedor (todos)</option>
+              {supplierOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+            <select value={category2Filter} onChange={(event) => setCategory2Filter(event.target.value)}>
+              <option value="ALL">Categoría 2 (todas)</option>
+              {category2Options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </div>
+        )}
 
-      <div style={{ overflowX: 'auto', marginTop: 10 }}>
-        <table>
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Proyecto</th>
-              <th>SBO</th>
-              <th>Proveedor</th>
-              <th>Descripción</th>
-              <th>Categoría</th>
-              <th>Subtotal</th>
-              <th>IVA</th>
-              <th>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleRows.map((row) => {
-              const supplier = resolveSupplierIdentity(row);
-              const category2 = resolveCategory2(row, categoryMap);
-              const projectDisplayName = resolveProjectDisplayName(row);
-              return (
-                <tr key={row.id}>
-                  <td>{row.date || '—'}</td>
-                  <td>{projectDisplayName || 'Sin proyecto'}</td>
-                  <td>{row.sourceSbo || '—'}</td>
-                  <td>{supplier?.name || '—'}</td>
-                  <td>{row.description || '—'}</td>
-                  <td>{category2?.name || '—'}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{formatCurrencyWithFallback(getAmountWithoutTax(row))}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{formatCurrencyWithFallback(getTaxAmount(row))}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{formatCurrencyWithFallback(getAmountWithTax(row))}</td>
-                </tr>
-              );
-            })}
-            {!visibleRows.length && !loading && <tr><td colSpan={9} className="small">Sin resultados</td></tr>}
-          </tbody>
-          <tfoot>
-            <tr>
-              <td colSpan={5} />
-              <td style={{ textAlign: 'right', fontWeight: 700 }}>Totales visibles</td>
-              <td style={{ fontWeight: 700 }}>{formatCurrency(totalWithoutTax)}</td>
-              <td style={{ fontWeight: 700 }}>{formatCurrency(totalWithTax - totalWithoutTax)}</td>
-              <td style={{ fontWeight: 700 }}>{formatCurrency(totalWithTax)}</td>
-            </tr>
-          </tfoot>
-        </table>
+        {/* Status bar */}
+        <div className="status-bar">
+          <span className="status-total">Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}</span>
+          <span style={{ color: 'var(--gray-300)' }}>·</span>
+          <span className="status-count">
+            {loading ? 'Buscando…' : `${visibleRows.length} resultado${visibleRows.length !== 1 ? 's' : ''} visible${visibleRows.length !== 1 ? 's' : ''}`}
+          </span>
+        </div>
+
+        {!!error && <div className="small" style={{ padding: '8px 16px', color: 'var(--danger-text, #b91c1c)' }}>{error}</div>}
+
+        {/* Table */}
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Proyecto</th>
+                <th>Proveedor</th>
+                <th>Descripción</th>
+                <th>Categoría</th>
+                <th>Subtotal</th>
+                <th>IVA</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => {
+                const supplier = resolveSupplierIdentity(row);
+                const category2 = resolveCategory2(row, categoryMap);
+                const projectDisplayName = resolveProjectDisplayName(row);
+                return (
+                  <tr key={row.id}>
+                    <td style={{ color: 'var(--gray-500)', fontSize: 12, whiteSpace: 'nowrap' }}>{row.date || '—'}</td>
+                    <td>{projectDisplayName || 'Sin proyecto'}</td>
+                    <td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{supplier?.name || '—'}</td>
+                    <td style={{ color: 'var(--gray-600)', fontSize: 12 }}>{row.description || '—'}</td>
+                    <td>{category2?.name || '—'}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>{formatCurrencyWithFallback(getAmountWithoutTax(row))}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap', color: 'var(--gray-500)', fontSize: 12 }}>{formatCurrencyWithFallback(getTaxAmount(row))}</td>
+                    <td style={{ textAlign: 'right', whiteSpace: 'nowrap', fontWeight: 700, color: 'var(--primary-dark)' }}>{formatCurrencyWithFallback(getAmountWithTax(row))}</td>
+                  </tr>
+                );
+              })}
+              {!visibleRows.length && !loading && <tr><td colSpan={8} className="small" style={{ textAlign: 'center', padding: 32 }}>Sin resultados</td></tr>}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={4} />
+                <td style={{ textAlign: 'right', fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--gray-500)' }}>Totales visibles</td>
+                <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--primary-dark)' }}>{formatCurrency(totalWithoutTax)}</td>
+                <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--gray-600)' }}>{formatCurrency(totalIva)}</td>
+                <td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--primary-dark)' }}>{formatCurrency(totalWithTax)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       </div>
     </div>
   );

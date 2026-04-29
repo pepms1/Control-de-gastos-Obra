@@ -524,4 +524,10 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ visibleInFrontend: Boolean(visibleInFrontend) }),
     }),
+
+  updateAdminProjectAreaM2: (projectId, areaM2) =>
+    backendReq(`/api/admin/projects/${projectId}/area-m2`, {
+      method: 'PATCH',
+      body: JSON.stringify({ areaM2: areaM2 === '' ? '' : Number(areaM2) }),
+    }),
 };
