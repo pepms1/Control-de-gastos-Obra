@@ -69,9 +69,21 @@ function parseMoneyInput(value) {
   return Number(value.replace(/,/g, '').trim());
 }
 
+function getInitials(value) {
+  const words = String(value || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return 'MD';
+  return words
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() || '')
+    .join('');
+}
+
 function getTransactionCategoryLabel(transaction, catMap) {
   const category2 = resolveTransactionCategory2(transaction, catMap);
-  return category2.name || 'Sin categoría 2';
+  return category2.name || 'Sin categorÃ­a 2';
 }
 
 function getTransactionTotalValue(transaction) {
@@ -114,7 +126,7 @@ function formatCurrency(value) {
 }
 
 function getTransactionSourceLabel(transaction) {
-  return `${transaction?.sapBadgeLabel || transaction?.source || '—'} ${transaction?.sourceSbo || ''}`.trim();
+  return `${transaction?.sapBadgeLabel || transaction?.source || 'â€”'} ${transaction?.sourceSbo || ''}`.trim();
 }
 
 function formatDateTime(value) {
@@ -325,7 +337,7 @@ function SourceBadges({ transaction }) {
     );
   }
 
-  return <span className="small">{transaction?.source || '—'}</span>;
+  return <span className="small">{transaction?.source || 'â€”'}</span>;
 }
 
 /* ================= NAV ================= */
@@ -359,37 +371,29 @@ function Nav({
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
-  // Only keep truly dynamic values here — background/border/padding
+  // Only keep truly dynamic values here â€” background/border/padding
   // are handled by CSS so they must NOT be set as inline styles.
-  const linkStyle = (active) => ({
-    opacity: active ? 1 : 0.9,
-  });
+  const userLabel = displayName || username || 'Usuario';
 
   return (
     <>
-      <div className="nav">
+      <div className="nav nav-redesign">
         <div className="nav-header">
-          <img
-            src="/LOGO%20GRUPO%20MDI.jpg"
-            alt="Logo Grupo MDI"
-            className="nav-logo"
-            onError={(event) => {
-              event.currentTarget.onerror = null;
-              event.currentTarget.src = '/logo-grupo-mdi.svg';
-            }}
-          />
+          <div className="nav-logo-box" aria-hidden="true">MDI</div>
           <div className="nav-title-wrap">
             <div className="nav-title">Control de Gastos MDI</div>
             <div className="nav-subtitle">Grupo MDI</div>
           </div>
 
           <button className="secondary nav-profile-trigger" type="button" onClick={() => setProfileMenuOpen((prev) => !prev)}>
-            ☰
+            â˜°
           </button>
         </div>
 
-        <div className="nav-items">
-          <div className="small nav-project-label">Proyecto activo</div>
+        <div className="nav-divider desktop-only" />
+
+        <div className="nav-items nav-project-select">
+          <div className="small nav-project-label">Proyecto</div>
           <select value={selectedProjectId} onChange={(e) => onProjectChange(e.target.value)} disabled={!projects.length}>
             {!projects.length && <option value="">Sin proyectos</option>}
             {projects.map((project) => (
@@ -409,7 +413,6 @@ function Nav({
                     type="button"
                     className={tab === k ? 'active' : ''}
                     onClick={() => setTab(k)}
-                    style={linkStyle(tab === k)}
                   >
                     {label}
                   </button>
@@ -420,18 +423,17 @@ function Nav({
 
         <div className={`nav-user-actions ${profileMenuOpen ? 'open' : ''}`}>
           <button className="secondary theme-toggle" type="button" onClick={onToggleTheme}>
-            {isDarkMode ? '☀️ Modo día' : '🌙 Modo noche'}
+            {isDarkMode ? 'Sol' : 'Luna'}
           </button>
 
-          <div className="small nav-user">
-            {displayName || username} ({role})
+          <div className="nav-avatar">{getInitials(userLabel)}</div>
+
+          <div className="nav-user-copy">
+            <div className="nav-user-name">{userLabel}</div>
+            <div className="nav-user-role">{role}</div>
           </div>
 
-          {canSeeSettings && (
-            <button className="secondary" type="button" onClick={() => { setTab('settings'); setProfileMenuOpen(false); }}>
-              Ajustes
-            </button>
-          )}
+          <div className="nav-divider desktop-only" />
 
           <button className="secondary" type="button" onClick={onLogout}>
             Salir
@@ -496,14 +498,14 @@ function Login({ onLogin }) {
           <h1>Grupo MDI</h1>
           <p>control de obra</p>
         </div>
-        <h2 style={{ marginTop: 0 }}>Iniciar sesión</h2>
+        <h2 style={{ marginTop: 0 }}>Iniciar sesiÃ³n</h2>
         <form onSubmit={submit} className="grid">
           <div>
             <label>Usuario</label>
             <input value={username} onChange={(e) => setUsername(e.target.value)} />
           </div>
           <div>
-            <label>Contraseña</label>
+            <label>ContraseÃ±a</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
           {err && <div style={{ color: '#334155' }}>{err}</div>}
@@ -735,7 +737,7 @@ export default function App() {
             onSelectedProjectSaved={setSelectedProjectId}
             onCatalogChanged={async () => {
               await refreshCatalog();
-              setToast('Catálogo actualizado');
+              setToast('CatÃ¡logo actualizado');
             }}
             onTransactionsChanged={invalidateData}
           />
@@ -751,18 +753,18 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
     {
       title: 'Preferencias',
       items: [
-        { key: 'my-project-visibility', label: 'Mi visualización de proyectos', enabled: canUseAdminPreferences },
+        { key: 'my-project-visibility', label: 'Mi visualizaciÃ³n de proyectos', enabled: canUseAdminPreferences },
       ],
     },
     {
-      title: 'Operación diaria',
+      title: 'OperaciÃ³n diaria',
       items: [
-        { key: 'catalog', label: 'Catálogo', enabled: true },
-        { key: 'global-search', label: 'Búsqueda Global', enabled: canUseAdminPreferences },
+        { key: 'catalog', label: 'CatÃ¡logo', enabled: true },
+        { key: 'global-search', label: 'BÃºsqueda Global', enabled: canUseAdminPreferences },
       ],
     },
     {
-      title: 'Administración',
+      title: 'AdministraciÃ³n',
       items: [
         { key: 'users-access', label: 'Usuarios y accesos', enabled: isSuperAdmin },
         { key: 'projects-visibility', label: 'Visibilidad de proyectos', enabled: isSuperAdmin },
@@ -774,7 +776,7 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
       items: [
         { key: 'import-sap', label: 'Subir CSV', enabled: isSuperAdmin, disabled: !isSuperAdmin, disabledTitle: 'Solo disponible para superadministradores' },
         { key: 'sap-latest', label: 'SAP Import', enabled: isSuperAdmin, disabled: !isSuperAdmin, disabledTitle: 'Solo disponible para superadministradores' },
-        { key: 'latest-imports', label: 'Últimos imports', enabled: isSuperAdmin },
+        { key: 'latest-imports', label: 'Ãšltimos imports', enabled: isSuperAdmin },
       ],
     },
     {
@@ -782,11 +784,11 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
       items: [
         { key: 'special-work-suppliers', label: 'Proveedores de Trabajos Especiales', enabled: isSuperAdmin },
         { key: 'financial-kind-reclassify', label: 'Quitar Retiros de inversion de Egresos', enabled: isSuperAdmin },
-        { key: 'suspicious-project-resolutions', label: 'Resolución de sospechosos', enabled: isSuperAdmin },
+        { key: 'suspicious-project-resolutions', label: 'ResoluciÃ³n de sospechosos', enabled: isSuperAdmin },
       ],
     },
     {
-      title: 'Edición avanzada',
+      title: 'EdiciÃ³n avanzada',
       items: [
         { key: 'edit-transactions', label: 'Editar movimientos', enabled: isSuperAdmin },
         { key: 'raw-data', label: 'Raw data', enabled: isSuperAdmin, disabled: !isSuperAdmin, disabledTitle: 'Solo disponible para superadministradores' },
@@ -809,7 +811,7 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
       <aside className="card settings-sidebar">
         <div className="settings-sidebar-header">
           <h3>Ajustes</h3>
-          <span className="small">Selecciona una sección para configurarla.</span>
+          <span className="small">Selecciona una secciÃ³n para configurarla.</span>
         </div>
         {visibleCategories.map((category) => (
           <div key={category.title} className="settings-sidebar-category">
@@ -854,7 +856,7 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
               cats={cats}
               vendors={vendors}
               selectedProjectId={null}
-              title="Búsqueda Global de Egresos"
+              title="BÃºsqueda Global de Egresos"
               forceGlobalProjectScope
               lockTypeTo="EXPENSE"
             />
@@ -944,7 +946,7 @@ function FinancialKindReclassifySection({ projects, selectedProjectId }) {
       const response = await api.adminReclassifyFinancialKind(payload);
       setResult(response || null);
     } catch (err) {
-      setError(err.message || 'No se pudo ejecutar la reclasificación.');
+      setError(err.message || 'No se pudo ejecutar la reclasificaciÃ³n.');
     } finally {
       setLoading(false);
     }
@@ -954,7 +956,7 @@ function FinancialKindReclassifySection({ projects, selectedProjectId }) {
     <div className="card" style={{ display: 'grid', gap: 12 }}>
       <div>
         <h2 style={{ margin: 0 }}>Reclasificar egresos (retiros de aportaciones)</h2>
-        <div className="small">Corre la API de clasificación semántica para todas las transacciones o filtrando por base de datos.</div>
+        <div className="small">Corre la API de clasificaciÃ³n semÃ¡ntica para todas las transacciones o filtrando por base de datos.</div>
       </div>
 
       <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
@@ -1002,7 +1004,7 @@ function FinancialKindReclassifySection({ projects, selectedProjectId }) {
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
         <button type="button" onClick={runReclassify} disabled={loading || (scope === 'project' && !projectId)}>
-          {loading ? 'Ejecutando…' : 'Ejecutar clasificación semántica'}
+          {loading ? 'Ejecutandoâ€¦' : 'Ejecutar clasificaciÃ³n semÃ¡ntica'}
         </button>
         {error && <span style={{ color: '#b91c1c' }}>{error}</span>}
       </div>
@@ -1157,8 +1159,8 @@ function MyProjectVisibilitySection({ allProjects, session, selectedProjectId, o
   return (
     <div className="card grid" style={{ gap: 12 }}>
       <div>
-        <h3 style={{ margin: 0 }}>Mi visualización de proyectos</h3>
-        <div className="small">El estado es personal: visible para mí u oculto para mí. No cambia la publicación global ni el acceso de otros usuarios.</div>
+        <h3 style={{ margin: 0 }}>Mi visualizaciÃ³n de proyectos</h3>
+        <div className="small">El estado es personal: visible para mÃ­ u oculto para mÃ­. No cambia la publicaciÃ³n global ni el acceso de otros usuarios.</div>
       </div>
 
       {!visibleProjects.length && <div className="small">No hay proyectos publicados para configurar.</div>}
@@ -1167,7 +1169,7 @@ function MyProjectVisibilitySection({ allProjects, session, selectedProjectId, o
         <div className="grid" style={{ gap: 8 }}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
             <span className="small">
-              {projectCounts.visible} visibles · {projectCounts.hidden} ocultos
+              {projectCounts.visible} visibles Â· {projectCounts.hidden} ocultos
             </span>
             <button type="button" className="secondary" onClick={showAllProjects}>Mostrar todos</button>
             <button type="button" className="secondary" onClick={hideAllProjects}>Ocultar todos</button>
@@ -1202,7 +1204,7 @@ function MyProjectVisibilitySection({ allProjects, session, selectedProjectId, o
           />
 
           {!filteredVisibleProjects.length && (
-            <div className="small">No hay coincidencias para “{search.trim()}”.</div>
+            <div className="small">No hay coincidencias para â€œ{search.trim()}â€.</div>
           )}
 
           {filteredVisibleProjects.map((project) => {
@@ -1218,9 +1220,9 @@ function MyProjectVisibilitySection({ allProjects, session, selectedProjectId, o
                 />
                 <span>
                   {getProjectDisplayName(project)}
-                  <span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `· ${sourceSbo}` : ''}</span>
+                  <span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `Â· ${sourceSbo}` : ''}</span>
                   <span className="small" style={{ marginLeft: 6 }}>
-                    {visibleForMe ? '· Visible para mí' : '· Oculto para mí'}
+                    {visibleForMe ? 'Â· Visible para mÃ­' : 'Â· Oculto para mÃ­'}
                   </span>
                 </span>
               </label>
@@ -1336,7 +1338,7 @@ function AdminUsersAccessSection() {
     if (!userId) return;
     const nextDisplayName = draftDisplayName.trim();
     if (!nextDisplayName) {
-      setError('El nombre visible no puede estar vacío.');
+      setError('El nombre visible no puede estar vacÃ­o.');
       return;
     }
     setSaving(true);
@@ -1469,14 +1471,14 @@ function AdminUsersAccessSection() {
     setResetSuccess('');
     try {
       await api.resetAdminUserPassword(userId, newPassword);
-      setResetSuccess('Contraseña restablecida correctamente');
+      setResetSuccess('ContraseÃ±a restablecida correctamente');
       setResetTargetUser(null);
       setResetPassword('');
       setResetConfirmPassword('');
       setShowResetPassword(false);
       setResetError('');
     } catch (e) {
-      setResetError(e.message || 'No se pudo restablecer la contraseña.');
+      setResetError(e.message || 'No se pudo restablecer la contraseÃ±a.');
     } finally {
       setResettingPassword(false);
     }
@@ -1498,16 +1500,16 @@ function AdminUsersAccessSection() {
 
   function getRoleHelp(role) {
     if (role === 'SUPERADMIN') return 'Acceso total';
-    if (role === 'ADMIN') return 'Operación general';
-    return 'Solo verá proyectos asignados';
+    if (role === 'ADMIN') return 'OperaciÃ³n general';
+    return 'Solo verÃ¡ proyectos asignados';
   }
 
   return (
     <div className="card grid" style={{ gap: 12 }}>
       <div>
         <h3 style={{ margin: 0 }}>Usuarios y accesos</h3>
-        <div className="small">SUPERADMIN = acceso total · ADMIN = operación general · VIEWER = solo proyectos asignados.</div>
-        <div className="small">Username = login · Nombre visible = cómo se muestra en el sistema.</div>
+        <div className="small">SUPERADMIN = acceso total Â· ADMIN = operaciÃ³n general Â· VIEWER = solo proyectos asignados.</div>
+        <div className="small">Username = login Â· Nombre visible = cÃ³mo se muestra en el sistema.</div>
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1522,7 +1524,7 @@ function AdminUsersAccessSection() {
           <div className="small" style={{ marginBottom: 8 }}>Crear usuario nuevo</div>
           <div style={{ display: 'grid', gap: 8 }}>
             <label className="small">Nombre visible
-              <input value={createForm.displayName} onChange={(e) => setCreateForm((prev) => ({ ...prev, displayName: e.target.value }))} placeholder="Ej: Juan Pérez" />
+              <input value={createForm.displayName} onChange={(e) => setCreateForm((prev) => ({ ...prev, displayName: e.target.value }))} placeholder="Ej: Juan PÃ©rez" />
             </label>
             <label className="small">Username (login)
               <input value={createForm.username} onChange={(e) => setCreateForm((prev) => ({ ...prev, username: e.target.value }))} placeholder="usuario_login" />
@@ -1542,7 +1544,7 @@ function AdminUsersAccessSection() {
             </label>
             {createForm.role === 'VIEWER' && (
               <div>
-                <div className="small" style={{ marginBottom: 6 }}>Proyectos permitidos (el VIEWER solo verá estos proyectos)</div>
+                <div className="small" style={{ marginBottom: 6 }}>Proyectos permitidos (el VIEWER solo verÃ¡ estos proyectos)</div>
                 <div style={{ display: 'grid', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
                   {projects.map((project) => {
                     const projectId = String(project?._id || '');
@@ -1596,7 +1598,7 @@ function AdminUsersAccessSection() {
               </tr>
             </thead>
             <tbody>
-              {!filteredUsers.length && <tr><td colSpan={6} className="small">No hay usuarios que coincidan con la búsqueda/filtro.</td></tr>}
+              {!filteredUsers.length && <tr><td colSpan={6} className="small">No hay usuarios que coincidan con la bÃºsqueda/filtro.</td></tr>}
               {filteredUsers.map((user) => {
                 const userId = String(user?.id || user?._id || '');
                 const role = normalizeRole(user?.role);
@@ -1621,12 +1623,12 @@ function AdminUsersAccessSection() {
                         ) : (
                           <>
                             <div>{user?.displayName || user?.name || user?.username || 'Sin nombre'}</div>
-                            <div className="small">@{user?.username || '—'}</div>
+                            <div className="small">@{user?.username || 'â€”'}</div>
                             <button type="button" className="secondary" onClick={() => startEditName(user)} disabled={saving} style={{ marginTop: 6 }}>Editar nombre visible</button>
                           </>
                         )}
                       </td>
-                      <td>{user?.email || '—'}</td>
+                      <td>{user?.email || 'â€”'}</td>
                       <td>
                         <div style={{ display: 'grid', gap: 6 }}>
                           <select value={draftRole} onChange={(e) => handleRoleDraft(userId, e.target.value)} disabled={savingRole || saving}>
@@ -1645,7 +1647,7 @@ function AdminUsersAccessSection() {
                           {viewer ? <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>Editar accesos</button> : <span className="small">No editable</span>}
                           {isSuperAdminUser && (
                             <button type="button" className="secondary" onClick={() => openResetPasswordModal(user)} disabled={saving || resettingPassword}>
-                              Restablecer contraseña
+                              Restablecer contraseÃ±a
                             </button>
                           )}
                         </div>
@@ -1655,7 +1657,7 @@ function AdminUsersAccessSection() {
                       <tr>
                         <td colSpan={6}>
                           <div className="card" style={{ margin: 0 }}>
-                            <div className="small" style={{ marginBottom: 8 }}>Selecciona proyectos permitidos para este VIEWER (solo verá estos proyectos):</div>
+                            <div className="small" style={{ marginBottom: 8 }}>Selecciona proyectos permitidos para este VIEWER (solo verÃ¡ estos proyectos):</div>
                             <div style={{ display: 'grid', gap: 6, maxHeight: 240, overflowY: 'auto' }}>
                               {projects.map((project) => {
                                 const projectId = String(project?._id || '');
@@ -1664,7 +1666,7 @@ function AdminUsersAccessSection() {
                                 return (
                                   <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                                     <input type="checkbox" checked={checked} onChange={() => toggleProject(projectId)} disabled={saving} />
-                                    <span>{getProjectDisplayName(project)}<span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `· ${sourceSbo}` : ''}</span></span>
+                                    <span>{getProjectDisplayName(project)}<span className="small"> {project?.slug ? `(${project.slug})` : ''} {sourceSbo ? `Â· ${sourceSbo}` : ''}</span></span>
                                   </label>
                                 );
                               })}
@@ -1688,31 +1690,31 @@ function AdminUsersAccessSection() {
       {resetTargetUser && (
         <div className="modal-backdrop">
           <div className="modal">
-            <h3>Restablecer contraseña</h3>
+            <h3>Restablecer contraseÃ±a</h3>
             <div style={{ display: 'grid', gap: 8 }}>
               <label className="small">Usuario
                 <input value={resetTargetUser?.displayName || resetTargetUser?.username || ''} readOnly disabled />
               </label>
-              <label className="small">Nueva contraseña
+              <label className="small">Nueva contraseÃ±a
                 <input
                   type={showResetPassword ? 'text' : 'password'}
                   value={resetPassword}
                   onChange={(e) => setResetPassword(e.target.value)}
-                  placeholder="Mínimo 8 caracteres"
+                  placeholder="MÃ­nimo 8 caracteres"
                   autoFocus
                 />
               </label>
-              <label className="small">Confirmar nueva contraseña
+              <label className="small">Confirmar nueva contraseÃ±a
                 <input
                   type={showResetPassword ? 'text' : 'password'}
                   value={resetConfirmPassword}
                   onChange={(e) => setResetConfirmPassword(e.target.value)}
-                  placeholder="Repite la nueva contraseña"
+                  placeholder="Repite la nueva contraseÃ±a"
                 />
               </label>
               <label style={{ display: 'flex', alignItems: 'center', gap: 6 }} className="small">
                 <input type="checkbox" checked={showResetPassword} onChange={(e) => setShowResetPassword(e.target.checked)} />
-                Mostrar contraseña
+                Mostrar contraseÃ±a
               </label>
               {resetError && <div className="small" style={{ color: '#b00020' }}>{resetError}</div>}
             </div>
@@ -1881,7 +1883,7 @@ function AdminProjectsFromUnmatchedSection({ onProjectCreated }) {
     <div className="card">
       <h3 style={{ marginTop: 0 }}>Proyectos desde unmatched</h3>
       <div className="small" style={{ marginBottom: 10 }}>
-        Crea proyectos automáticamente desde <code>unmatched_projects</code>. Los nuevos quedan ocultos del frontend.
+        Crea proyectos automÃ¡ticamente desde <code>unmatched_projects</code>. Los nuevos quedan ocultos del frontend.
       </div>
       <button type="button" onClick={onCreateFromUnmatched} disabled={running}>
         {running ? 'Creando...' : 'Crear proyectos desde unmatched'}
@@ -1927,7 +1929,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
     }
 
     const accepted = window.confirm(
-      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nSBO: ${sbo}.\nModo: ${mode}.\nForzar reimportación: ${forceReimport ? 'Sí' : 'No'}.\n\n¿Deseas continuar?`
+      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nSBO: ${sbo}.\nModo: ${mode}.\nForzar reimportaciÃ³n: ${forceReimport ? 'SÃ­' : 'No'}.\n\nÂ¿Deseas continuar?`
     );
     if (!accepted) return;
 
@@ -1954,7 +1956,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
       const failedRuns = runs.filter((run) => !run.ok);
       if (failedRuns.length > 0) {
         setError(
-          `El import terminó con errores en ${failedRuns.length} SBO: ${failedRuns.map((run) => run.sbo).join(', ')}.`
+          `El import terminÃ³ con errores en ${failedRuns.length} SBO: ${failedRuns.map((run) => run.sbo).join(', ')}.`
         );
       }
 
@@ -2013,7 +2015,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
             onChange={(e) => setForceReimport(e.target.checked)}
             disabled={importing}
           />
-          <span>Forzar reimportación</span>
+          <span>Forzar reimportaciÃ³n</span>
         </label>
       </div>
 
@@ -2030,7 +2032,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
           <h4 style={{ margin: 0, marginBottom: 8 }}>Resultado</h4>
           <div className="small">SBO seleccionado: {withFallback(result?.selectedSbo)}</div>
           <div className="small">Modo: {withFallback(result?.mode)}</div>
-          <div className="small">Forzar reimportación: {result?.forceReimport ? 'Sí' : 'No'}</div>
+          <div className="small">Forzar reimportaciÃ³n: {result?.forceReimport ? 'SÃ­' : 'No'}</div>
           <div className="small">SBO procesados: {withFallback(result?.runs?.length, '0')}</div>
 
           <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
@@ -2039,7 +2041,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
                 <strong>{run.sbo}</strong>: {run.ok ? 'OK' : 'Error'}
                 {run.ok ? (
                   <div style={{ marginTop: 4 }}>
-                    status: {withFallback(run?.response?.status)} · rowsTotal: {withFallback(run?.response?.rowsTotal, '0')} · rowsOk: {withFallback(run?.response?.rowsOk, '0')} · imported: {withFallback(run?.response?.imported, '0')} · updated: {withFallback(run?.response?.updated, '0')} · unmatched: {withFallback(run?.response?.unmatched, '0')} · importRunId: {withFallback(run?.response?.importRunId)}
+                    status: {withFallback(run?.response?.status)} Â· rowsTotal: {withFallback(run?.response?.rowsTotal, '0')} Â· rowsOk: {withFallback(run?.response?.rowsOk, '0')} Â· imported: {withFallback(run?.response?.imported, '0')} Â· updated: {withFallback(run?.response?.updated, '0')} Â· unmatched: {withFallback(run?.response?.unmatched, '0')} Â· importRunId: {withFallback(run?.response?.importRunId)}
                   </div>
                 ) : (
                   <div style={{ marginTop: 4, color: '#b00020' }}>{run.error}</div>
@@ -2088,7 +2090,7 @@ function SpecialWorkSuppliersReviewSection() {
       })
       .catch((e) => {
         setGlobalCategories([]);
-        setError(e.message || 'No se pudo cargar el catálogo global de categorías.');
+        setError(e.message || 'No se pudo cargar el catÃ¡logo global de categorÃ­as.');
       });
   }
 
@@ -2172,7 +2174,7 @@ function SpecialWorkSuppliersReviewSection() {
     if (!supplierKey) return;
     const category2Id = String(selectedCategoryBySupplier[supplierKey] || '').trim();
     if (!category2Id) {
-      setSaveError('Debes seleccionar una Categoría 2 antes de guardar.');
+      setSaveError('Debes seleccionar una CategorÃ­a 2 antes de guardar.');
       return;
     }
 
@@ -2188,10 +2190,10 @@ function SpecialWorkSuppliersReviewSection() {
         category2Id,
         isActive: true,
       });
-      setSaveSuccess(`Categoría 2 guardada para ${item?.supplierName || supplierKey}.`);
+      setSaveSuccess(`CategorÃ­a 2 guardada para ${item?.supplierName || supplierKey}.`);
       await loadSuppliers();
     } catch (e) {
-      setSaveError(e.message || 'No se pudo guardar la regla global de Categoría 2.');
+      setSaveError(e.message || 'No se pudo guardar la regla global de CategorÃ­a 2.');
     } finally {
       setSavingKey('');
     }
@@ -2201,11 +2203,11 @@ function SpecialWorkSuppliersReviewSection() {
     <div className="card" style={{ overflowX: 'auto' }}>
       <h3 style={{ marginTop: 0 }}>Proveedores de Trabajos Especiales</h3>
       <div className="small" style={{ marginBottom: 10 }}>
-        Clasificación interna derivada: la Categoría 1 original del movimiento no se modifica.
-        Aquí asignas una regla global por proveedor para resolver Categoría 2 en lectura.
+        ClasificaciÃ³n interna derivada: la CategorÃ­a 1 original del movimiento no se modifica.
+        AquÃ­ asignas una regla global por proveedor para resolver CategorÃ­a 2 en lectura.
       </div>
       <div className="small" style={{ marginBottom: 10 }}>
-        El selector de Categoría 2 usa el catálogo global de categorías (no depende del proyecto activo).
+        El selector de CategorÃ­a 2 usa el catÃ¡logo global de categorÃ­as (no depende del proyecto activo).
       </div>
 
       <div className="row" style={{ gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2224,7 +2226,7 @@ function SpecialWorkSuppliersReviewSection() {
           </select>
         </label>
         <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span className="small">Asignación</span>
+          <span className="small">AsignaciÃ³n</span>
           <select value={assignmentFilter} onChange={(e) => setAssignmentFilter(e.target.value)}>
             <option value="all">Todos</option>
             <option value="assigned">Asignados</option>
@@ -2241,7 +2243,7 @@ function SpecialWorkSuppliersReviewSection() {
       {loading ? (
         <div className="small">Cargando proveedores...</div>
       ) : !filteredItems.length ? (
-        <div className="small">No se encontraron proveedores para el prefijo “trabajos especiales” con los filtros actuales.</div>
+        <div className="small">No se encontraron proveedores para el prefijo â€œtrabajos especialesâ€ con los filtros actuales.</div>
       ) : (
         <table>
           <thead>
@@ -2251,9 +2253,9 @@ function SpecialWorkSuppliersReviewSection() {
               <th>Business Partner</th>
               <th>Movimientos detectados</th>
               <th>Proyectos</th>
-              <th>Categoría 2 asignada</th>
+              <th>CategorÃ­a 2 asignada</th>
               <th>Estado</th>
-              <th>Acción</th>
+              <th>AcciÃ³n</th>
             </tr>
           </thead>
           <tbody>
@@ -2265,12 +2267,12 @@ function SpecialWorkSuppliersReviewSection() {
               return (
                 <tr key={supplierKey || item?.supplierName}>
                   <td>{item?.supplierName || 'Sin proveedor'}</td>
-                  <td>{item?.supplierCardCode || '—'}</td>
-                  <td>{item?.businessPartner || '—'}</td>
+                  <td>{item?.supplierCardCode || 'â€”'}</td>
+                  <td>{item?.businessPartner || 'â€”'}</td>
                   <td>{item?.transactionCount || 0}</td>
                   <td>
                     <div className="small">{item?.projectCount || projects.length || 0} proyecto(s)</div>
-                    <div className="small">{projects.map((project) => project?.projectName || project?.projectId).filter(Boolean).join(', ') || '—'}</div>
+                    <div className="small">{projects.map((project) => project?.projectName || project?.projectId).filter(Boolean).join(', ') || 'â€”'}</div>
                   </td>
                   <td>
                     <div className="small" style={{ marginBottom: 6 }}>{currentCategory2Name}</div>
@@ -2281,7 +2283,7 @@ function SpecialWorkSuppliersReviewSection() {
                         setSelectedCategoryBySupplier((prev) => ({ ...prev, [supplierKey]: value }));
                       }}
                     >
-                      <option value="">Selecciona Categoría 2</option>
+                      <option value="">Selecciona CategorÃ­a 2</option>
                       {globalCategories.map((category) => (
                         <option key={category.id} value={category.id}>
                           {category.name}
@@ -2301,7 +2303,7 @@ function SpecialWorkSuppliersReviewSection() {
                         ? 'Guardando...'
                         : item?.category2Rule?.status === 'assigned'
                           ? 'Editar'
-                          : 'Asignar Categoría 2'}
+                          : 'Asignar CategorÃ­a 2'}
                     </button>
                   </td>
                 </tr>
@@ -2361,7 +2363,7 @@ function RawDataAdmin() {
         if (!active) return;
         setFields([]);
         setRows([]);
-        setError(e.message || 'No se pudo cargar la colección.');
+        setError(e.message || 'No se pudo cargar la colecciÃ³n.');
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -2384,7 +2386,7 @@ function RawDataAdmin() {
     try {
       parsed = JSON.parse(nextRaw);
     } catch {
-      window.alert('Valor inválido. Debe ser JSON válido, por ejemplo: "texto", 123, true, null o {"a":1}.');
+      window.alert('Valor invÃ¡lido. Debe ser JSON vÃ¡lido, por ejemplo: "texto", 123, true, null o {"a":1}.');
       return;
     }
 
@@ -2404,7 +2406,7 @@ function RawDataAdmin() {
     <div className="card" style={{ overflowX: 'auto' }}>
       <h3 style={{ marginTop: 0 }}>Raw data (solo admin)</h3>
       <div className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <label htmlFor="raw-data-collection">Colección:</label>
+        <label htmlFor="raw-data-collection">ColecciÃ³n:</label>
         <select id="raw-data-collection" value={collection} onChange={(e) => setCollection(e.target.value)}>
           {collections.map((name) => (
             <option key={name} value={name}>
@@ -2441,11 +2443,11 @@ function RawDataAdmin() {
                 ))}
                 <td>
                   {savingRow === row.id ? (
-                    <span className="small">Guardando…</span>
+                    <span className="small">Guardandoâ€¦</span>
                   ) : (
                     <select defaultValue="" onChange={(e) => e.target.value && editCell(row.id, e.target.value)}>
                       <option value="" disabled>
-                        Editar campo…
+                        Editar campoâ€¦
                       </option>
                       {fields
                         .filter((field) => field !== 'id')
@@ -2602,8 +2604,8 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
     viewMode === 'supplier'
       ? 'Resumen operativo de egresos SAP/SBO por proveedor.'
       : viewMode === 'summary'
-        ? 'KPIs y visuales de Categoría 2 para seguimiento diario.'
-        : 'Detalle por Categoría 2 con proporción sobre el total de egresos.';
+        ? 'KPIs y visuales de CategorÃ­a 2 para seguimiento diario.'
+        : 'Detalle por CategorÃ­a 2 con proporciÃ³n sobre el total de egresos.';
 
   const dashboardTotals = [
     {
@@ -2614,7 +2616,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
     {
       label: 'Movimientos',
       value: String(categoryRows.length),
-      helper: 'Categorías activas',
+      helper: 'CategorÃ­as activas',
     },
     {
       label: 'Proveedores',
@@ -2622,7 +2624,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
     },
     {
-      label: 'Última importación SAP',
+      label: 'Ãšltima importaciÃ³n SAP',
       value: recentTransactions[0]?.date ? String(recentTransactions[0].date).slice(0, 10) : 'Sin datos',
       helper: recentTransactions[0]?.sourceSbo ? `SBO ${recentTransactions[0].sourceSbo}` : 'Pendiente',
     },
@@ -2642,7 +2644,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
           Resumen
         </button>
         <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
-          Por Categoría 2
+          Por CategorÃ­a 2
         </button>
         <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
           Por proveedor
@@ -2676,7 +2678,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       {loading ? (
         <div className="dashboard-state">Cargando indicadores del dashboard...</div>
       ) : stats?.error ? (
-        <div className="dashboard-state dashboard-state-error">Error al cargar categorías: {stats.error}</div>
+        <div className="dashboard-state dashboard-state-error">Error al cargar categorÃ­as: {stats.error}</div>
       ) : (
         <>
           <div className="dashboard-kpi-grid">
@@ -2723,26 +2725,26 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
               </div>
             )
           ) : !categoryRows.length ? (
-            <div className="dashboard-state">No hay egresos registrados para mostrar en Categoría 2.</div>
+            <div className="dashboard-state">No hay egresos registrados para mostrar en CategorÃ­a 2.</div>
           ) : viewMode === 'summary' ? (
             <div className="dashboard-summary">
               <div className="dashboard-summary-grid">
                 <section className="dashboard-panel">
-                  <h3>Comportamiento por Categoría 2</h3>
+                  <h3>Comportamiento por CategorÃ­a 2</h3>
                   <svg
                     viewBox="0 0 100 100"
                     preserveAspectRatio="none"
                     className="dashboard-line-chart"
                     role="img"
-                    aria-label="Tendencia de categorías por monto"
+                    aria-label="Tendencia de categorÃ­as por monto"
                   >
                     <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
                   </svg>
-                  <div className="small">Comparativo visual de montos entre categorías 2 principales.</div>
+                  <div className="small">Comparativo visual de montos entre categorÃ­as 2 principales.</div>
                 </section>
 
                 <section className="dashboard-panel dashboard-gauge-panel">
-                  <h3>Peso del top de Categoría 2</h3>
+                  <h3>Peso del top de CategorÃ­a 2</h3>
                   <div
                     className="dashboard-gauge"
                     style={{
@@ -2751,11 +2753,11 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
                   >
                     <span>{allocatedPercent.toFixed(1)}%</span>
                   </div>
-                  <div className="small">Participación acumulada de las 6 categorías 2 principales.</div>
+                  <div className="small">ParticipaciÃ³n acumulada de las 6 categorÃ­as 2 principales.</div>
                 </section>
 
                 <section className="dashboard-panel">
-                  <h3>Categorías 2 principales</h3>
+                  <h3>CategorÃ­as 2 principales</h3>
                   <div className="grid">
                     {topCategories.map((row) => {
                       const percent = Number(row.percent) || 0;
@@ -2781,8 +2783,8 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
                     {recentTransactions.length ? recentTransactions.slice(0, 4).map((tx) => (
                       <div key={tx.id || tx._id || `${tx.date}-${tx.description}`} className="dashboard-recent-item">
                         <div>
-                          <strong>{tx.description || tx.concepto || 'Movimiento sin descripción'}</strong>
-                          <div className="small">{String(tx.date || '').slice(0, 10)} · {tx.supplierName || tx.sapMeta?.businessPartner || 'Sin proveedor'}</div>
+                          <strong>{tx.description || tx.concepto || 'Movimiento sin descripciÃ³n'}</strong>
+                          <div className="small">{String(tx.date || '').slice(0, 10)} Â· {tx.supplierName || tx.sapMeta?.businessPartner || 'Sin proveedor'}</div>
                         </div>
                         <strong>{formatCurrency(showCategoryIva ? tx.amount : tx.subtotal)}</strong>
                       </div>
@@ -2812,7 +2814,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
             </div>
           ) : (
             <div className="dashboard-panel" style={{ marginTop: 4 }}>
-              <h3 style={{ margin: 0 }}>Resumen por Categoría 2</h3>
+              <h3 style={{ margin: 0 }}>Resumen por CategorÃ­a 2</h3>
               <div className="grid" style={{ marginTop: 8 }}>
                 {categoryRows.map((row) => {
                   const percent = Number(row.percent) || 0;
@@ -2852,7 +2854,7 @@ function summarizeTransactionsByCategory(transactions, includeIva = false) {
     if (tx?.excludeFromExpenseViews || tx?.financialKind === 'contribution_withdrawal') return;
     const category2 = resolveTransactionCategory2(tx);
     const categoryId = String(category2.id || 'SIN_CATEGORIA_2');
-    const categoryName = String(category2.name || 'Sin categoría 2');
+    const categoryName = String(category2.name || 'Sin categorÃ­a 2');
     const amount = Number(includeIva ? tx?.amount : tx?.subtotal) || 0;
     total += amount;
 
@@ -3033,8 +3035,8 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
     viewMode === 'supplier'
       ? 'Resumen operativo de ingresos por proveedor.'
       : viewMode === 'summary'
-        ? 'KPIs y visuales de Categoría 2 para seguimiento diario de ingresos.'
-        : 'Detalle por Categoría 2 con proporción sobre el total de ingresos.';
+        ? 'KPIs y visuales de CategorÃ­a 2 para seguimiento diario de ingresos.'
+        : 'Detalle por CategorÃ­a 2 con proporciÃ³n sobre el total de ingresos.';
 
   const dashboardTotals = [
     {
@@ -3045,7 +3047,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
     {
       label: 'Movimientos',
       value: String(categoryRows.length),
-      helper: 'Categorías activas',
+      helper: 'CategorÃ­as activas',
     },
     {
       label: 'Proveedores',
@@ -3073,7 +3075,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
           Resumen
         </button>
         <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
-          Por Categoría 2
+          Por CategorÃ­a 2
         </button>
         <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
           Por proveedor
@@ -3107,7 +3109,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
       {loading ? (
         <div className="dashboard-state">Cargando indicadores del dashboard de ingresos...</div>
       ) : stats?.error ? (
-        <div className="dashboard-state dashboard-state-error">Error al cargar categorías: {stats.error}</div>
+        <div className="dashboard-state dashboard-state-error">Error al cargar categorÃ­as: {stats.error}</div>
       ) : (
         <>
           <div className="dashboard-kpi-grid">
@@ -3154,20 +3156,20 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
               </div>
             )
           ) : !categoryRows.length ? (
-            <div className="dashboard-state">No hay ingresos registrados para mostrar en Categoría 2.</div>
+            <div className="dashboard-state">No hay ingresos registrados para mostrar en CategorÃ­a 2.</div>
           ) : viewMode === 'summary' ? (
             <div className="dashboard-summary">
               <div className="dashboard-summary-grid">
                 <section className="dashboard-panel">
-                  <h3>Comportamiento por Categoría 2</h3>
-                  <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="dashboard-line-chart" role="img" aria-label="Tendencia de categorías por monto">
+                  <h3>Comportamiento por CategorÃ­a 2</h3>
+                  <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="dashboard-line-chart" role="img" aria-label="Tendencia de categorÃ­as por monto">
                     <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
                   </svg>
-                  <div className="small">Comparativo visual de montos entre categorías 2 principales.</div>
+                  <div className="small">Comparativo visual de montos entre categorÃ­as 2 principales.</div>
                 </section>
 
                 <section className="dashboard-panel dashboard-gauge-panel">
-                  <h3>Peso del top de Categoría 2</h3>
+                  <h3>Peso del top de CategorÃ­a 2</h3>
                   <div
                     className="dashboard-gauge"
                     style={{
@@ -3176,11 +3178,11 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
                   >
                     <span>{allocatedPercent.toFixed(1)}%</span>
                   </div>
-                  <div className="small">Participación acumulada de las 6 categorías 2 principales.</div>
+                  <div className="small">ParticipaciÃ³n acumulada de las 6 categorÃ­as 2 principales.</div>
                 </section>
 
                 <section className="dashboard-panel">
-                  <h3>Categorías 2 principales</h3>
+                  <h3>CategorÃ­as 2 principales</h3>
                   <div className="grid">
                     {topCategories.map((row) => {
                       const percent = Number(row.percent) || 0;
@@ -3222,7 +3224,7 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
             </div>
           ) : (
             <div className="dashboard-panel" style={{ marginTop: 4 }}>
-              <h3 style={{ margin: 0 }}>Resumen por Categoría 2</h3>
+              <h3 style={{ margin: 0 }}>Resumen por CategorÃ­a 2</h3>
               <div className="grid" style={{ marginTop: 8 }}>
                 {categoryRows.map((row) => {
                   const percent = Number(row.percent) || 0;
@@ -3280,13 +3282,13 @@ function TxnForm({ kind, cats, vendors, onDone }) {
     e.preventDefault();
     setErr('');
     const a = parseMoneyInput(amount);
-    if (!a || a <= 0) return setErr('Monto inválido');
+    if (!a || a <= 0) return setErr('Monto invÃ¡lido');
 
-    if (kind === 'EXPENSE' && (!categoryId || !vendorId)) return setErr('Selecciona categoría y proveedor');
+    if (kind === 'EXPENSE' && (!categoryId || !vendorId)) return setErr('Selecciona categorÃ­a y proveedor');
 
     const creatingNewVendor = kind === 'EXPENSE' && vendorId === ADD_NEW_VENDOR_VALUE;
     if (creatingNewVendor && newVendorName.trim().length < 2) {
-      return setErr('Escribe un nombre de proveedor válido');
+      return setErr('Escribe un nombre de proveedor vÃ¡lido');
     }
 
     setSaving(true);
@@ -3332,7 +3334,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
         {kind === 'EXPENSE' && (
           <>
             <div>
-              <label>Categoría</label>
+              <label>CategorÃ­a</label>
               <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
                 {cats.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -3364,7 +3366,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
         )}
 
         <div>
-          <label>Descripción</label>
+          <label>DescripciÃ³n</label>
           <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Opcional" />
         </div>
         <div>
@@ -3387,7 +3389,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
       </form>
 
       <div className="small" style={{ marginTop: 10 }}>
-        Nota: si no ves categorías/proveedores, ve a “Ajustes” → “Catálogo”.
+        Nota: si no ves categorÃ­as/proveedores, ve a â€œAjustesâ€ â†’ â€œCatÃ¡logoâ€.
       </div>
     </div>
   );
@@ -3532,7 +3534,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
   const shown = rows
     .filter((row) => {
       if (categoryFilter === 'ALL') return true;
-      if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categoría';
+      if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categorÃ­a';
       return (row.categoryEffectiveCode || row.categoryEffectiveName || row.category_id || row.categoryId) === categoryFilter;
     })
     .filter((row) => {
@@ -3602,7 +3604,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
   async function createCategoryFromEdit() {
     const cleanName = newCategoryName.trim();
     if (cleanName.length < 2) {
-      setEditErr('Escribe un nombre de categoría válido.');
+      setEditErr('Escribe un nombre de categorÃ­a vÃ¡lido.');
       return;
     }
 
@@ -3615,14 +3617,14 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
       setEditing((prev) => (prev ? { ...prev, categoryManualCode: created.code || created.id, categoryManualName: created.name } : prev));
       setNewCategoryName('');
     } catch (e) {
-      setEditErr(e.message || 'No se pudo crear la categoría.');
+      setEditErr(e.message || 'No se pudo crear la categorÃ­a.');
     } finally {
       setSavingCategory(false);
     }
   }
 
   async function remove(id) {
-    if (confirm('¿Eliminar movimiento?')) {
+    if (confirm('Â¿Eliminar movimiento?')) {
       await api.deleteTransaction(id);
       load(page);
     }
@@ -3756,8 +3758,8 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
             <option value="EXPENSE">Egresos</option>
           </select>
           <select value={categoryFilter} onChange={(e) => { setPage(1); setCategoryFilter(e.target.value); }}>
-            <option value="ALL">Todas las categorías 2</option>
-            <option value={UNCATEGORIZED_FILTER}>Sin categoría 2</option>
+            <option value="ALL">Todas las categorÃ­as 2</option>
+            <option value={UNCATEGORIZED_FILTER}>Sin categorÃ­a 2</option>
             {cats.map((c) => (
               <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
             ))}
@@ -3769,7 +3771,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
             ))}
           </select>
           <select value={sourceDbFilter} onChange={(e) => { setPage(1); setSourceDbFilter(e.target.value); }}>
-            <option value="ALL">Todos los orígenes</option>
+            <option value="ALL">Todos los orÃ­genes</option>
             <option value="IVA">Base IVA</option>
             <option value="EFECTIVO">Base EFECTIVO</option>
           </select>
@@ -3784,8 +3786,8 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
             Solo IVA
           </button>
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-            <option value="date_desc">Fecha (más reciente)</option>
-            <option value="created_desc">Fecha de añadido (más reciente)</option>
+            <option value="date_desc">Fecha (mÃ¡s reciente)</option>
+            <option value="created_desc">Fecha de aÃ±adido (mÃ¡s reciente)</option>
             <option value="supplier_asc">Proveedor (A-Z)</option>
           </select>
           {canManageCancellation && (
@@ -3805,14 +3807,14 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
         </div>
       </div>
 
-      <div className="small" style={{ marginTop: 8 }}>Mostrando {rangeStart}–{rangeEnd} de {totalCount}</div>
+      <div className="small" style={{ marginTop: 8 }}>Mostrando {rangeStart}â€“{rangeEnd} de {totalCount}</div>
 
       {isAdmin && (
         <div className="row" style={{ marginTop: 10, justifyContent: 'space-between' }}>
           <div className="small">Seleccionados: {selectedRows.length}</div>
           <div className="row">
             <select value={bulkCategoryId} onChange={(e) => setBulkCategoryId(e.target.value)}>
-              <option value="">Sin categoría</option>
+              <option value="">Sin categorÃ­a</option>
               {cats.map((c) => (
                 <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
               ))}
@@ -3823,7 +3825,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
               onClick={applyBulkCategory}
               disabled={!selectedRows.length || bulkSaving}
             >
-              {bulkSaving ? 'Aplicando...' : 'Cambiar categoría (selección múltiple)'}
+              {bulkSaving ? 'Aplicando...' : 'Cambiar categorÃ­a (selecciÃ³n mÃºltiple)'}
             </button>
           </div>
         </div>
@@ -3847,9 +3849,9 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
                 <th>Fecha</th>
                 <th>Proyecto</th>
                 <th>Proveedor</th>
-                <th>Descripción</th>
-                <th>Categoría (actual)</th>
-                <th>Categoría 2</th>
+                <th>DescripciÃ³n</th>
+                <th>CategorÃ­a (actual)</th>
+                <th>CategorÃ­a 2</th>
                 <th>Subtotal</th>
                 <th>IVA</th>
                 <th>Total</th>
@@ -3865,7 +3867,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
                   <td colSpan={showSelectionColumn ? 13 : 11} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
-                      Seleccionar todos (página actual)
+                      Seleccionar todos (pÃ¡gina actual)
                     </label>
                   </td>
                 </tr>
@@ -3881,9 +3883,9 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
                 const resolvedCategory2Source = String(r.resolvedCategory2Source || '').trim();
                 return (
                 <tr key={getTransactionStableKey(r)} className={r.isCancelled ? 'transaction-row-cancelled' : ''}>
-                  <td>{r.date || '—'}</td>
+                  <td>{r.date || 'â€”'}</td>
                   <td>{r.projectDisplayName || 'Sin proyecto'}</td>
-                  <td>{r.supplierName || '—'}</td>
+                  <td>{r.supplierName || 'â€”'}</td>
                   <td>
                     {r.description || ''}
                     {r.isCancelled && (
@@ -3891,9 +3893,9 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
                         <span className="badge badge-cancelled">Cancelado</span>
                         {' '}
                         <span>{getCancellationSourceLabel(r?.cancellation?.source)}</span>
-                        {r?.cancellation?.reason && <span> · {r.cancellation.reason}</span>}
-                        {r?.cancellation?.cancelledByName && <span> · por {r.cancellation.cancelledByName}</span>}
-                        {r?.cancellation?.cancelledAt && <span> · {formatDateTime(r.cancellation.cancelledAt)}</span>}
+                        {r?.cancellation?.reason && <span> Â· {r.cancellation.reason}</span>}
+                        {r?.cancellation?.cancelledByName && <span> Â· por {r.cancellation.cancelledByName}</span>}
+                        {r?.cancellation?.cancelledAt && <span> Â· {formatDateTime(r.cancellation.cancelledAt)}</span>}
                       </div>
                     )}
                   </td>
@@ -3970,8 +3972,8 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
                 <td style={{ fontWeight: 800 }}>
                   {formatCurrency(backendTotals.incomeGross)} / {formatCurrency(backendTotals.expensesGross)}
                 </td>
-                <td style={{ fontWeight: 700 }}>—</td>
-                <td style={{ fontWeight: 700 }}>—</td>
+                <td style={{ fontWeight: 700 }}>â€”</td>
+                <td style={{ fontWeight: 700 }}>â€”</td>
                 {showActionsColumn && <td style={{ fontWeight: 700 }}>Neto: {formatCurrency(backendTotals.net)}</td>}
                 {showSelectionColumn && <td />}
               </tr>
@@ -3989,7 +3991,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
 
       {editing && (
         <EditModal
-          title={isSapIvaTransaction(editing) ? 'Editar categoría IVA' : 'Editar movimiento'}
+          title={isSapIvaTransaction(editing) ? 'Editar categorÃ­a IVA' : 'Editar movimiento'}
           onClose={() => setEditing(null)}
           onSave={saveEdit}
         >
@@ -3998,7 +4000,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
             <input value={editing.projectDisplayName || ''} disabled />
             <label>Proveedor</label>
             <input value={editing.supplierName || ''} disabled />
-            <label>Categoría actual</label>
+            <label>CategorÃ­a actual</label>
             <input value={getTransactionCategoryLabel(editing, catMap)} disabled />
             <label>Subtotal / IVA / Total</label>
             <input value={`${formatCurrency(editing.subtotal ?? 0)} / ${formatCurrency(editing.iva ?? 0)} / ${formatCurrency(getTransactionTotalValue(editing))}`} disabled />
@@ -4010,16 +4012,16 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
                 <input value={editing.date || ''} onChange={(e) => setEditing({ ...editing, date: e.target.value })} />
                 <label>Monto</label>
                 <input value={editing.amount || ''} onChange={(e) => setEditing({ ...editing, amount: e.target.value })} />
-                <label>Descripción</label>
+                <label>DescripciÃ³n</label>
                 <input value={editing.description || ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
               </>
             )}
-            <label>Categoría</label>
+            <label>CategorÃ­a</label>
             <select value={editing.categoryManualCode || editing.categoryEffectiveCode || ''} onChange={(e) => {
               const selected = cats.find((c) => (c.code || c.id) === e.target.value);
               setEditing({ ...editing, categoryManualCode: e.target.value || null, categoryManualName: selected?.name || null });
             }}>
-              <option value="">Sin categoría</option>
+              <option value="">Sin categorÃ­a</option>
               {cats.map((c) => (
                 <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
               ))}
@@ -4031,7 +4033,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
             >
               Revertir a SAP
             </button>
-            <label>Crear categoría nueva</label>
+            <label>Crear categorÃ­a nueva</label>
             <div className="row">
               <input
                 placeholder="Ej. Herramientas"
@@ -4039,7 +4041,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
                 onChange={(e) => setNewCategoryName(e.target.value)}
               />
               <button type="button" className="secondary" onClick={createCategoryFromEdit} disabled={savingCategory}>
-                {savingCategory ? 'Creando...' : 'Crear nueva categoría'}
+                {savingCategory ? 'Creando...' : 'Crear nueva categorÃ­a'}
               </button>
             </div>
             {editErr && <div style={{ color: '#b91c1c' }}>{editErr}</div>}
@@ -4050,12 +4052,12 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
       {cancelTarget && (
         <div className="modal-backdrop">
           <div className="modal">
-            <h3>Cancelar transacción</h3>
+            <h3>Cancelar transacciÃ³n</h3>
             <div className="small" style={{ marginBottom: 10 }}>
-              <div><strong>Fecha:</strong> {cancelTarget.date || '—'}</div>
+              <div><strong>Fecha:</strong> {cancelTarget.date || 'â€”'}</div>
               <div><strong>Proyecto:</strong> {cancelTarget.projectDisplayName || 'Sin proyecto'}</div>
-              <div><strong>Proveedor:</strong> {cancelTarget.supplierName || '—'}</div>
-              <div><strong>Descripción:</strong> {cancelTarget.description || '—'}</div>
+              <div><strong>Proveedor:</strong> {cancelTarget.supplierName || 'â€”'}</div>
+              <div><strong>DescripciÃ³n:</strong> {cancelTarget.description || 'â€”'}</div>
               <div><strong>Total:</strong> {formatCurrency(getTransactionTotalValue(cancelTarget))}</div>
               <div><strong>Tipo:</strong> {cancelTarget.type === 'INCOME' ? 'Ingreso' : 'Egreso'}</div>
               <div><strong>Origen / SBO:</strong> {getTransactionSourceLabel(cancelTarget)}</div>
@@ -4068,7 +4070,7 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
             </div>
             <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
               <button className="secondary" type="button" onClick={() => setCancelTarget(null)} disabled={cancelSaving}>Cancelar</button>
-              <button type="button" onClick={submitCancel} disabled={cancelSaving}>{cancelSaving ? 'Confirmando...' : 'Confirmar cancelación'}</button>
+              <button type="button" onClick={submitCancel} disabled={cancelSaving}>{cancelSaving ? 'Confirmando...' : 'Confirmar cancelaciÃ³n'}</button>
             </div>
           </div>
         </div>
@@ -4077,15 +4079,15 @@ function Transactions({ isAdmin, canManageCancellation, cats, vendors, onCatalog
       {restoreTarget && (
         <div className="modal-backdrop">
           <div className="modal">
-            <h3>Restaurar transacción</h3>
-            <p className="small">Esta acción reactivará el documento en listados normales.</p>
+            <h3>Restaurar transacciÃ³n</h3>
+            <p className="small">Esta acciÃ³n reactivarÃ¡ el documento en listados normales.</p>
             <div className="grid">
               <label>Notas</label>
               <input value={restoreNotes} onChange={(e) => setRestoreNotes(e.target.value)} placeholder="Opcional" />
             </div>
             <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
               <button className="secondary" type="button" onClick={() => setRestoreTarget(null)} disabled={restoreSaving}>Cancelar</button>
-              <button type="button" onClick={submitRestore} disabled={restoreSaving}>{restoreSaving ? 'Restaurando...' : 'Confirmar restauración'}</button>
+              <button type="button" onClick={submitRestore} disabled={restoreSaving}>{restoreSaving ? 'Restaurando...' : 'Confirmar restauraciÃ³n'}</button>
             </div>
           </div>
         </div>
@@ -4238,7 +4240,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       const supplier = resolveTransactionSupplierIdentity(row);
       if (!supplier.key || source.has(supplier.key)) return;
       const labelName = supplier.name || 'Proveedor sin nombre';
-      const detail = supplier.cardCode || supplier.businessPartner || 'sin vínculo catálogo';
+      const detail = supplier.cardCode || supplier.businessPartner || 'sin vÃ­nculo catÃ¡logo';
       source.set(supplier.key, `${labelName} (${detail})`);
     });
     return Array.from(source.entries()).sort((a, b) => a[1].localeCompare(b[1], 'es'));
@@ -4312,11 +4314,11 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       const printableRows = shown
         .map((row) => `
             <tr>
-              <td>${row.date || '—'}</td>
+              <td>${row.date || 'â€”'}</td>
               <td>${row.projectDisplayName || 'Sin proyecto'}</td>
-              <td>${row.supplierName || '—'}</td>
-              <td>${row.description || '—'}</td>
-              <td>${getTransactionCategoryLabel(row, catMap) || '—'}</td>
+              <td>${row.supplierName || 'â€”'}</td>
+              <td>${row.description || 'â€”'}</td>
+              <td>${getTransactionCategoryLabel(row, catMap) || 'â€”'}</td>
               <td class="amount">$${formatMoney(row.subtotal ?? 0)}</td>
               <td class="amount">$${formatMoney(row.iva ?? 0)}</td>
               <td class="amount">$${formatMoney(getTransactionTotalValue(row))}</td>
@@ -4358,10 +4360,10 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
             <section class="sheet">
               <header class="header">
                 <h1>${reportTitle}</h1>
-                <p>Generado: ${new Date().toLocaleString('es-MX')} · Consulta: ${query.trim() || 'Sin filtro de texto'}</p>
+                <p>Generado: ${new Date().toLocaleString('es-MX')} Â· Consulta: ${query.trim() || 'Sin filtro de texto'}</p>
               </header>
               <div class="summary">
-                <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${shown.length}</div></div>
+                <div class="summary-card"><div class="label">Resultados en pÃ¡gina</div><div class="value">${shown.length}</div></div>
                 <div class="summary-card"><div class="label">Resultados totales</div><div class="value">${totalCount}</div></div>
                 <div class="summary-card"><div class="label">TOTAL VISIBLE SIN IVA</div><div class="value">$${formatMoney(pdfFilteredTotalWithoutTax)}</div></div>
                 <div class="summary-card"><div class="label">TOTAL VISIBLE CON IVA</div><div class="value">$${formatMoney(pdfFilteredTotalWithTax)}</div></div>
@@ -4369,7 +4371,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Fecha</th><th>Proyecto</th><th>Proveedor</th><th>Descripción</th><th>Categoría 2</th><th style="text-align:right">Subtotal</th><th style="text-align:right">IVA</th><th style="text-align:right">Total</th><th>Tipo</th><th>Origen / SBO</th></tr>
+                    <tr><th>Fecha</th><th>Proyecto</th><th>Proveedor</th><th>DescripciÃ³n</th><th>CategorÃ­a 2</th><th style="text-align:right">Subtotal</th><th style="text-align:right">IVA</th><th style="text-align:right">Total</th><th>Tipo</th><th>Origen / SBO</th></tr>
                   </thead>
                   <tbody>${printableRows}</tbody>
                 </table>
@@ -4395,7 +4397,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       <h2 style={{ marginTop: 0 }}>Buscar movimientos</h2>
       <div className="search-toolbar" style={{ flexWrap: 'wrap', gap: 8 }}>
         <input
-          placeholder="Buscar por descripción, proveedor, categoría 2, proyecto o SBO"
+          placeholder="Buscar por descripciÃ³n, proveedor, categorÃ­a 2, proyecto o SBO"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           style={{ minWidth: 320 }}
@@ -4416,7 +4418,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
             ))}
           </select>
           <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
-            <option value="ALL">Todas las categorías 2</option>
+            <option value="ALL">Todas las categorÃ­as 2</option>
             {categoryOptions.map(([categoryCode, categoryLabel]) => (
               <option key={categoryCode} value={categoryCode}>{categoryLabel}</option>
             ))}
@@ -4437,7 +4439,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         </div>
       )}
       <div className="small" style={{ marginTop: 8 }}>
-        {loading ? 'Buscando...' : `${totalCount} resultados${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''} · ${shown.length} visibles tras filtros`}
+        {loading ? 'Buscando...' : `${totalCount} resultados${totalCount ? ` (mostrando ${rangeStart}-${rangeEnd})` : ''} Â· ${shown.length} visibles tras filtros`}
       </div>
       {!!error && <div className="small" style={{ marginTop: 8, color: '#b91c1c' }}>{error}</div>}
       <div style={{ overflowX: 'auto', marginTop: 10 }}>
@@ -4447,8 +4449,8 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
               <th>Fecha</th>
               <th>Proyecto</th>
               <th>Proveedor</th>
-              <th>Descripción</th>
-              <th>Categoría 2</th>
+              <th>DescripciÃ³n</th>
+              <th>CategorÃ­a 2</th>
               <th>Subtotal</th>
               <th>IVA</th>
               <th>Total</th>
@@ -4459,10 +4461,10 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
           <tbody>
             {shown.map((row) => (
               <tr key={row.id}>
-                <td>{row.date || '—'}</td>
+                <td>{row.date || 'â€”'}</td>
                 <td>{row.projectDisplayName || 'Sin proyecto'}</td>
-                <td>{row.supplierName || '—'}</td>
-                <td>{row.description || '—'}</td>
+                <td>{row.supplierName || 'â€”'}</td>
+                <td>{row.description || 'â€”'}</td>
                 <td>{getTransactionCategoryLabel(row, catMap)}</td>
                 <td>{formatCurrency(row.subtotal ?? 0)}</td>
                 <td>{formatCurrency(row.iva ?? 0)}</td>
@@ -4505,7 +4507,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
   async function addCat(e) {
     e.preventDefault();
     setErr('');
-    if (catName.trim().length < 2) return setErr('Nombre de categoría inválido');
+    if (catName.trim().length < 2) return setErr('Nombre de categorÃ­a invÃ¡lido');
     await api.createCategory(catName.trim());
     setCatName('');
     onChanged();
@@ -4514,7 +4516,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
   async function addVendor(e) {
     e.preventDefault();
     setErr('');
-    if (vendorName.trim().length < 2) return setErr('Nombre de proveedor inválido');
+    if (vendorName.trim().length < 2) return setErr('Nombre de proveedor invÃ¡lido');
     await api.createVendor({ name: vendorName.trim(), category_ids: [] });
     setVendorName('');
     onChanged();
@@ -4524,7 +4526,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
     <div className="grid grid2">
       <div className="card">
         <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-          <h2 style={{ margin: 0 }}>Categorías</h2>
+          <h2 style={{ margin: 0 }}>CategorÃ­as</h2>
           {isAdmin && (
             <button
               className="secondary"
@@ -4535,7 +4537,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
                 onChanged();
               }}
             >
-              Seed categorías
+              Seed categorÃ­as
             </button>
           )}
         </div>
@@ -4543,7 +4545,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
         {isAdmin && (
           <form onSubmit={addCat} className="row">
             <div style={{ flex: 1 }}>
-              <label>Nueva categoría</label>
+              <label>Nueva categorÃ­a</label>
               <input value={catName} onChange={(e) => setCatName(e.target.value)} placeholder="Ej. Acabados" />
             </div>
             <div style={{ marginTop: 18 }}>
@@ -4562,14 +4564,14 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
                     className="secondary"
                     onClick={() => setCatEdit({ ...c })}
                     disabled={!isMongoObjectId(c.id)}
-                    title={!isMongoObjectId(c.id) ? 'Solo se pueden editar categorías del catálogo manual.' : ''}
+                    title={!isMongoObjectId(c.id) ? 'Solo se pueden editar categorÃ­as del catÃ¡logo manual.' : ''}
                   >
                     Editar
                   </button>{' '}
                   <button
                     className="secondary"
                     disabled={!isMongoObjectId(c.id)}
-                    title={!isMongoObjectId(c.id) ? 'Solo se pueden eliminar categorías del catálogo manual.' : ''}
+                    title={!isMongoObjectId(c.id) ? 'Solo se pueden eliminar categorÃ­as del catÃ¡logo manual.' : ''}
                     onClick={async () => {
                       await api.deleteCategory(c.id);
                       onChanged();
@@ -4581,7 +4583,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
               )}
             </div>
           ))}
-          {!cats.length && <div className="small">No hay categorías. Puedes presionar “Seed categorías” aquí.</div>}
+          {!cats.length && <div className="small">No hay categorÃ­as. Puedes presionar â€œSeed categorÃ­asâ€ aquÃ­.</div>}
         </div>
       </div>
 
@@ -4592,7 +4594,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
           <form onSubmit={addVendor} className="row">
             <div style={{ flex: 1 }}>
               <label>Nuevo proveedor</label>
-              <input value={vendorName} onChange={(e) => setVendorName(e.target.value)} placeholder="Ej. Ferretería X" />
+              <input value={vendorName} onChange={(e) => setVendorName(e.target.value)} placeholder="Ej. FerreterÃ­a X" />
             </div>
             <div style={{ marginTop: 18 }}>
               <button>Agregar</button>
@@ -4622,7 +4624,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
               )}
             </div>
           ))}
-          {!vendors.length && <div className="small">No hay proveedores aún.</div>}
+          {!vendors.length && <div className="small">No hay proveedores aÃºn.</div>}
         </div>
 
         {err && <div style={{ marginTop: 10, color: '#b91c1c' }}>{err}</div>}
@@ -4630,7 +4632,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
 
       {catEdit && (
         <EditModal
-          title="Editar categoría"
+          title="Editar categorÃ­a"
           onClose={() => setCatEdit(null)}
           onSave={async () => {
             await api.updateCategory(catEdit.id, { name: catEdit.name });

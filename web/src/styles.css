@@ -116,10 +116,11 @@ a { color: inherit; }
 /* ── Navigation ─────────────────────────────────────── */
 .nav {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
+  flex-wrap: nowrap;
+  gap: 8px 12px;
   align-items: center;
-  padding: 12px 20px;
+  height: 56px;
+  padding: 0 24px;
   background: rgba(255, 255, 255, .97);
   border-bottom: 1px solid var(--gray-150);
   position: sticky;
@@ -140,14 +141,19 @@ body.theme-dark .nav {
   gap: 10px;
   flex-shrink: 0;
 }
-.nav-logo {
-  width: 36px;
-  height: 36px;
+.nav-logo-box {
+  width: 34px;
+  height: 34px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--gray-200);
-  background: #fff;
-  object-fit: contain;
+  background: var(--primary-dark);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
 }
 .nav-title-wrap { display: grid; gap: 0; }
 .nav-title {
@@ -168,7 +174,10 @@ body.theme-dark .nav {
 /* Nav items row — display:contents makes children direct flex-children of .nav,
    allowing .nav-links-desktop to break onto its own full-width row */
 .nav-items {
-  display: contents;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 220px;
 }
 .nav-project-label {
   white-space: nowrap;
@@ -179,6 +188,7 @@ body.theme-dark .nav {
   text-transform: uppercase;
   display: none; /* shown on mobile only if needed */
 }
+.nav-project-select select,
 .nav-items select {
   max-width: 260px;
   min-height: 36px;
@@ -189,12 +199,11 @@ body.theme-dark .nav {
 
 /* Desktop nav links — full-width centering row (always on its own line) */
 .nav-links-desktop {
-  order: 10;
-  flex-basis: 100%;   /* forces own row in flex-wrap:wrap */
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
-  justify-content: center;
   align-items: center;
-  padding: 4px 0 8px;
   background: transparent;
 }
 
@@ -260,13 +269,38 @@ body.theme-dark .nav-tabs-pill button.active {
   margin-left: auto;
   flex-shrink: 0;
 }
-.nav-user {
-  font-size: 13px;
-  color: var(--gray-600);
-  text-align: right;
-  line-height: 1.3;
+.nav-avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
 }
-body.theme-dark .nav-user { color: var(--gray-600); }
+.nav-user-copy { display: grid; gap: 1px; }
+.nav-user-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--gray-700);
+  line-height: 1.2;
+}
+.nav-user-role {
+  font-size: 10px;
+  color: var(--gray-500);
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.nav-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--gray-150);
+}
+.desktop-only { display: block; }
 
 /* Theme toggle */
 .theme-toggle {
@@ -904,7 +938,7 @@ body.theme-dark .budgets-assignment-panel {
 .settings-sidebar {
   padding: 14px;
   position: sticky;
-  top: 82px;
+  top: 64px;
 }
 .settings-sidebar-header {
   display: grid;
@@ -944,6 +978,8 @@ body.theme-dark .budgets-assignment-panel {
   transform: none;
 }
 .settings-menu-button.active {
+  border-left: 3px solid var(--primary);
+  padding-left: 9px;
   background: var(--primary-soft);
   color: var(--primary);
   border-color: rgba(27, 20, 100, .16);
@@ -981,12 +1017,13 @@ body.theme-dark .settings-menu-button.active {
   .budgets-table { min-width: 980px; }
   .budgets-table-nested { min-width: 860px; }
 
-  .nav { gap: 8px; padding: 8px 12px; flex-wrap: wrap; }
+  .nav { gap: 8px; padding: 8px 12px; flex-wrap: wrap; height: auto; }
   .nav-header { width: 100%; }
-  .nav-logo { width: 30px; height: 30px; }
+  .nav-logo-box { width: 30px; height: 30px; }
   .nav-title { font-size: 14px; }
   .nav-subtitle { font-size: 9px; }
   .nav-profile-trigger { display: inline-flex; align-items: center; justify-content: center; }
+  .desktop-only { display: none; }
 
   .nav-items {
     width: 100%;
@@ -996,10 +1033,10 @@ body.theme-dark .settings-menu-button.active {
   }
   .nav-items select { max-width: none; }
   .nav-project-label { display: block; }
-  .nav-links-desktop { display: none; }
+  .nav-links-desktop { display: none; position: static; transform: none; }
   .nav-user-actions { display: none; width: 100%; margin-left: 0; flex-direction: column; align-items: stretch; }
   .nav-user-actions.open { display: flex; }
-  .nav-user { text-align: left; }
+  .nav-user-copy { text-align: left; }
 
   .dashboard-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-summary-grid { grid-template-columns: 1fr; }
