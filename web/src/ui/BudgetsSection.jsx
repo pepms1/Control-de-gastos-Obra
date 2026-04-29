@@ -54,6 +54,10 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   const [includeInactive, setIncludeInactive] = useState(false);
   const [supplierOptions, setSupplierOptions] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [editingAreaM2, setEditingAreaM2] = useState(false);
+  const [areaM2Input, setAreaM2Input] = useState('');
+  const [savingAreaM2, setSavingAreaM2] = useState(false);
+  const [areaM2Error, setAreaM2Error] = useState('');
   const [editingBudget, setEditingBudget] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [assigningBudget, setAssigningBudget] = useState(null);
@@ -158,6 +162,11 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     if (!selectedProjectId) return;
     loadBudgets();
   }, [selectedProjectId, includeInactive]);
+
+  useEffect(() => {
+    setLocalAreaM2Override(null);
+    setEditingAreaM2(false);
+  }, [selectedProjectId]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
@@ -378,8 +387,32 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   }
 
   const selectedProject = projectsById.get(String(selectedProjectId || '')) || null;
-  const areaM2 = selectedProject?.areaM2 ?? null;
+  const [localAreaM2Override, setLocalAreaM2Override] = useState(null);
+  const areaM2 = localAreaM2Override ?? selectedProject?.areaM2 ?? null;
   const costoM2 = areaM2 && areaM2 > 0 ? grandTotals.paidAmount / areaM2 : null;
+
+  async function saveAreaM2() {
+    const raw = areaM2Input.trim();
+    if (!selectedProjectId) return;
+    setSavingAreaM2(true);
+    setAreaM2Error('');
+    try {
+      await api.updateAdminProjectAreaM2(selectedProjectId, raw);
+      const parsed = raw === '' ? null : Number(raw);
+      setLocalAreaM2Override(parsed);
+      setEditingAreaM2(false);
+    } catch (e) {
+      setAreaM2Error(e.message || 'No se pudo guardar');
+    } finally {
+      setSavingAreaM2(false);
+    }
+  }
+
+  function startEditAreaM2() {
+    setAreaM2Input(areaM2 != null ? String(areaM2) : '');
+    setAreaM2Error('');
+    setEditingAreaM2(true);
+  }
 
   const grandKpis = [
     {
@@ -426,17 +459,6 @@ export function BudgetsSection({ projects, selectedProjectId }) {
       ),
       danger: false,
     },
-    {
-      label: 'Costo / m²',
-      value: costoM2 != null ? formatCurrency(costoM2) : '—',
-      sub: costoM2 != null ? `${Number(areaM2).toLocaleString('es-MX')} m²` : 'Sin área configurada',
-      icon: (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
-        </svg>
-      ),
-      danger: false,
-    },
   ];
 
   return (
@@ -455,6 +477,58 @@ export function BudgetsSection({ projects, selectedProjectId }) {
             </div>
           </div>
         ))}
+
+        {/* Costo / m² — editable inline */}
+        <div className="kpi-card">
+          <div className="kpi-icon">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="kpi-label">Costo / m²</div>
+            {editingAreaM2 ? (
+              <form
+                onSubmit={(e) => { e.preventDefault(); saveAreaM2(); }}
+                style={{ display: 'flex', gap: 4, alignItems: 'center', marginTop: 2 }}
+              >
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="m² del proyecto"
+                  value={areaM2Input}
+                  onChange={(e) => setAreaM2Input(e.target.value)}
+                  disabled={savingAreaM2}
+                  autoFocus
+                  style={{ width: 110, fontSize: 13, padding: '2px 6px' }}
+                />
+                <button type="submit" disabled={savingAreaM2} style={{ fontSize: 12, padding: '2px 8px' }}>
+                  {savingAreaM2 ? '...' : 'OK'}
+                </button>
+                <button type="button" className="secondary" onClick={() => setEditingAreaM2(false)} disabled={savingAreaM2} style={{ fontSize: 12, padding: '2px 8px' }}>
+                  ✕
+                </button>
+              </form>
+            ) : (
+              <div
+                className="kpi-value"
+                style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6 }}
+                onClick={startEditAreaM2}
+                title="Clic para configurar m²"
+              >
+                {costoM2 != null ? formatCurrency(costoM2) : '—'}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.4, flexShrink: 0 }}>
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </div>
+            )}
+            {areaM2Error && <div className="small" style={{ color: 'var(--danger-text, #b91c1c)', marginTop: 2 }}>{areaM2Error}</div>}
+            <div className="kpi-sub">
+              {costoM2 != null ? `${Number(areaM2).toLocaleString('es-MX')} m²` : (editingAreaM2 ? 'ingresa m² del proyecto' : 'clic para configurar')}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="card budgets-card" style={{ overflow: 'hidden' }}>
