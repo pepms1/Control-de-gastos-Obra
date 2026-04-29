@@ -6219,7 +6219,7 @@ def list_projects(user: dict = Depends(require_authenticated)):
 
     rows = db.projects.find(
         query,
-        {"name": 1, "displayName": 1, "slug": 1},
+        {"name": 1, "displayName": 1, "slug": 1, "areaM2": 1},
     ).sort("name", 1)
     return [
         {
@@ -6227,6 +6227,7 @@ def list_projects(user: dict = Depends(require_authenticated)):
             "name": row.get("name"),
             "displayName": row.get("displayName"),
             "slug": row.get("slug"),
+            "areaM2": row.get("areaM2"),
         }
         for row in rows
     ]
@@ -6313,6 +6314,7 @@ def list_projects_admin(_: dict = Depends(require_admin)):
         "displayName": 1,
         "slug": 1,
         "visibleInFrontend": 1,
+        "areaM2": 1,
         "sap.sourceSbo": 1,
         "sap.rawProjectName": 1,
         "sap.projectNames": 1,
@@ -6328,6 +6330,7 @@ def list_projects_admin(_: dict = Depends(require_admin)):
                 "displayName": row.get("displayName"),
                 "slug": row.get("slug"),
                 "visibleInFrontend": row.get("visibleInFrontend") is not False,
+                "areaM2": row.get("areaM2"),
                 "sap": {
                     "sourceSbo": sap.get("sourceSbo"),
                     "rawProjectName": sap.get("rawProjectName"),
@@ -6360,6 +6363,43 @@ def update_project_visibility_admin(project_id: str, payload: dict, _: dict = De
         "ok": True,
         "_id": str(updated.get("_id")),
         "visibleInFrontend": updated.get("visibleInFrontend") is not False,
+    }
+
+
+@app.patch("/api/admin/projects/{project_id}/area-m2")
+def update_project_area_m2_admin(project_id: str, payload: dict, _: dict = Depends(require_admin)):
+    raw = payload.get("areaM2")
+    if raw is None:
+        raise HTTPException(status_code=400, detail="areaM2 is required")
+    if raw == "":
+        area_m2 = None
+    else:
+        try:
+            area_m2 = float(raw)
+            if area_m2 < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="areaM2 must be a non-negative number")
+
+    update: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if area_m2 is None:
+        update_op = {"$set": update, "$unset": {"areaM2": ""}}
+    else:
+        update["areaM2"] = area_m2
+        update_op = {"$set": update}
+
+    updated = db.projects.find_one_and_update(
+        {"_id": oid(project_id)},
+        update_op,
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return {
+        "ok": True,
+        "_id": str(updated.get("_id")),
+        "areaM2": updated.get("areaM2"),
     }
 
 

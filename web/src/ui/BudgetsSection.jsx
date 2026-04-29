@@ -369,12 +369,50 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     }
   }
 
+  const selectedProject = projectsById.get(String(selectedProjectId || '')) || null;
+  const areaM2 = selectedProject?.areaM2 ?? null;
+
+  const grandTotals = useMemo(() => {
+    const totals = { budgetAmount: 0, paidAmount: 0, remainingAmount: 0, progressPct: 0 };
+    rows.forEach((row) => {
+      totals.budgetAmount += Number(row?.budgetAmount) || 0;
+      totals.paidAmount += Number(row?.paidAmount) || 0;
+      totals.remainingAmount += Number(row?.remainingAmount) || 0;
+    });
+    totals.progressPct = totals.budgetAmount > 0 ? (totals.paidAmount / totals.budgetAmount) * 100 : 0;
+    return totals;
+  }, [rows]);
+
+  const costoM2 = areaM2 && areaM2 > 0 ? grandTotals.paidAmount / areaM2 : null;
+
   return (
     <div className="card budgets-card" style={{ display: 'grid', gap: 12 }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
         <h2 style={{ margin: 0 }}>Presupuestos</h2>
         <button type="button" onClick={startCreate}>Nuevo presupuesto</button>
       </div>
+
+      {rows.length > 0 && (
+        <div className="dashboard-kpi-grid">
+          {[
+            { label: 'Presupuesto total', value: formatCurrency(grandTotals.budgetAmount), helper: 'comprometido' },
+            { label: 'Total pagado', value: formatCurrency(grandTotals.paidAmount), helper: 'ejecutado' },
+            { label: 'Saldo disponible', value: formatCurrency(grandTotals.remainingAmount), helper: grandTotals.remainingAmount < 0 ? '⚠ excedido' : 'restante' },
+            { label: 'Avance global', value: `${Math.round(grandTotals.progressPct)}%`, helper: classifyBudgetStatus(grandTotals.progressPct).label },
+            {
+              label: 'Costo / m²',
+              value: costoM2 != null ? formatCurrency(costoM2) : '—',
+              helper: costoM2 != null ? `${Number(areaM2).toLocaleString('es-MX')} m²` : 'Sin área configurada',
+            },
+          ].map((kpi) => (
+            <div key={kpi.label} className="dashboard-kpi-card">
+              <span>{kpi.label}</span>
+              <strong style={kpi.label === 'Saldo disponible' && grandTotals.remainingAmount < 0 ? { color: 'var(--danger-text, #b91c1c)' } : undefined}>{kpi.value}</strong>
+              <div className="small">{kpi.helper}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
         <input

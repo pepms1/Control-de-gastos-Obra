@@ -701,6 +701,7 @@ export default function App() {
             onDashboardTypeChange={setDashboardType}
             isAdmin={isAdmin}
             selectedProjectId={selectedProjectId}
+            projects={projects}
             refreshKey={dataVersion}
           />
         )}
@@ -1733,6 +1734,7 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
   const [visibilityFilter, setVisibilityFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState('');
+  const [editingAreaM2, setEditingAreaM2] = useState({});
   const [error, setError] = useState('');
 
   async function loadProjects() {
@@ -1764,6 +1766,23 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
     } catch (e) {
       setProjects(previous);
       setError(e.message || 'No se pudo actualizar la visibilidad');
+    } finally {
+      setSavingId('');
+    }
+  }
+
+  async function onSaveAreaM2(projectId) {
+    const raw = String(editingAreaM2[projectId] ?? '').trim();
+    setSavingId(projectId);
+    setError('');
+    try {
+      await api.updateAdminProjectAreaM2(projectId, raw);
+      const areaM2 = raw === '' ? null : Number(raw);
+      setProjects((prev) => prev.map((row) => (row._id === projectId ? { ...row, areaM2 } : row)));
+      setEditingAreaM2((prev) => { const next = { ...prev }; delete next[projectId]; return next; });
+      await onProjectUpdated?.();
+    } catch (e) {
+      setError(e.message || 'No se pudo guardar el área m²');
     } finally {
       setSavingId('');
     }
@@ -1813,6 +1832,7 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
             <th>slug</th>
             <th>sourceSbo</th>
             <th>rawProjectName</th>
+            <th>m² obra</th>
             <th>visibleInFrontend</th>
           </tr>
         </thead>
@@ -1820,12 +1840,39 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
           {filtered.map((row) => {
             const isVisible = row?.visibleInFrontend !== false;
             const rowId = String(row?._id || '');
+            const isEditingArea = rowId in editingAreaM2;
+            const areaValue = isEditingArea ? editingAreaM2[rowId] : (row?.areaM2 != null ? String(row.areaM2) : '');
             return (
               <tr key={rowId}>
                 <td>{row?.displayName || row?.name || ''}</td>
                 <td>{row?.slug || ''}</td>
                 <td>{row?.sap?.sourceSbo || ''}</td>
                 <td>{row?.sap?.rawProjectName || ''}</td>
+                <td>
+                  <div style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      placeholder="ej. 5000"
+                      value={areaValue}
+                      disabled={savingId === rowId}
+                      style={{ width: 90 }}
+                      onChange={(e) => setEditingAreaM2((prev) => ({ ...prev, [rowId]: e.target.value }))}
+                    />
+                    {isEditingArea && (
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={savingId === rowId}
+                        style={{ padding: '2px 8px', fontSize: 12 }}
+                        onClick={() => onSaveAreaM2(rowId)}
+                      >
+                        {savingId === rowId ? '...' : 'Guardar'}
+                      </button>
+                    )}
+                  </div>
+                </td>
                 <td>
                   <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                     <input
@@ -1843,12 +1890,12 @@ function AdminProjectVisibilitySection({ onProjectUpdated }) {
 
           {!loading && filtered.length === 0 && (
             <tr>
-              <td colSpan={5} className="small">Sin proyectos para mostrar.</td>
+              <td colSpan={6} className="small">Sin proyectos para mostrar.</td>
             </tr>
           )}
           {loading && (
             <tr>
-              <td colSpan={5} className="small">Cargando proyectos...</td>
+              <td colSpan={6} className="small">Cargando proyectos...</td>
             </tr>
           )}
         </tbody>
@@ -2467,8 +2514,10 @@ function RawDataAdmin() {
 }
 
 
-function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selectedProjectId, refreshKey }) {
+function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selectedProjectId, projects, refreshKey }) {
   const isIncome = dashboardType === 'income';
+  const selectedProject = (projects || []).find((p) => String(p._id) === String(selectedProjectId)) || null;
+  const areaM2 = selectedProject?.areaM2 ?? null;
 
   return (
     <div className="grid" style={{ gap: 10 }}>
@@ -2490,16 +2539,16 @@ function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selec
       </div>
 
       {isIncome ? (
-        <DashboardIngresos selectedProjectId={selectedProjectId} refreshKey={refreshKey} />
+        <DashboardIngresos selectedProjectId={selectedProjectId} areaM2={areaM2} refreshKey={refreshKey} />
       ) : (
-        <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={refreshKey} />
+        <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} areaM2={areaM2} refreshKey={refreshKey} />
       )}
     </div>
   );
 }
 
 /* ================= DASHBOARD ================= */
-function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
+function Dashboard({ isAdmin, selectedProjectId, areaM2, refreshKey }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
@@ -2605,10 +2654,13 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
         ? 'KPIs y visuales de Categoría 2 para seguimiento diario.'
         : 'Detalle por Categoría 2 con proporción sobre el total de egresos.';
 
+  const totalExpenses = stats?.total_expenses || 0;
+  const costoM2 = areaM2 && areaM2 > 0 ? totalExpenses / areaM2 : null;
+
   const dashboardTotals = [
     {
       label: 'Total mes',
-      value: formatCurrency(stats?.total_expenses || 0),
+      value: formatCurrency(totalExpenses),
       helper: showCategoryIva ? 'Egresos con IVA' : 'Egresos sin IVA',
     },
     {
@@ -2620,6 +2672,11 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
       label: 'Proveedores',
       value: String(supplierSummary.length),
       helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+    {
+      label: 'Costo / m²',
+      value: costoM2 != null ? formatCurrency(costoM2) : '—',
+      helper: costoM2 != null ? `${areaM2.toLocaleString('es-MX')} m²` : 'Sin área configurada',
     },
     {
       label: 'Última importación SAP',
@@ -2929,7 +2986,7 @@ async function fetchTransactionsTotalByType(type, includeIva = false) {
   return Number(total.toFixed(2));
 }
 
-function DashboardIngresos({ selectedProjectId, refreshKey }) {
+function DashboardIngresos({ selectedProjectId, areaM2, refreshKey }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
@@ -3036,10 +3093,13 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
         ? 'KPIs y visuales de Categoría 2 para seguimiento diario de ingresos.'
         : 'Detalle por Categoría 2 con proporción sobre el total de ingresos.';
 
+  const totalIngresos = stats?.total_expenses || 0;
+  const costoM2Ingresos = areaM2 && areaM2 > 0 ? totalIngresos / areaM2 : null;
+
   const dashboardTotals = [
     {
       label: 'Total mes',
-      value: formatCurrency(stats?.total_expenses || 0),
+      value: formatCurrency(totalIngresos),
       helper: showCategoryIva ? 'Ingresos con IVA' : 'Ingresos sin IVA',
     },
     {
@@ -3051,6 +3111,11 @@ function DashboardIngresos({ selectedProjectId, refreshKey }) {
       label: 'Proveedores',
       value: String(supplierSummary.length),
       helper: showSupplierIva ? 'Resumen con IVA' : 'Resumen sin IVA',
+    },
+    {
+      label: 'Ingreso / m²',
+      value: costoM2Ingresos != null ? formatCurrency(costoM2Ingresos) : '—',
+      helper: costoM2Ingresos != null ? `${areaM2.toLocaleString('es-MX')} m²` : 'Sin área configurada',
     },
     {
       label: 'Balance proyecto',
