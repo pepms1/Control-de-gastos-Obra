@@ -2745,8 +2745,8 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, refreshKey }) {
           <div className="dashboard-summary-grid" style={{ marginTop: 14 }}>
 
             {/* Left panel — tabs + chart */}
-            <section className="dashboard-panel" style={{ gap: 0 }}>
-              <div className="dashboard-tabs" style={{ marginBottom: 16 }}>
+            <section className="dashboard-panel" style={{ gap: 0, alignContent: 'start' }}>
+              <div className="dashboard-tabs" style={{ marginBottom: 16, alignItems: 'center' }}>
                 <button className={viewMode === 'month' ? '' : 'secondary'} onClick={() => setViewMode('month')}>Por mes</button>
                 <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>Por categoría</button>
                 <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>Por proveedor</button>
