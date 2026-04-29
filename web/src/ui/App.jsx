@@ -2613,7 +2613,7 @@ async function fetchExpenseStats() {
   } while ((page - 1) * PAGE_LIMIT < totalCount);
 
   const monthlyData = Object.entries(byMonth)
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => b.localeCompare(a))
     .map(([month, value]) => ({
       month,
       label: MONTH_ABBR[parseInt(month.slice(5, 7), 10) - 1] + ' \'' + month.slice(2, 4),
