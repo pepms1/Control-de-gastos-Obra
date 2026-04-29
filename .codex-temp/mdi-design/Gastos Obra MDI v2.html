@@ -1,0 +1,1458 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Control de Gastos MDI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+  <style>
+    /* ── Design Tokens ─────────────────────────── */
+    :root {
+      font-family: "Jost", system-ui, sans-serif;
+      --primary:        #1b1464;
+      --primary-dark:   #120d45;
+      --primary-mid:    #2d229e;
+      --primary-soft:   #eeedfb;
+      --primary-soft-hover: #e2e0f8;
+      --gray-25:  #ffffff;
+      --gray-50:  #f8f9fa;
+      --gray-100: #ebeced;
+      --gray-150: #e0e2e3;
+      --gray-200: #d0d3d5;
+      --gray-300: #b8bcbf;
+      --gray-400: #9ca0a3;
+      --gray-500: #7c8082;
+      --gray-600: #5f6365;
+      --gray-700: #3d4042;
+      --gray-800: #1e2021;
+      --success-bg:   #dcfce7; --success-text: #15803d;
+      --danger-bg:    #fee2e2; --danger-text:  #b91c1c;
+      --warning-bg:   #fef3c7; --warning-text: #92400e;
+      --info-bg:      #dbeafe; --info-text:    #1e40af;
+      --radius-sm: 8px;  --radius-md: 12px;
+      --radius-lg: 16px; --radius-xl: 20px; --radius-full: 999px;
+      --shadow-xs: 0 1px 3px rgba(27,20,100,.06);
+      --shadow-sm: 0 2px 8px rgba(27,20,100,.08);
+      --shadow-md: 0 4px 16px rgba(27,20,100,.10);
+      --shadow-lg: 0 8px 28px rgba(27,20,100,.13);
+      --shadow-btn: 0 4px 14px rgba(27,20,100,.22);
+      --ease: cubic-bezier(.4,0,.2,1);
+      --transition: 160ms var(--ease);
+    }
+    body.theme-dark {
+      --primary:        #7c9ff7;
+      --primary-dark:   #bfdbfe;
+      --primary-mid:    #60a5fa;
+      --primary-soft:   #1a2a45;
+      --primary-soft-hover: #1e3252;
+      --gray-25:  #030712;
+      --gray-50:  #0f172a;
+      --gray-100: #1e293b;
+      --gray-150: #243044;
+      --gray-200: #2d3a4e;
+      --gray-300: #3d4f66;
+      --gray-400: #5d7191;
+      --gray-500: #8ea3be;
+      --gray-600: #a8bbcc;
+      --gray-700: #c8d8e8;
+      --gray-800: #e2ecf5;
+      --shadow-xs: 0 1px 3px rgba(0,0,0,.25);
+      --shadow-sm: 0 2px 8px rgba(0,0,0,.30);
+      --shadow-md: 0 4px 16px rgba(0,0,0,.35);
+      --shadow-lg: 0 8px 28px rgba(0,0,0,.45);
+      --shadow-btn: 0 4px 14px rgba(0,0,0,.4);
+    }
+
+    /* ── Reset ─────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--gray-50); color: var(--primary); min-height: 100vh; }
+    body.theme-dark { background: #0b1120; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-thumb { background: var(--gray-200); border-radius: 99px; }
+
+    /* ── Nav ───────────────────────────────────── */
+    .nav {
+      display: flex; flex-wrap: nowrap; gap: 8px 12px;
+      align-items: center; padding: 0 24px; height: 56px;
+      position: relative;
+      background: rgba(255,255,255,.97);
+      border-bottom: 1px solid var(--gray-150);
+      position: sticky; top: 0; z-index: 100;
+      box-shadow: var(--shadow-sm);
+      backdrop-filter: blur(12px);
+    }
+    body.theme-dark .nav {
+      background: rgba(15,23,42,.97);
+      border-bottom-color: var(--gray-200);
+    }
+    .nav-header { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+    .nav-logo-box {
+      width: 34px; height: 34px; border-radius: var(--radius-sm);
+      background: var(--primary-dark); display: flex; align-items: center;
+      justify-content: center; flex-shrink: 0;
+    }
+    .nav-logo-box svg { opacity: .9; }
+    .nav-title { font-weight: 700; font-size: 15px; color: var(--primary-dark); letter-spacing: .01em; line-height: 1.1; }
+    .nav-subtitle { font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--gray-400); font-weight: 600; }
+    body.theme-dark .nav-title { color: var(--primary-dark); }
+
+    .nav-divider { width: 1px; height: 26px; background: var(--gray-150); flex-shrink: 0; }
+    body.theme-dark .nav-divider { background: var(--gray-200); }
+
+    .nav-select {
+      min-height: 34px; padding: 5px 10px;
+      border-radius: var(--radius-sm); border: 1.5px solid var(--gray-150);
+      background: var(--gray-50); color: var(--gray-700);
+      font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; outline: none;
+      transition: border-color var(--transition);
+    }
+    .nav-select:hover { border-color: var(--gray-300); }
+    .nav-select:focus { border-color: var(--primary-mid); box-shadow: 0 0 0 3px rgba(45,34,158,.10); }
+    body.theme-dark .nav-select { background: var(--gray-100); border-color: var(--gray-200); color: var(--gray-700); }
+
+    /* Pill tabs — centered */
+    .nav-tabs-row {
+      position: absolute; left: 50%; transform: translateX(-50%);
+      display: flex; align-items: center;
+    }
+    .nav-tabs-pill {
+      display: inline-flex; gap: 2px;
+      background: var(--gray-100); border-radius: var(--radius-full); padding: 4px;
+    }
+    body.theme-dark .nav-tabs-pill { background: var(--gray-100); }
+    .nav-tab-btn {
+      font: inherit; font-size: 14px; font-weight: 600;
+      padding: 8px 28px; border-radius: var(--radius-full); border: none; cursor: pointer;
+      background: transparent; color: var(--gray-600); white-space: nowrap;
+      display: flex; align-items: center; gap: 7px;
+      transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+    }
+    .nav-tab-btn:hover:not(.active) {
+      background: rgba(255,255,255,.7); color: var(--primary);
+    }
+    body.theme-dark .nav-tab-btn:hover:not(.active) { background: rgba(255,255,255,.08); color: var(--primary-dark); }
+    .nav-tab-btn.active {
+      background: #fff; color: var(--primary); font-weight: 700;
+      box-shadow: 0 1px 6px rgba(27,20,100,.14), 0 0 0 1px rgba(27,20,100,.06);
+    }
+    body.theme-dark .nav-tab-btn.active {
+      background: var(--gray-200); color: var(--primary-dark);
+      box-shadow: 0 1px 6px rgba(0,0,0,.4);
+    }
+
+    .nav-user-area { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
+    .nav-avatar {
+      width: 30px; height: 30px; border-radius: 50%;
+      background: var(--primary); color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; letter-spacing: .03em;
+    }
+    body.theme-dark .nav-avatar { background: var(--primary-mid); }
+    .nav-user-name { font-size: 12px; font-weight: 600; color: var(--gray-700); line-height: 1.2; }
+    .nav-user-role { font-size: 10px; color: var(--gray-500); line-height: 1.2; }
+    body.theme-dark .nav-user-name { color: var(--gray-700); }
+
+    .btn {
+      font: inherit; font-size: 13px; font-weight: 600;
+      padding: 7px 16px; min-height: 34px; border-radius: var(--radius-sm); border: none;
+      background: var(--primary); color: #fff; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 6px;
+      transition: background var(--transition), box-shadow var(--transition), transform var(--transition);
+    }
+    .btn:hover:not(:disabled) {
+      background: var(--primary-mid); box-shadow: var(--shadow-btn); transform: translateY(-1px);
+    }
+    .btn:active:not(:disabled) { transform: translateY(0); box-shadow: none; }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-secondary {
+      background: var(--gray-100); color: var(--gray-700); box-shadow: none;
+    }
+    .btn-secondary:hover:not(:disabled) {
+      background: var(--gray-150); box-shadow: none; transform: none;
+    }
+    body.theme-dark .btn-secondary { background: var(--gray-100); color: var(--gray-700); }
+    body.theme-dark .btn-secondary:hover:not(:disabled) { background: var(--gray-150); }
+
+    .btn-ghost {
+      background: transparent; color: var(--gray-600); box-shadow: none;
+      border: 1.5px solid var(--gray-150);
+    }
+    .btn-ghost:hover:not(:disabled) {
+      background: var(--gray-50); color: var(--primary); box-shadow: none; transform: none;
+    }
+    body.theme-dark .btn-ghost { color: var(--gray-500); border-color: var(--gray-200); }
+
+    /* ── Page shell ────────────────────────────── */
+    .page { max-width: 1200px; margin: 0 auto; padding: 24px 24px 80px; }
+
+    /* ── KPI bar ───────────────────────────────── */
+    .kpi-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px;
+    }
+    .kpi-card {
+      background: #fff; border: 1.5px solid var(--gray-150); border-radius: var(--radius-lg);
+      padding: 14px 16px; box-shadow: var(--shadow-xs);
+      display: flex; align-items: center; gap: 12;
+      transition: box-shadow var(--transition), transform var(--transition);
+    }
+    .kpi-card:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
+    body.theme-dark .kpi-card { background: var(--gray-50); border-color: var(--gray-200); }
+    .kpi-icon {
+      width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+      background: var(--primary-soft);
+      display: flex; align-items: center; justify-content: center;
+    }
+    body.theme-dark .kpi-icon { background: var(--primary-soft); }
+    .kpi-label { font-size: 11px; color: var(--gray-500); font-weight: 500; margin-bottom: 3px; letter-spacing: .02em; }
+    .kpi-value { font-size: 18px; font-weight: 800; color: var(--primary-dark); letter-spacing: -.02em; line-height: 1; }
+    body.theme-dark .kpi-value { color: var(--primary-dark); }
+    .kpi-sub { font-size: 10px; color: var(--gray-400); margin-top: 2px; }
+
+    /* ── Card ──────────────────────────────────── */
+    .card {
+      background: #fff; border: 1.5px solid var(--gray-150);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); overflow: hidden;
+    }
+    body.theme-dark .card { background: var(--gray-50); border-color: var(--gray-200); }
+
+    /* Card header */
+    .card-header {
+      padding: 16px 20px;
+      display: flex; align-items: center; gap: 10; flex-wrap: wrap;
+      border-bottom: 1px solid var(--gray-100);
+    }
+    body.theme-dark .card-header { border-bottom-color: var(--gray-200); }
+
+    /* Search input */
+    .search-input-wrap { position: relative; flex: 1; min-width: 280px; max-width: 440px; }
+    .search-input-wrap svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+    .search-input {
+      width: 100%; min-height: 38px; padding: 8px 12px 8px 36px;
+      border-radius: var(--radius-md); border: 1.5px solid var(--gray-200);
+      background: var(--gray-50); color: var(--gray-700);
+      font: inherit; font-size: 13px; outline: none;
+      transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+    }
+    .search-input:focus {
+      border-color: var(--primary-mid); background: #fff;
+      box-shadow: 0 0 0 3px rgba(45,34,158,.10);
+    }
+    body.theme-dark .search-input { background: var(--gray-100); border-color: var(--gray-200); color: var(--gray-700); }
+    body.theme-dark .search-input:focus { background: var(--gray-100); border-color: var(--primary-mid); }
+
+    /* Filter bar */
+    .filter-bar {
+      display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+      padding: 12px 20px; border-bottom: 1px solid var(--gray-100);
+      background: var(--gray-50);
+    }
+    body.theme-dark .filter-bar { background: var(--gray-100); border-bottom-color: var(--gray-200); }
+    .filter-select {
+      min-height: 34px; padding: 5px 10px;
+      border-radius: var(--radius-sm); border: 1.5px solid var(--gray-200);
+      background: #fff; color: var(--gray-700);
+      font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; outline: none;
+      transition: border-color var(--transition);
+    }
+    .filter-select:hover { border-color: var(--gray-300); }
+    .filter-select:focus { border-color: var(--primary-mid); box-shadow: 0 0 0 3px rgba(45,34,158,.10); }
+    body.theme-dark .filter-select { background: var(--gray-100); border-color: var(--gray-200); color: var(--gray-700); }
+
+    /* Type pill switch */
+    .type-switch {
+      display: inline-flex; gap: 2px;
+      background: var(--gray-100); border-radius: var(--radius-full); padding: 3px;
+    }
+    body.theme-dark .type-switch { background: var(--gray-150); }
+    .type-btn {
+      font: inherit; font-size: 12px; font-weight: 600;
+      padding: 5px 14px; border-radius: var(--radius-full); border: none; cursor: pointer;
+      background: transparent; color: var(--gray-600);
+      transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+    }
+    .type-btn.active {
+      background: #fff; color: var(--primary); font-weight: 700;
+      box-shadow: 0 1px 4px rgba(27,20,100,.12);
+    }
+    body.theme-dark .type-btn.active { background: var(--gray-200); color: var(--primary-dark); }
+    body.theme-dark .type-btn { color: var(--gray-500); }
+
+    /* Status bar */
+    .status-bar {
+      padding: 8px 20px; border-bottom: 1px solid var(--gray-100);
+      display: flex; align-items: center; gap: 12; flex-wrap: wrap;
+      background: var(--gray-25);
+    }
+    body.theme-dark .status-bar { background: var(--gray-50); border-bottom-color: var(--gray-200); }
+    .status-total {
+      font-size: 15px; font-weight: 700; color: var(--primary-dark); letter-spacing: -.01em;
+    }
+    body.theme-dark .status-total { color: var(--primary-dark); }
+    .status-count { font-size: 12px; color: var(--gray-500); }
+
+    /* ── Table ─────────────────────────────────── */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead { background: var(--gray-50); }
+    body.theme-dark thead { background: var(--gray-100); }
+    th {
+      padding: 10px 12px; border-bottom: 2px solid var(--gray-150);
+      text-align: left; font-size: 10px; font-weight: 700;
+      letter-spacing: .07em; text-transform: uppercase; color: var(--gray-400);
+      white-space: nowrap; user-select: none;
+    }
+    body.theme-dark th { border-bottom-color: var(--gray-200); color: var(--gray-500); }
+    td {
+      padding: 11px 12px; border-bottom: 1px solid var(--gray-100);
+      color: var(--gray-700); vertical-align: middle;
+    }
+    body.theme-dark td { border-bottom-color: var(--gray-150); color: var(--gray-700); }
+    tbody tr { transition: background var(--transition); }
+    tbody tr:hover { background: var(--gray-50); }
+    body.theme-dark tbody tr:hover { background: var(--gray-100); }
+    .td-right { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .td-total { font-weight: 700; color: var(--primary-dark); }
+    body.theme-dark .td-total { color: var(--primary-dark); }
+
+    /* tfoot */
+    tfoot td {
+      background: var(--gray-50); border-top: 2px solid var(--gray-150);
+      border-bottom: none; font-weight: 700; font-size: 13px;
+    }
+    body.theme-dark tfoot td { background: var(--gray-100); border-top-color: var(--gray-200); }
+
+    /* Badges */
+    .badge {
+      display: inline-block; font-size: 11px; font-weight: 700;
+      padding: 2px 8px; border-radius: var(--radius-full); letter-spacing: .02em;
+    }
+    .badge-project { background: var(--primary-soft); color: var(--primary); }
+    body.theme-dark .badge-project { background: var(--primary-soft); color: var(--primary-dark); }
+    .badge-sbo { background: var(--gray-100); color: var(--gray-600); font-size: 10px; }
+    body.theme-dark .badge-sbo { background: var(--gray-150); color: var(--gray-600); }
+    .badge-cat { color: var(--gray-600); font-size: 12px; font-weight: 500; }
+
+    /* Placeholder screen */
+    .placeholder-screen {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      padding: 80px 20px; gap: 12px;
+    }
+    .placeholder-icon {
+      width: 64px; height: 64px; border-radius: var(--radius-lg);
+      background: var(--primary-soft); display: flex; align-items: center; justify-content: center;
+    }
+    .placeholder-title { font-size: 20px; font-weight: 700; color: var(--primary-dark); margin: 0; }
+    .placeholder-sub { font-size: 13px; color: var(--gray-500); margin: 0; text-align: center; }
+
+    /* Loading / empty */
+    .table-state { padding: 32px; text-align: center; color: var(--gray-500); font-size: 13px; }
+
+    /* Compact variant overrides */
+    body.variant-compact .page { max-width: 1320px; padding: 16px 20px 60px; }
+    body.variant-compact .kpi-grid { gap: 8px; margin-bottom: 14px; }
+    body.variant-compact .kpi-card { padding: 10px 12px; }
+    body.variant-compact .kpi-value { font-size: 15px; }
+    body.variant-compact th { padding: 8px 10px; }
+    body.variant-compact td { padding: 8px 10px; font-size: 12px; }
+    body.variant-compact .card-header { padding: 10px 14px; }
+    body.variant-compact .status-bar { padding: 6px 14px; }
+    body.variant-compact .nav-tab-btn { padding: 6px 20px; font-size: 13px; }
+    body.variant-compact .nav { padding: 8px 20px; }
+
+    /* ── Dashboard ─────────────────────────────── */
+    .dash-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+    .dash-title { font-size: 22px; font-weight: 800; color: var(--primary-dark); letter-spacing: -.02em; flex: 1; }
+    body.theme-dark .dash-title { color: var(--primary-dark); }
+
+    .dash-primary-switch {
+      display: inline-flex; gap: 3px;
+      background: var(--gray-100); border-radius: var(--radius-full); padding: 4px;
+    }
+    body.theme-dark .dash-primary-switch { background: var(--gray-150); }
+    .dash-sw-btn {
+      font: inherit; font-size: 13px; font-weight: 600;
+      padding: 7px 20px; border-radius: var(--radius-full); border: none; cursor: pointer;
+      background: transparent; color: var(--gray-600);
+      transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+    }
+    .dash-sw-btn.active {
+      background: var(--primary); color: #fff;
+      box-shadow: 0 2px 8px rgba(27,20,100,.25);
+    }
+    body.theme-dark .dash-sw-btn.active { background: var(--primary-mid); }
+
+    .dash-summary-grid {
+      display: grid; gap: 14px;
+      grid-template-columns: 1.6fr 1fr;
+    }
+    @media (max-width: 860px) { .dash-summary-grid { grid-template-columns: 1fr; } }
+
+    .dash-panel {
+      background: #fff; border: 1.5px solid var(--gray-150);
+      border-radius: var(--radius-lg); padding: 18px;
+      box-shadow: var(--shadow-xs);
+    }
+    body.theme-dark .dash-panel { background: var(--gray-50); border-color: var(--gray-200); }
+    .dash-panel-title { font-size: 13px; font-weight: 700; color: var(--primary-dark); margin: 0 0 14px; letter-spacing: .01em; }
+    body.theme-dark .dash-panel-title { color: var(--primary-dark); }
+
+    .dash-tabs {
+      display: flex; gap: 4px; margin-bottom: 16px;
+      border-bottom: 1.5px solid var(--gray-150); padding-bottom: 10px;
+      overflow-x: auto;
+    }
+    body.theme-dark .dash-tabs { border-bottom-color: var(--gray-200); }
+    .dash-tab {
+      font: inherit; font-size: 12px; font-weight: 600;
+      padding: 5px 14px; border-radius: var(--radius-full); border: none; cursor: pointer;
+      background: transparent; color: var(--gray-500); white-space: nowrap;
+      transition: background var(--transition), color var(--transition);
+    }
+    .dash-tab.active { background: var(--primary-soft); color: var(--primary); }
+    body.theme-dark .dash-tab.active { background: var(--primary-soft); color: var(--primary-dark); }
+    .dash-tab:hover:not(.active) { background: var(--gray-100); color: var(--primary); }
+
+    /* Column chart */
+    .dash-col-chart { display: flex; align-items: flex-end; gap: 8px; min-height: 160px; overflow-x: auto; padding-bottom: 4px; }
+    .dash-col-item { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 72px; flex: 1; }
+    .dash-col-value { font-size: 10px; color: var(--gray-600); font-weight: 600; text-align: center; white-space: nowrap; }
+    .dash-col-track {
+      height: 120px; width: 100%; border-radius: 8px;
+      background: var(--gray-100); display: flex; align-items: flex-end; padding: 3px;
+    }
+    body.theme-dark .dash-col-track { background: var(--gray-150); }
+    .dash-col-fill {
+      width: 100%; border-radius: 6px;
+      background: linear-gradient(180deg, var(--primary-mid), var(--primary-dark));
+      transition: height .4s var(--ease);
+    }
+    .dash-col-label { font-size: 11px; color: var(--gray-500); font-weight: 600; }
+
+    /* Horizontal bar (categories/suppliers) */
+    .dash-bar-row { display: grid; gap: 8px; }
+    .dash-bar-item { display: grid; gap: 4px; }
+    .dash-bar-meta { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .dash-bar-name { font-size: 12px; color: var(--gray-700); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+    body.theme-dark .dash-bar-name { color: var(--gray-700); }
+    .dash-bar-amount { font-size: 12px; font-weight: 700; color: var(--primary-dark); white-space: nowrap; }
+    body.theme-dark .dash-bar-amount { color: var(--primary-dark); }
+    .dash-bar-track { height: 6px; background: var(--gray-100); border-radius: 99px; overflow: hidden; }
+    body.theme-dark .dash-bar-track { background: var(--gray-150); }
+    .dash-bar-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, var(--primary-mid), var(--primary-dark)); transition: width .4s var(--ease); }
+
+    /* Gauge */
+    .dash-gauge-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 6px 0; }
+    .dash-gauge-label { font-size: 11px; color: var(--gray-500); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+    .dash-gauge-value { font-size: 26px; font-weight: 800; color: var(--primary-dark); letter-spacing: -.02em; }
+    body.theme-dark .dash-gauge-value { color: var(--primary-dark); }
+    .dash-gauge-sub { font-size: 11px; color: var(--gray-500); }
+
+    /* Recent list */
+    .dash-recent-list { display: grid; gap: 8px; }
+    .dash-recent-item {
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
+      padding: 10px 12px; border: 1px solid var(--gray-100); border-radius: var(--radius-sm);
+      transition: background var(--transition); cursor: default;
+    }
+    .dash-recent-item:hover { background: var(--gray-50); }
+    body.theme-dark .dash-recent-item { border-color: var(--gray-150); }
+    body.theme-dark .dash-recent-item:hover { background: var(--gray-100); }
+    .dash-recent-desc { font-size: 12px; font-weight: 500; color: var(--gray-700); line-height: 1.3; }
+    body.theme-dark .dash-recent-desc { color: var(--gray-700); }
+    .dash-recent-meta { font-size: 11px; color: var(--gray-500); margin-top: 2px; }
+    .dash-recent-amount { font-size: 13px; font-weight: 700; color: var(--primary-dark); white-space: nowrap; }
+    body.theme-dark .dash-recent-amount { color: var(--primary-dark); }
+
+    @media (max-width: 860px) {
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 540px) {
+      .page { padding: 12px 12px 72px; }
+      .kpi-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+      .nav { padding: 8px 14px; }
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+
+// ── Data ──────────────────────────────────────────────────────────────────────
+const EGRESOS = [
+  { id:1, fecha:"2026-01-27", proyecto:"COSTAVENTURA", sbo:"SBO_GMDI", proveedor:"MASARI CASA DE BOLSA, S.A.", descripcion:"FACTURA NO. #T648 (SALDO COCINA)", categoria:"Trabajos sin clasificar", subtotal:49424.15, iva:7907.86, total:57332.01, tipo:"EXPENSE" },
+  { id:2, fecha:"2026-03-25", proyecto:"COSTAVENTURA", sbo:"SBO_GMDI", proveedor:"PORCELANOSA MEXICO, S.A. DE C.V.", descripcion:"SALDO 70% REVESTIMIENTOS BAÑO PRINCIPAL", categoria:"Acabados / Detalles", subtotal:11995.04, iva:1919.21, total:13914.25, tipo:"EXPENSE" },
+  { id:3, fecha:"2026-02-10", proyecto:"MDI TORRE", sbo:"SBO_GMDI", proveedor:"CONSTRUCTORA HERNANDEZ SA", descripcion:"ESTIMACION #3 ESTRUCTURA NIVEL 8–12", categoria:"Estructura", subtotal:285000.00, iva:45600.00, total:330600.00, tipo:"EXPENSE" },
+  { id:4, fecha:"2026-02-18", proyecto:"PARQUE NORTE", sbo:"SBO_GMDI", proveedor:"GRUPO FERRETERO NORTE", descripcion:"MATERIAL ELECTRICO PISO 4 FASES", categoria:"Instalaciones", subtotal:18450.00, iva:2952.00, total:21402.00, tipo:"EXPENSE" },
+  { id:5, fecha:"2026-03-05", proyecto:"MDI TORRE", sbo:"SBO_GMDI", proveedor:"IMPERMEABILIZACIONES DEL BAJIO", descripcion:"APLICACION MEMBRANA CUBIERTA ALTA", categoria:"Impermeabilización", subtotal:42000.00, iva:6720.00, total:48720.00, tipo:"EXPENSE" },
+  { id:6, fecha:"2026-03-15", proyecto:"COSTAVENTURA", sbo:"SBO_GMDI", proveedor:"VIDRIOS Y ALUMINIOS PREMIUM SA", descripcion:"VENTANERIA FACHADA NORTE LOTE 4", categoria:"Fachada", subtotal:76300.00, iva:12208.00, total:88508.00, tipo:"EXPENSE" },
+  { id:7, fecha:"2026-04-01", proyecto:"PARQUE NORTE", sbo:"SBO_GMDI", proveedor:"CONCRETOS MONTERREY SA DE CV", descripcion:"SUMINISTRO CONCRETO FC250 14 CAMIONES", categoria:"Estructura", subtotal:98500.00, iva:15760.00, total:114260.00, tipo:"EXPENSE" },
+  { id:8, fecha:"2026-04-10", proyecto:"MDI TORRE", sbo:"SBO_GMDI", proveedor:"ACABADOS FINOS MDI", descripcion:"ANTICIPO CARPINTERIA NIVEL 3-5", categoria:"Carpintería", subtotal:32000.00, iva:5120.00, total:37120.00, tipo:"EXPENSE" },
+  { id:9, fecha:"2026-01-15", proyecto:"COSTAVENTURA", sbo:"SBO_GMDI", proveedor:"FIANZA Y GARANTIAS NACIONALES", descripcion:"REEMBOLSO FIANZA TERMINO OBRA", categoria:"Ingresos varios", subtotal:15000.00, iva:0, total:15000.00, tipo:"INCOME" },
+];
+
+const PROYECTOS = ["COSTAVENTURA","MDI TORRE","PARQUE NORTE"];
+const CATEGORIAS = [...new Set(EGRESOS.map(e => e.categoria))].sort();
+const PROVEEDORES = [...new Set(EGRESOS.map(e => e.proveedor))].sort();
+
+const fmt = n => "$" + Math.abs(n).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// ── Icons ─────────────────────────────────────────────────────────────────────
+const PATHS = {
+  building: <><rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M16 6h.01M8 10h.01M16 10h.01M8 14h.01M16 14h.01"/></>,
+  search: <><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></>,
+  filter: <><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></>,
+  download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>,
+  logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>,
+  dashboard: <><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></>,
+  list: <><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></>,
+  budget: <><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>,
+  settings: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>,
+  trending: <><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></>,
+  wallet: <><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></>,
+  moon: <><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></>,
+  sun: <><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></>,
+  x: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
+};
+const Icon = ({ n, size = 16, color = "currentColor", strokeWidth = 2 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+    stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    {PATHS[n]}
+  </svg>
+);
+
+// ── Placeholder screen ────────────────────────────────────────────────────────
+const PlaceholderScreen = ({ icon, title, sub }) => (
+  <div className="placeholder-screen">
+    <div className="placeholder-icon">
+      <Icon n={icon} size={28} color="var(--primary)" />
+    </div>
+    <p className="placeholder-title">{title}</p>
+    <p className="placeholder-sub">{sub}</p>
+  </div>
+);
+
+// ── SearchV2 ──────────────────────────────────────────────────────────────────
+function SearchV2({ proyecto }) {
+  const [query, setQuery] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
+  const [provFilter, setProvFilter] = useState("ALL");
+  const [catFilter, setCatFilter] = useState("ALL");
+  const [typeFilter, setTypeFilter] = useState("EXPENSE");
+
+  const rows = useMemo(() => EGRESOS.filter(e => {
+    const q = query.toLowerCase();
+    const mq = !q || e.proveedor.toLowerCase().includes(q) || e.descripcion.toLowerCase().includes(q) || e.categoria.toLowerCase().includes(q);
+    const mp = proyecto === "ALL" || e.proyecto === proyecto;
+    const mv = provFilter === "ALL" || e.proveedor === provFilter;
+    const mc = catFilter === "ALL" || e.categoria === catFilter;
+    const mt = typeFilter === "ALL" || e.tipo === typeFilter;
+    return mq && mp && mv && mc && mt;
+  }), [query, proyecto, provFilter, catFilter, typeFilter]);
+
+  const sinIva = rows.reduce((a, e) => a + e.subtotal, 0);
+  const conIva = rows.reduce((a, e) => a + e.total, 0);
+  const ivaTotal = rows.reduce((a, e) => a + e.iva, 0);
+
+  const kpis = [
+    { label: "Total sin IVA filtrado", value: fmt(sinIva), sub: `${rows.length} registros`, icon: "wallet" },
+    { label: "Total con IVA", value: fmt(conIva), sub: "base total", icon: "trending" },
+    { label: "IVA acumulado", value: fmt(ivaTotal), sub: "16%", icon: "budget" },
+    { label: "Proyectos", value: [...new Set(rows.map(r => r.proyecto))].length, sub: "con resultados", icon: "building" },
+  ];
+
+  return (
+    <div>
+      {/* KPI bar */}
+      <div className="kpi-grid">
+        {kpis.map((k, i) => (
+          <div className="kpi-card" key={i} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div className="kpi-icon">
+              <Icon n={k.icon} size={18} color="var(--primary)" />
+            </div>
+            <div>
+              <div className="kpi-label">{k.label}</div>
+              <div className="kpi-value">{k.value}</div>
+              <div className="kpi-sub">{k.sub}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Main card */}
+      <div className="card">
+        {/* Toolbar */}
+        <div className="card-header" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div className="search-input-wrap">
+            <Icon n="search" size={15} color="var(--gray-400)" />
+            <input className="search-input" value={query} onChange={e => setQuery(e.target.value)}
+              placeholder="Buscar por proveedor, categoría, descripción…" type="search" />
+          </div>
+
+          <button className="btn btn-secondary" onClick={() => setShowFilters(v => !v)}
+            style={{ background: showFilters ? "var(--primary-soft)" : undefined, color: showFilters ? "var(--primary)" : undefined }}>
+            <Icon n="filter" size={14} /> {showFilters ? "Ocultar filtros" : "Mostrar filtros"}
+          </button>
+
+          <div style={{ flex: 1 }} />
+
+          <div className="type-switch">
+            {[["EXPENSE","Egresos"],["INCOME","Ingresos"],["ALL","Todos"]].map(([v,l]) => (
+              <button key={v} className={`type-btn${typeFilter === v ? " active" : ""}`}
+                onClick={() => setTypeFilter(v)}>{l}</button>
+            ))}
+          </div>
+
+          <button className="btn" disabled={!rows.length}>
+            <Icon n="download" size={14} /> Exportar PDF
+          </button>
+        </div>
+
+        {/* Filters */}
+        {showFilters && (
+          <div className="filter-bar">
+            <select className="filter-select" value={provFilter} onChange={e => setProvFilter(e.target.value)}>
+              <option value="ALL">Proveedor (todos)</option>
+              {PROVEEDORES.map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+            <select className="filter-select" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
+              <option value="ALL">Categoría 2 (todas)</option>
+              {CATEGORIAS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        )}
+
+        {/* Status */}
+        <div className="status-bar">
+          <span className="status-total">Total sin IVA filtrado: {fmt(sinIva)}</span>
+          <span style={{ color: "var(--gray-300)" }}>·</span>
+          <span className="status-count">{rows.length} resultado{rows.length !== 1 ? "s" : ""} visible{rows.length !== 1 ? "s" : ""}</span>
+        </div>
+
+        {/* Table */}
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                {["Fecha","Proyecto","Proveedor","Descripción","Categoría 2","Subtotal","IVA","Total"].map(h => (
+                  <th key={h} style={{ textAlign: ["Subtotal","IVA","Total"].includes(h) ? "right" : "left" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 && (
+                <tr><td colSpan={9} className="table-state">Sin resultados</td></tr>
+              )}
+              {rows.map(r => (
+                <tr key={r.id}>
+                  <td style={{ color: "var(--gray-500)", fontSize: 12, whiteSpace: "nowrap" }}>{r.fecha}</td>
+                  <td><span className="badge badge-project">{r.proyecto}</span></td>
+                  <td style={{ fontWeight: 500, whiteSpace: "nowrap" }}>{r.proveedor}</td>
+                  <td style={{ color: "var(--gray-600)", fontSize: 12 }}>{r.descripcion}</td>
+                  <td><span className="badge-cat">{r.categoria}</span></td>
+                  <td className="td-right" style={{ color: "var(--gray-600)" }}>{fmt(r.subtotal)}</td>
+                  <td className="td-right" style={{ color: "var(--gray-500)", fontSize: 12 }}>{r.iva > 0 ? fmt(r.iva) : "—"}</td>
+                  <td className="td-right td-total">{fmt(r.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+            {rows.length > 0 && (
+              <tfoot>
+                <tr>
+                  <td colSpan={5} style={{ color: "var(--gray-500)", fontSize: 11, textAlign: "right", textTransform: "uppercase", letterSpacing: ".05em" }}>Totales visibles</td>
+                  <td className="td-right" style={{ color: "var(--primary-dark)" }}>{fmt(sinIva)}</td>
+                  <td className="td-right" style={{ color: "var(--gray-600)" }}>{fmt(ivaTotal)}</td>
+                  <td className="td-right td-total">{fmt(conIva)}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+const MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
+function DashboardSection({ proyecto, m2: m2Prop }) {
+  const props = { m2: m2Prop };
+  const [tipo, setTipo] = useState("EXPENSE");
+  const [dashTab, setDashTab] = useState("resumen");
+
+  const data = useMemo(() => EGRESOS.filter(e =>
+    (proyecto === "ALL" || e.proyecto === proyecto) &&
+    (tipo === "ALL" || e.tipo === tipo)
+  ), [proyecto, tipo]);
+
+  const monthly = useMemo(() => {
+    const map = {};
+    data.forEach(e => { const m = e.fecha.slice(0,7); map[m] = (map[m]||0) + e.total; });
+    return Object.entries(map).sort(([a],[b]) => a.localeCompare(b)).map(([m,v]) => ({
+      label: MONTHS[parseInt(m.split("-")[1])-1], value: v,
+    }));
+  }, [data]);
+  const maxMonthly = Math.max(...monthly.map(m => m.value), 1);
+
+  const byCat = useMemo(() => {
+    const map = {};
+    data.forEach(e => { map[e.categoria] = (map[e.categoria]||0) + e.subtotal; });
+    return Object.entries(map).sort(([,a],[,b]) => b-a).slice(0,6);
+  }, [data]);
+  const maxCat = Math.max(...byCat.map(([,v]) => v), 1);
+
+  const byProv = useMemo(() => {
+    const map = {};
+    data.forEach(e => { map[e.proveedor] = (map[e.proveedor]||0) + e.subtotal; });
+    return Object.entries(map).sort(([,a],[,b]) => b-a).slice(0,6);
+  }, [data]);
+  const maxProv = Math.max(...byProv.map(([,v]) => v), 1);
+
+  const totalConIva = data.reduce((a,e) => a+e.total, 0);
+  const totalSinIva = data.reduce((a,e) => a+e.subtotal, 0);
+  const totalIva    = data.reduce((a,e) => a+e.iva, 0);
+  const count = data.length;
+  const PRESUPUESTO = 1200000;
+  const pct = Math.min(Math.round((totalConIva/PRESUPUESTO)*100), 100);
+
+  const recent = useMemo(() =>
+    [...data].sort((a,b) => b.fecha.localeCompare(a.fecha)).slice(0,5), [data]);
+
+  const m2 = props.m2 || 2500;
+  const kpis = [
+    { label: "Total de egresos", value: fmt(totalSinIva), sub: `${count} movimientos · sin IVA`, icon: "trending" },
+    { label: "Total de egresos con IVA", value: fmt(totalConIva), sub: `IVA: ${fmt(totalIva)}`, icon: "wallet" },
+    { label: "Costo por m²", value: fmt(totalSinIva / m2), sub: `${m2.toLocaleString("es-MX")} m² del proyecto`, icon: "building" },
+  ];
+
+  const R=54, CX=70, CY=70, SW=12;
+  const circ = Math.PI * R;
+  const gaugeColor = pct>90 ? "#b91c1c" : pct>70 ? "#92400e" : "var(--primary-dark)";
+
+  return (
+    <div>
+      <div className="dash-header">
+        <div className="dash-title">Dashboard</div>
+        <div className="dash-primary-switch">
+          {[["EXPENSE","Egresos"],["INCOME","Ingresos"]].map(([v,l]) => (
+            <button key={v} className={`dash-sw-btn${tipo===v?" active":""}`}
+              onClick={() => setTipo(v)}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="kpi-grid" style={{ marginBottom: 18, gridTemplateColumns: "repeat(3, 1fr)" }}>
+        {kpis.map((k,i) => (
+          <div className="kpi-card" key={i} style={{ display:"flex", alignItems:"center", gap:12 }}>
+            <div className="kpi-icon"><Icon n={k.icon} size={18} color="var(--primary)" /></div>
+            <div>
+              <div className="kpi-label">{k.label}</div>
+              <div className="kpi-value">{k.value}</div>
+              <div className="kpi-sub">{k.sub}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="dash-summary-grid">
+        {/* Left panel */}
+        <div className="dash-panel">
+          <div className="dash-tabs">
+            {[["resumen","Por mes"],["categoria","Por categoría"],["proveedor","Por proveedor"]].map(([v,l]) => (
+              <button key={v} className={`dash-tab${dashTab===v?" active":""}`}
+                onClick={() => setDashTab(v)}>{l}</button>
+            ))}
+          </div>
+
+          {dashTab === "resumen" && (
+            <>
+              <div className="dash-panel-title">Evolución mensual</div>
+              {monthly.length === 0
+                ? <div style={{ color:"var(--gray-500)", fontSize:13, padding:"20px 0" }}>Sin datos</div>
+                : <div className="dash-col-chart">
+                    {monthly.map((m,i) => (
+                      <div className="dash-col-item" key={i}>
+                        <div className="dash-col-value">{fmt(m.value)}</div>
+                        <div className="dash-col-track">
+                          <div className="dash-col-fill" style={{ height:`${Math.max((m.value/maxMonthly)*100,4)}%` }} />
+                        </div>
+                        <div className="dash-col-label">{m.label}</div>
+                      </div>
+                    ))}
+                  </div>
+              }
+            </>
+          )}
+
+          {dashTab === "categoria" && (
+            <>
+              <div className="dash-panel-title">Egresos por categoría</div>
+              <div className="dash-bar-row">
+                {byCat.map(([cat,val],i) => (
+                  <div className="dash-bar-item" key={i}>
+                    <div className="dash-bar-meta">
+                      <span className="dash-bar-name">{cat}</span>
+                      <span className="dash-bar-amount">{fmt(val)}</span>
+                    </div>
+                    <div className="dash-bar-track">
+                      <div className="dash-bar-fill" style={{ width:`${(val/maxCat)*100}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {dashTab === "proveedor" && (
+            <>
+              <div className="dash-panel-title">Top proveedores</div>
+              <div className="dash-bar-row">
+                {byProv.map(([prov,val],i) => (
+                  <div className="dash-bar-item" key={i}>
+                    <div className="dash-bar-meta">
+                      <span className="dash-bar-name">{prov}</span>
+                      <span className="dash-bar-amount">{fmt(val)}</span>
+                    </div>
+                    <div className="dash-bar-track">
+                      <div className="dash-bar-fill" style={{ width:`${(val/maxProv)*100}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Right column */}
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          <div className="dash-panel">
+            <div className="dash-panel-title">% Presupuesto ejecutado</div>
+            <div className="dash-gauge-wrap">
+              <svg width={140} height={82} viewBox="0 0 140 82">
+                <path d={`M ${CX-R} ${CY} A ${R} ${R} 0 0 1 ${CX+R} ${CY}`}
+                  fill="none" stroke="var(--gray-150)" strokeWidth={SW} strokeLinecap="round" />
+                <path d={`M ${CX-R} ${CY} A ${R} ${R} 0 0 1 ${CX+R} ${CY}`}
+                  fill="none" stroke={gaugeColor} strokeWidth={SW} strokeLinecap="round"
+                  strokeDasharray={circ} strokeDashoffset={circ*(1-pct/100)}
+                  style={{ transition:"stroke-dashoffset .6s" }} />
+                <text x={CX} y={CY-6} textAnchor="middle" fontSize={22} fontWeight={800}
+                  fill={gaugeColor} fontFamily="Jost,sans-serif">{pct}%</text>
+                <text x={CX} y={CY+12} textAnchor="middle" fontSize={10} fill="var(--gray-500)"
+                  fontFamily="Jost,sans-serif">de {fmt(PRESUPUESTO)}</text>
+              </svg>
+              <div className="dash-gauge-sub">Presupuesto estimado del proyecto</div>
+            </div>
+          </div>
+
+          <div className="dash-panel" style={{ flex:1 }}>
+            <div className="dash-panel-title">Últimos movimientos</div>
+            <div className="dash-recent-list">
+              {recent.length === 0
+                ? <div style={{ color:"var(--gray-500)", fontSize:12 }}>Sin movimientos</div>
+                : recent.map(r => (
+                  <div className="dash-recent-item" key={r.id}>
+                    <div style={{ minWidth:0 }}>
+                      <div className="dash-recent-desc" style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", maxWidth:180 }}>{r.proveedor}</div>
+                      <div className="dash-recent-meta">{r.fecha} · <span className="badge badge-project" style={{ fontSize:10, padding:"1px 6px" }}>{r.proyecto}</span></div>
+                    </div>
+                    <div className="dash-recent-amount">{fmt(r.total)}</div>
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Budgets ───────────────────────────────────────────────────────────────────
+const BUDGETS_DATA = [
+  { id:"b1", proyecto:"COSTAVENTURA", proveedor:"PORCELANOSA MEXICO, S.A. DE C.V.", supplierKey:"prc-01", concepto:"Revestimientos baño principal", monto:85000, pagado:13914.25, conIva:true, notas:"Incluye piso y muro" },
+  { id:"b2", proyecto:"COSTAVENTURA", proveedor:"PORCELANOSA MEXICO, S.A. DE C.V.", supplierKey:"prc-01", concepto:"Cocina integral", monto:120000, pagado:57332.01, conIva:true, notas:"" },
+  { id:"b3", proyecto:"MDI TORRE", proveedor:"CONSTRUCTORA HERNANDEZ SA", supplierKey:"con-01", concepto:"Estructura niveles 1–12", monto:900000, pagado:330600.00, conIva:true, notas:"Estimaciones 1-3" },
+  { id:"b4", proyecto:"MDI TORRE", proveedor:"IMPERMEABILIZACIONES DEL BAJIO", supplierKey:"imp-01", concepto:"Impermeabilización cubierta", monto:48720, pagado:48720.00, conIva:true, notas:"Aplicación membrana" },
+  { id:"b5", proyecto:"PARQUE NORTE", proveedor:"CONCRETOS MONTERREY SA DE CV", supplierKey:"con-02", concepto:"Suministro concreto FC250", monto:200000, pagado:114260.00, conIva:true, notas:"" },
+  { id:"b6", proyecto:"PARQUE NORTE", proveedor:"GRUPO FERRETERO NORTE", supplierKey:"gfn-01", concepto:"Material eléctrico completo", monto:18000, pagado:21402.00, conIva:true, notas:"Sobrepasó presupuesto" },
+  { id:"b7", proyecto:"COSTAVENTURA", proveedor:"VIDRIOS Y ALUMINIOS PREMIUM SA", supplierKey:"vap-01", concepto:"Ventanería fachada completa", monto:180000, pagado:88508.00, conIva:true, notas:"" },
+  { id:"b8", proyecto:"MDI TORRE", proveedor:"ACABADOS FINOS MDI", supplierKey:"afm-01", concepto:"Carpintería niveles 3–5", monto:95000, pagado:37120.00, conIva:true, notas:"Anticipo pagado" },
+];
+
+function pct(pagado, monto) { return monto > 0 ? (pagado / monto) * 100 : 0; }
+function budgetStatus(p) {
+  if (p > 100) return { label: "Excedido", cls: "exceeded" };
+  if (p >= 100) return { label: "Pagado", cls: "paid" };
+  return { label: "En presupuesto", cls: "in-budget" };
+}
+
+function BudgetsModule({ proyecto }) {
+  const [expanded, setExpanded] = useState(new Set());
+  const [showForm, setShowForm] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const data = useMemo(() => BUDGETS_DATA.filter(b =>
+    (proyecto === "ALL" || b.proyecto === proyecto) &&
+    (!search || b.proveedor.toLowerCase().includes(search.toLowerCase()) || b.concepto.toLowerCase().includes(search.toLowerCase()))
+  ), [proyecto, search]);
+
+  const groups = useMemo(() => {
+    const map = new Map();
+    data.forEach(b => {
+      if (!map.has(b.supplierKey)) map.set(b.supplierKey, { key: b.supplierKey, proveedor: b.proveedor, items: [] });
+      map.get(b.supplierKey).items.push(b);
+    });
+    return Array.from(map.values()).map(g => {
+      const totalMonto  = g.items.reduce((a,b) => a+b.monto, 0);
+      const totalPagado = g.items.reduce((a,b) => a+b.pagado, 0);
+      const saldo = totalMonto - totalPagado;
+      const p = pct(totalPagado, totalMonto);
+      return { ...g, totalMonto, totalPagado, saldo, pct: p, status: budgetStatus(p) };
+    }).sort((a,b) => a.proveedor.localeCompare(b.proveedor,"es"));
+  }, [data]);
+
+  const toggleGroup = key => setExpanded(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
+  });
+
+  // Totals
+  const grandMonto  = groups.reduce((a,g) => a+g.totalMonto, 0);
+  const grandPagado = groups.reduce((a,g) => a+g.totalPagado, 0);
+  const grandSaldo  = grandMonto - grandPagado;
+  const grandPct    = pct(grandPagado, grandMonto);
+  const grandStatus = budgetStatus(grandPct);
+
+  return (
+    <div style={{ display:"grid", gap:14 }}>
+      {/* Header KPIs */}
+      <div className="kpi-grid" style={{ gridTemplateColumns:"repeat(4,1fr)" }}>
+        {[
+          { label:"Presupuesto total", value: fmt(grandMonto), sub:"comprometido", icon:"budget" },
+          { label:"Total pagado", value: fmt(grandPagado), sub:"ejecutado", icon:"wallet" },
+          { label:"Saldo disponible", value: fmt(grandSaldo), sub: grandSaldo < 0 ? "⚠ excedido" : "restante", icon:"trending" },
+          { label:"Avance global", value: `${Math.round(grandPct)}%`, sub: grandStatus.label, icon:"building" },
+        ].map((k,i) => (
+          <div key={i} className="kpi-card" style={{ display:"flex", alignItems:"center", gap:12 }}>
+            <div className="kpi-icon" style={{ background: i===2 && grandSaldo<0 ? "var(--danger-bg)" : undefined }}>
+              <Icon n={k.icon} size={18} color={i===2 && grandSaldo<0 ? "var(--danger-text)" : "var(--primary)"} />
+            </div>
+            <div>
+              <div className="kpi-label">{k.label}</div>
+              <div className="kpi-value" style={{ color: i===2 && grandSaldo<0 ? "var(--danger-text)" : undefined }}>{k.value}</div>
+              <div className="kpi-sub">{k.sub}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Toolbar */}
+      <div className="card" style={{ overflow:"visible" }}>
+        <div className="card-header" style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
+          <div className="search-input-wrap" style={{ maxWidth:360 }}>
+            <Icon n="search" size={15} color="var(--gray-400)" />
+            <input className="search-input" value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Filtrar por proveedor o concepto…" />
+          </div>
+          <div style={{ flex:1 }} />
+          <button className="btn" onClick={() => setShowForm(v => !v)} style={{ fontSize:13 }}>
+            {showForm ? "✕ Cancelar" : "+ Nuevo presupuesto"}
+          </button>
+        </div>
+
+        {/* Inline form */}
+        {showForm && (
+          <div style={{ padding:"16px 20px", borderBottom:`1px solid var(--gray-100)`, background:"var(--gray-50)", display:"grid", gridTemplateColumns:"1fr 1fr 1fr auto", gap:10, alignItems:"end" }}>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:"var(--gray-600)", display:"block", marginBottom:4 }}>Proveedor</label>
+              <input className="search-input" placeholder="Nombre del proveedor" style={{ minHeight:36 }} />
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:"var(--gray-600)", display:"block", marginBottom:4 }}>Concepto</label>
+              <input className="search-input" placeholder="Ej. Carpintería nivel 3" style={{ minHeight:36 }} />
+            </div>
+            <div>
+              <label style={{ fontSize:11, fontWeight:600, color:"var(--gray-600)", display:"block", marginBottom:4 }}>Monto presupuesto</label>
+              <input className="search-input" placeholder="$0.00" style={{ minHeight:36 }} />
+            </div>
+            <button className="btn" style={{ fontSize:12, alignSelf:"flex-end" }}>Crear</button>
+          </div>
+        )}
+
+        {/* Table */}
+        <div style={{ overflowX:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13, minWidth:860 }}>
+            <thead>
+              <tr>
+                {["Proveedor","# Presup.","Presupuesto total","Pagado total","Saldo","Avance","Estado",""].map(h => (
+                  <th key={h} style={{ padding:"10px 14px", borderBottom:"2px solid var(--gray-150)", textAlign: ["Presupuesto total","Pagado total","Saldo"].includes(h) ? "right" : "left", fontSize:10, fontWeight:700, letterSpacing:".06em", textTransform:"uppercase", color:"var(--gray-400)", whiteSpace:"nowrap" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {groups.length === 0 && (
+                <tr><td colSpan={8} style={{ padding:"32px", textAlign:"center", color:"var(--gray-500)", fontSize:13 }}>Sin presupuestos para este filtro</td></tr>
+              )}
+              {groups.map(g => (
+                <React.Fragment key={g.key}>
+                  {/* Group row */}
+                  <tr style={{ background:"var(--gray-50)", cursor:"pointer" }}
+                    onClick={() => toggleGroup(g.key)}
+                    onMouseEnter={e => e.currentTarget.style.background="var(--gray-100)"}
+                    onMouseLeave={e => e.currentTarget.style.background="var(--gray-50)"}
+                  >
+                    <td style={{ padding:"11px 14px", borderBottom:`1px solid var(--gray-150)` }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                        <button onClick={e => { e.stopPropagation(); toggleGroup(g.key); }} style={{
+                          width:22, height:22, borderRadius:6, border:"1px solid var(--gray-200)",
+                          background:"#fff", color:"var(--gray-600)", fontSize:14, fontWeight:700,
+                          cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center",
+                          flexShrink:0, fontFamily:"inherit", padding:0, minHeight:0, boxShadow:"none",
+                        }}>{expanded.has(g.key) ? "−" : "+"}</button>
+                        <span style={{ fontWeight:700, color:"var(--primary-dark)" }}>{g.proveedor}</span>
+                      </div>
+                    </td>
+                    <td style={{ padding:"11px 14px", borderBottom:`1px solid var(--gray-150)`, color:"var(--gray-600)" }}>{g.items.length}</td>
+                    <td style={{ padding:"11px 14px", borderBottom:`1px solid var(--gray-150)`, textAlign:"right", fontWeight:600, fontVariantNumeric:"tabular-nums" }}>{fmt(g.totalMonto)}</td>
+                    <td style={{ padding:"11px 14px", borderBottom:`1px solid var(--gray-150)`, textAlign:"right", fontVariantNumeric:"tabular-nums" }}>{fmt(g.totalPagado)}</td>
+                    <td style={{ padding:"11px 14px", borderBottom:`1px solid var(--gray-150)`, textAlign:"right", fontWeight:700, fontVariantNumeric:"tabular-nums", color: g.saldo < 0 ? "var(--danger-text)" : "var(--success-text)" }}>{fmt(Math.abs(g.saldo))}{g.saldo < 0 ? " ↑" : ""}</td>
+                    <td style={{ padding:"11px 14px", borderBottom:`1px solid var(--gray-150)` }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                        <div style={{ flex:1, height:6, background:"var(--gray-150)", borderRadius:99, overflow:"hidden", minWidth:60 }}>
+                          <div style={{ height:"100%", width:`${Math.min(g.pct,100)}%`, background: g.pct>100 ? "var(--danger-text)" : g.pct>=100 ? "var(--info-text)" : "var(--primary)", borderRadius:99, transition:"width .4s" }} />
+                        </div>
+                        <span style={{ fontSize:11, fontWeight:700, color:"var(--gray-600)", whiteSpace:"nowrap" }}>{Math.round(g.pct)}%</span>
+                      </div>
+                    </td>
+                    <td style={{ padding:"11px 14px", borderBottom:`1px solid var(--gray-150)` }}>
+                      <span className={`budget-badge budget-status ${g.status.cls}`}>{g.status.label}</span>
+                    </td>
+                    <td style={{ padding:"11px 14px", borderBottom:`1px solid var(--gray-150)`, textAlign:"right" }}>
+                      <button className="btn btn-secondary" style={{ padding:"4px 10px", minHeight:0, fontSize:12 }}
+                        onClick={e => { e.stopPropagation(); toggleGroup(g.key); }}>
+                        {expanded.has(g.key) ? "Ocultar" : "Ver"}
+                      </button>
+                    </td>
+                  </tr>
+
+                  {/* Nested rows */}
+                  {expanded.has(g.key) && g.items.map(b => {
+                    const p = pct(b.pagado, b.monto);
+                    const st = budgetStatus(p);
+                    const saldo = b.monto - b.pagado;
+                    return (
+                      <tr key={b.id}
+                        onMouseEnter={e => e.currentTarget.style.background="var(--primary-soft)"}
+                        onMouseLeave={e => e.currentTarget.style.background="transparent"}
+                        style={{ transition:"background .1s" }}
+                      >
+                        <td style={{ padding:"10px 14px 10px 48px", borderBottom:`1px solid var(--gray-100)` }}>
+                          <div style={{ fontWeight:500, color:"var(--gray-700)", fontSize:12 }}>{b.concepto}</div>
+                          <div style={{ fontSize:11, color:"var(--gray-500)", marginTop:2 }}>
+                            <span className="badge badge-project" style={{ fontSize:10, padding:"1px 6px" }}>{b.proyecto}</span>
+                            {b.notas && <span style={{ marginLeft:6 }}>{b.notas}</span>}
+                          </div>
+                        </td>
+                        <td style={{ padding:"10px 14px", borderBottom:`1px solid var(--gray-100)`, color:"var(--gray-500)", fontSize:12 }}>1</td>
+                        <td style={{ padding:"10px 14px", borderBottom:`1px solid var(--gray-100)`, textAlign:"right", fontVariantNumeric:"tabular-nums", fontSize:12 }}>{fmt(b.monto)}</td>
+                        <td style={{ padding:"10px 14px", borderBottom:`1px solid var(--gray-100)`, textAlign:"right", fontVariantNumeric:"tabular-nums", fontSize:12 }}>{fmt(b.pagado)}</td>
+                        <td style={{ padding:"10px 14px", borderBottom:`1px solid var(--gray-100)`, textAlign:"right", fontWeight:600, fontVariantNumeric:"tabular-nums", fontSize:12, color: saldo<0 ? "var(--danger-text)" : "var(--success-text)" }}>{fmt(Math.abs(saldo))}{saldo<0?" ↑":""}</td>
+                        <td style={{ padding:"10px 14px", borderBottom:`1px solid var(--gray-100)` }}>
+                          <span className={`budget-badge budget-progress ${st.cls}`}>{Math.round(p)}%</span>
+                        </td>
+                        <td style={{ padding:"10px 14px", borderBottom:`1px solid var(--gray-100)` }}>
+                          <span className={`budget-badge budget-status ${st.cls}`}>{st.label}</span>
+                        </td>
+                        <td style={{ padding:"10px 14px", borderBottom:`1px solid var(--gray-100)`, textAlign:"right" }}>
+                          <button className="btn btn-secondary" style={{ padding:"4px 10px", minHeight:0, fontSize:12 }}>Editar</button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+const SETTINGS_MENU = [
+  { cat: "Preferencias", items: [
+    { key: "project-visibility", label: "Mi visualización de proyectos" },
+  ]},
+  { cat: "Operación diaria", items: [
+    { key: "catalog", label: "Catálogo" },
+    { key: "global-search", label: "Búsqueda global" },
+  ]},
+  { cat: "Administración", items: [
+    { key: "users", label: "Usuarios y accesos" },
+    { key: "projects-vis", label: "Visibilidad de proyectos" },
+  ]},
+  { cat: "Importaciones SAP", items: [
+    { key: "import-sap", label: "Subir CSV" },
+    { key: "latest-imports", label: "Últimos imports" },
+  ]},
+  { cat: "Calidad y reglas", items: [
+    { key: "special-suppliers", label: "Proveedores de Trabajos Especiales" },
+    { key: "suspicious", label: "Resolución de sospechosos" },
+  ]},
+  { cat: "Edición avanzada", items: [
+    { key: "edit-transactions", label: "Editar movimientos" },
+    { key: "raw-data", label: "Raw data" },
+  ]},
+];
+
+const CATALOG_CATS = [
+  { id: "est", name: "Estructura", code: "EST" },
+  { id: "aca", name: "Acabados / Detalles", code: "ACA" },
+  { id: "fac", name: "Fachada", code: "FAC" },
+  { id: "ins", name: "Instalaciones", code: "INS" },
+  { id: "imp", name: "Impermeabilización", code: "IMP" },
+  { id: "car", name: "Carpintería", code: "CAR" },
+  { id: "tse", name: "Trabajos sin clasificar", code: "TSC" },
+];
+
+function SettingsSection() {
+  const [active, setActive] = useState("catalog");
+  const [catSearch, setCatSearch] = useState("");
+  const [editingCat, setEditingCat] = useState(null);
+  const [cats, setCats] = useState(CATALOG_CATS);
+  const [newCatName, setNewCatName] = useState("");
+  const [newCatCode, setNewCatCode] = useState("");
+
+  const activeLabel = SETTINGS_MENU.flatMap(g => g.items).find(i => i.key === active)?.label || "Ajustes";
+
+  const filteredCats = cats.filter(c =>
+    !catSearch || c.name.toLowerCase().includes(catSearch.toLowerCase()) || c.code.toLowerCase().includes(catSearch.toLowerCase())
+  );
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 14, alignItems: "start" }}>
+      {/* Sidebar */}
+      <div className="card" style={{ padding: "16px 12px", position: "sticky", top: 70 }}>
+        <div style={{ marginBottom: 16, paddingLeft: 4 }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--primary-dark)" }}>Ajustes</div>
+          <div style={{ fontSize: 11, color: "var(--gray-500)", marginTop: 2 }}>Selecciona una sección.</div>
+        </div>
+        {SETTINGS_MENU.map(group => (
+          <div key={group.cat} style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "var(--gray-500)", marginBottom: 6, paddingLeft: 8 }}>
+              {group.cat}
+            </div>
+            <div style={{ display: "grid", gap: 2 }}>
+              {group.items.map(item => (
+                <button key={item.key} onClick={() => setActive(item.key)}
+                  style={{
+                    width: "100%", textAlign: "left", padding: "8px 10px",
+                    borderRadius: "var(--radius-sm)", border: active === item.key ? "1px solid rgba(27,20,100,.16)" : "1px solid transparent",
+                    background: active === item.key ? "var(--primary-soft)" : "transparent",
+                    color: active === item.key ? "var(--primary)" : "var(--gray-700)",
+                    fontFamily: "inherit", fontSize: 13, fontWeight: active === item.key ? 600 : 500,
+                    cursor: "pointer", transition: "all .15s",
+                  }}
+                  onMouseEnter={e => { if (active !== item.key) { e.currentTarget.style.background = "var(--gray-50)"; e.currentTarget.style.color = "var(--primary)"; }}}
+                  onMouseLeave={e => { if (active !== item.key) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--gray-700)"; }}}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div style={{ display: "grid", gap: 12 }}>
+        <div className="card" style={{ padding: "12px 18px" }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--primary-dark)" }}>{activeLabel}</div>
+        </div>
+
+        {active === "catalog" && (
+          <div className="card" style={{ padding: "18px 20px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+              <div className="search-input-wrap" style={{ maxWidth: 320 }}>
+                <Icon n="search" size={15} color="var(--gray-400)" />
+                <input className="search-input" value={catSearch} onChange={e => setCatSearch(e.target.value)}
+                  placeholder="Buscar categoría…" />
+              </div>
+              <div style={{ flex: 1 }} />
+              <button className="btn" style={{ fontSize: 12 }}
+                onClick={() => { if (newCatName.trim() && newCatCode.trim()) {
+                  setCats(prev => [...prev, { id: Date.now()+"", name: newCatName.trim(), code: newCatCode.trim().toUpperCase() }]);
+                  setNewCatName(""); setNewCatCode("");
+                }}}>
+                + Nueva categoría
+              </button>
+            </div>
+
+            {/* New cat inline */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+              <input className="search-input" style={{ flex: 2, minWidth: 180, maxWidth: 320 }}
+                value={newCatName} onChange={e => setNewCatName(e.target.value)}
+                placeholder="Nombre de categoría…" />
+              <input className="search-input" style={{ flex: 1, minWidth: 80, maxWidth: 120 }}
+                value={newCatCode} onChange={e => setNewCatCode(e.target.value)}
+                placeholder="Código" />
+            </div>
+
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {["Código","Nombre",""].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", borderBottom: "2px solid var(--gray-150)", textAlign: "left", fontSize: 10, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--gray-400)" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredCats.map(cat => (
+                  <tr key={cat.id}
+                    style={{ transition: "background .1s" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "var(--gray-50)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                  >
+                    <td style={{ padding: "10px 12px", borderBottom: "1px solid var(--gray-100)", width: 100 }}>
+                      <span className="badge badge-sbo" style={{ fontFamily: "monospace" }}>{cat.code}</span>
+                    </td>
+                    <td style={{ padding: "10px 12px", borderBottom: "1px solid var(--gray-100)", color: "var(--gray-700)", fontWeight: 500 }}>
+                      {editingCat === cat.id
+                        ? <input className="search-input" defaultValue={cat.name} style={{ padding: "4px 8px", minHeight: 0, height: 30, fontSize: 13 }}
+                            onBlur={e => { setCats(prev => prev.map(c => c.id === cat.id ? { ...c, name: e.target.value } : c)); setEditingCat(null); }}
+                            autoFocus />
+                        : cat.name
+                      }
+                    </td>
+                    <td style={{ padding: "10px 12px", borderBottom: "1px solid var(--gray-100)", textAlign: "right" }}>
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        <button className="btn btn-secondary" style={{ padding: "4px 10px", minHeight: 0, fontSize: 12 }}
+                          onClick={() => setEditingCat(cat.id)}>Editar</button>
+                        <button className="btn" style={{ padding: "4px 10px", minHeight: 0, fontSize: 12, background: "var(--danger-bg)", color: "var(--danger-text)", boxShadow: "none" }}
+                          onClick={() => setCats(prev => prev.filter(c => c.id !== cat.id))}>Eliminar</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {active === "users" && (
+          <div className="card" style={{ padding: "18px 20px" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {["Usuario","Nombre","Rol","Proyectos",""].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", borderBottom: "2px solid var(--gray-150)", textAlign: "left", fontSize: 10, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--gray-400)" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { user: "admin@mdi.com", name: "Administrador", role: "SUPERADMIN", projects: "Todos" },
+                  { user: "jose@mdi.com", name: "José Martínez", role: "ADMIN", projects: "COSTAVENTURA" },
+                  { user: "luisa@mdi.com", name: "Luisa Pérez", role: "VIEWER", projects: "MDI TORRE, PARQUE NORTE" },
+                ].map((u, i) => (
+                  <tr key={i}
+                    onMouseEnter={e => e.currentTarget.style.background = "var(--gray-50)"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                    style={{ transition: "background .1s" }}
+                  >
+                    <td style={{ padding: "10px 12px", borderBottom: "1px solid var(--gray-100)", color: "var(--gray-600)", fontSize: 12 }}>{u.user}</td>
+                    <td style={{ padding: "10px 12px", borderBottom: "1px solid var(--gray-100)", fontWeight: 500 }}>{u.name}</td>
+                    <td style={{ padding: "10px 12px", borderBottom: "1px solid var(--gray-100)" }}>
+                      <span className="badge" style={{
+                        background: u.role==="SUPERADMIN" ? "var(--primary-soft)" : u.role==="ADMIN" ? "var(--info-bg)" : "var(--gray-100)",
+                        color: u.role==="SUPERADMIN" ? "var(--primary)" : u.role==="ADMIN" ? "var(--info-text)" : "var(--gray-600)",
+                      }}>{u.role}</span>
+                    </td>
+                    <td style={{ padding: "10px 12px", borderBottom: "1px solid var(--gray-100)", color: "var(--gray-600)", fontSize: 12 }}>{u.projects}</td>
+                    <td style={{ padding: "10px 12px", borderBottom: "1px solid var(--gray-100)", textAlign: "right" }}>
+                      <button className="btn btn-secondary" style={{ padding: "4px 10px", minHeight: 0, fontSize: 12 }}>Editar</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ marginTop: 14 }}>
+              <button className="btn" style={{ fontSize: 12 }}>+ Nuevo usuario</button>
+            </div>
+          </div>
+        )}
+
+        {!["catalog","users"].includes(active) && (
+          <div className="card" style={{ padding: "40px 20px", textAlign: "center" }}>
+            <div style={{ width: 48, height: 48, borderRadius: "var(--radius-md)", background: "var(--primary-soft)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 12px" }}>
+              <Icon n="settings" size={22} color="var(--primary)" />
+            </div>
+            <div style={{ fontWeight: 700, color: "var(--primary-dark)", fontSize: 15, marginBottom: 6 }}>{activeLabel}</div>
+            <div style={{ color: "var(--gray-500)", fontSize: 13 }}>Esta sección está disponible en la aplicación real.</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+const TWEAKS_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "darkMode": false,
+  "compact": false,
+  "activeTab": "Presupuestos",
+  "proyecto": "ALL",
+  "m2": 2500
+}/*EDITMODE-END*/;
+
+function App() {
+  const [tw, setTwState] = useState(TWEAKS_DEFAULTS);
+  const setTw = (k, v) => {
+    const next = typeof k === "object" ? { ...tw, ...k } : { ...tw, [k]: v };
+    setTwState(next);
+    window.parent.postMessage({ type: "__edit_mode_set_keys", edits: next }, "*");
+  };
+  const [tweaksOpen, setTweaksOpen] = useState(false);
+
+  useEffect(() => {
+    document.body.classList.toggle("theme-dark", tw.darkMode);
+    document.body.classList.toggle("variant-compact", tw.compact);
+  }, [tw.darkMode, tw.compact]);
+
+  useEffect(() => {
+    const h = e => {
+      if (e.data?.type === "__activate_edit_mode") setTweaksOpen(true);
+      if (e.data?.type === "__deactivate_edit_mode") setTweaksOpen(false);
+    };
+    window.addEventListener("message", h);
+    window.parent.postMessage({ type: "__edit_mode_available" }, "*");
+    return () => window.removeEventListener("message", h);
+  }, []);
+
+  const TABS = [
+    { id: "Dashboard", icon: "dashboard" },
+    { id: "Buscar", icon: "list" },
+    { id: "Presupuestos", icon: "budget" },
+    { id: "Ajustes", icon: "settings" },
+  ];
+
+  const renderContent = () => {
+    switch (tw.activeTab) {
+      case "Buscar":
+        return <SearchV2 proyecto={tw.proyecto} />;
+      case "Dashboard":
+        return <DashboardSection proyecto={tw.proyecto} m2={tw.m2} />;
+      case "Presupuestos":
+        return <BudgetsModule proyecto={tw.proyecto} />;
+      case "Ajustes":
+        return <SettingsSection />;
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <>
+      <nav className="nav">
+        {/* Brand */}
+        <div className="nav-header">
+          <div className="nav-logo-box">
+            <Icon n="building" size={18} color="#fff" />
+          </div>
+          <div>
+            <div className="nav-title">Control de Gastos MDI</div>
+            <div className="nav-subtitle">Grupo MDI</div>
+          </div>
+        </div>
+
+        <div className="nav-divider" />
+
+        {/* Project selector */}
+        <select className="nav-select" value={tw.proyecto} onChange={e => setTw("proyecto", e.target.value)}>
+          <option value="ALL">Todos los proyectos</option>
+          {PROYECTOS.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+
+        {/* User area */}
+        <div className="nav-user-area">
+          <button className="btn btn-ghost" style={{ padding: "5px 10px" }} onClick={() => setTw("darkMode", !tw.darkMode)}>
+            <Icon n={tw.darkMode ? "sun" : "moon"} size={15} />
+          </button>
+          <div className="nav-avatar">AD</div>
+          <div>
+            <div className="nav-user-name">Administrador</div>
+            <div className="nav-user-role">Superadmin</div>
+          </div>
+          <div className="nav-divider" />
+          <button className="btn btn-ghost" style={{ padding: "5px 10px", gap: 5 }}>
+            <Icon n="logout" size={14} />
+            <span style={{ fontSize: 12 }}>Salir</span>
+          </button>
+        </div>
+
+        {/* Pill tabs — second row */}
+        <div className="nav-tabs-row">
+          <div className="nav-tabs-pill">
+            {TABS.map(t => (
+              <button key={t.id}
+                className={`nav-tab-btn${tw.activeTab === t.id ? " active" : ""}`}
+                onClick={() => setTw("activeTab", t.id)}>
+                <Icon n={t.icon} size={15} />
+                {t.id}
+              </button>
+            ))}
+          </div>
+        </div>
+      </nav>
+
+      <main className="page">
+        {renderContent()}
+      </main>
+
+      {/* Tweaks panel */}
+      {tweaksOpen && (
+        <TweaksPanel onClose={() => {
+          setTweaksOpen(false);
+          window.parent.postMessage({ type: "__edit_mode_dismissed" }, "*");
+        }}>
+          <TweakSection label="Apariencia">
+            <TweakToggle id="darkMode" label="Modo oscuro" value={tw.darkMode} onChange={v => setTw("darkMode", v)} />
+            <TweakToggle id="compact" label="Vista compacta" value={tw.compact} onChange={v => setTw("compact", v)} />
+          </TweakSection>
+          <TweakSection label="Proyecto activo">
+            <TweakSelect id="proyecto" label="Proyecto" value={tw.proyecto}
+              options={[{ label: "Todos", value: "ALL" }, ...PROYECTOS.map(p => ({ label: p, value: p }))]}
+              onChange={v => setTw("proyecto", v)} />
+          <TweakNumber id="m2" label="Superficie (m²)" value={tw.m2} onChange={v => setTw("m2", v)} />
+          </TweakSection>
+          <TweakSection label="Pantalla">
+            <TweakRadio id="activeTab" label="Tab activo" value={tw.activeTab}
+              options={[
+                { label: "Dashboard", value: "Dashboard" },
+                { label: "Buscar", value: "Buscar" },
+              ]}
+              onChange={v => setTw("activeTab", v)} />
+            <TweakRadio id="activeTab2" label="" value={tw.activeTab}
+              options={[
+                { label: "Presupuestos", value: "Presupuestos" },
+                { label: "Ajustes", value: "Ajustes" },
+              ]}
+              onChange={v => setTw("activeTab", v)} />
+          </TweakSection>
+        </TweaksPanel>
+      )}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

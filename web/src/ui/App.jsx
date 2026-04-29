@@ -4,6 +4,7 @@ import { ImportSapScreen } from './ImportAndAdminScreens.jsx';
 import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
+const PROJECT_M2_STORAGE_KEY = 'mdi-project-m2';
 
 const moneyFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
@@ -15,10 +16,68 @@ function formatMoney(value) {
   if (!Number.isFinite(amount)) return '0.00';
   return moneyFormatter.format(Math.abs(amount));
 }
+function formatCurrency(value) {
+  return `$${formatMoney(value)}`;
+}
 
 function parseMoneyInput(value) {
   if (typeof value !== 'string') return Number(value);
   return Number(value.replace(/,/g, '').trim());
+}
+
+function getInitials(value) {
+  const words = String(value || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return 'MD';
+  return words
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() || '')
+    .join('');
+}
+
+function getProjectMetricValue(project) {
+  const explicitValue = Number(project?.metadata?.m2 ?? project?.m2 ?? project?.surfaceM2);
+  if (Number.isFinite(explicitValue) && explicitValue > 0) return explicitValue;
+
+  const projectId = String(project?._id || project?.id || '').trim();
+  if (!projectId) return 2500;
+
+  const storedValue = Number(localStorage.getItem(`${PROJECT_M2_STORAGE_KEY}:${projectId}`));
+  if (Number.isFinite(storedValue) && storedValue > 0) return storedValue;
+
+  return 2500;
+}
+
+function getTransactionSubtotal(transaction) {
+  const subtotalAmount = Number(transaction?.tax?.subtotal);
+  if (Number.isFinite(subtotalAmount)) return subtotalAmount;
+
+  const invoiceTotal = Number(transaction?.tax?.totalFactura);
+  const ivaAmount = Number(transaction?.tax?.iva ?? transaction?.iva);
+  if (Number.isFinite(invoiceTotal) && Number.isFinite(ivaAmount)) return invoiceTotal - ivaAmount;
+
+  const rawAmount = Number(transaction?.amount);
+  if (Number.isFinite(rawAmount) && Number.isFinite(ivaAmount)) return rawAmount - ivaAmount;
+  if (Number.isFinite(rawAmount)) return rawAmount;
+
+  return 0;
+}
+
+function getTransactionIva(transaction) {
+  const ivaAmount = Number(transaction?.tax?.iva ?? transaction?.iva);
+  return Number.isFinite(ivaAmount) ? ivaAmount : 0;
+}
+
+function getTransactionInvoiceTotal(transaction) {
+  const invoiceTotal = Number(transaction?.tax?.totalFactura);
+  if (Number.isFinite(invoiceTotal)) return invoiceTotal;
+
+  const rawAmount = Number(transaction?.amount);
+  if (Number.isFinite(rawAmount)) return rawAmount;
+
+  return getTransactionSubtotal(transaction) + getTransactionIva(transaction);
 }
 
 function getCategoryHintName(transaction) {
@@ -74,7 +133,7 @@ function getTransactionCategoryLabel(transaction, catMap) {
   const hintName = getCategoryHintName(transaction);
   if (hintName) return hintName;
 
-  return 'Sin categoría';
+  return 'Sin categorÃ­a';
 }
 
 function normalizeSlug(value) {
@@ -122,30 +181,23 @@ function Nav({
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
-  const linkStyle = (active) => ({
-    background: 'transparent',
-    border: 'none',
-    padding: 0,
-    cursor: 'pointer',
-    textAlign: 'left',
-    font: 'inherit',
-    color: 'inherit',
-    opacity: active ? 1 : 0.85,
-    fontWeight: active ? 800 : 600,
-  });
+  const userLabel = displayName || username || 'Usuario';
 
   return (
-    <div className="nav">
+    <div className="nav app-shell-nav">
       <div className="nav-header">
-        <img src="/logo-grupo-mdi.svg" alt="Logo Grupo MDI" className="nav-logo" />
+        <div className="nav-logo-box" aria-hidden="true">
+          <span>MDI</span>
+        </div>
         <div className="nav-title-wrap">
-          <div className="nav-title">Grupo MDI</div>
-          <div className="nav-subtitle">Control de Gastos de Obra</div>
+          <div className="nav-title">Control de Gastos MDI</div>
+          <div className="nav-subtitle">Grupo MDI</div>
         </div>
       </div>
 
-      <div className="nav-items">
-        <div className="small" style={{ marginBottom: 6 }}>Proyecto</div>
+      <div className="nav-divider" />
+
+      <div className="nav-project-select">
         <select value={selectedProjectId} onChange={(e) => onProjectChange(e.target.value)} disabled={!projects.length}>
           {!projects.length && <option value="">Sin proyectos</option>}
           {projects.map((project) => (
@@ -154,32 +206,40 @@ function Nav({
             </option>
           ))}
         </select>
-
-        {items
-          .filter(([, , show]) => show)
-          .map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              className={tab === k ? 'active' : ''}
-              onClick={() => setTab(k)}
-              style={linkStyle(tab === k)}
-            >
-              {label}
-            </button>
-          ))}
       </div>
 
-      <div className="nav-user-actions">
-        <button className="secondary theme-toggle" type="button" onClick={onToggleTheme}>
-          {isDarkMode ? '☀️ Modo día' : '🌙 Modo noche'}
+      <div className="nav-tabs-row">
+        <div className="nav-tabs-pill">
+          {items
+            .filter(([, , show]) => show)
+            .map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                className={`nav-tab-btn${tab === k ? ' active' : ''}`}
+                onClick={() => setTab(k)}
+              >
+                {label}
+              </button>
+            ))}
+        </div>
+      </div>
+
+      <div className="nav-user-area">
+        <button className="ghost-button theme-toggle" type="button" onClick={onToggleTheme} aria-label="Cambiar tema">
+          {isDarkMode ? 'Sol' : 'Luna'}
         </button>
 
-        <div className="small nav-user">
-          {displayName || username} ({role})
+        <div className="nav-avatar">{getInitials(userLabel)}</div>
+
+        <div className="nav-user-copy">
+          <div className="nav-user-name">{userLabel}</div>
+          <div className="nav-user-role">{role}</div>
         </div>
 
-        <button className="secondary" type="button" onClick={onLogout}>
+        <div className="nav-divider" />
+
+        <button className="ghost-button" type="button" onClick={onLogout}>
           Salir
         </button>
       </div>
@@ -217,14 +277,14 @@ function Login({ onLogin }) {
           <h1>Grupo MDI</h1>
           <p>control de obra</p>
         </div>
-        <h2 style={{ marginTop: 0 }}>Iniciar sesión</h2>
+        <h2 style={{ marginTop: 0 }}>Iniciar sesiÃ³n</h2>
         <form onSubmit={submit} className="grid">
           <div>
             <label>Usuario</label>
             <input value={username} onChange={(e) => setUsername(e.target.value)} />
           </div>
           <div>
-            <label>Contraseña</label>
+            <label>ContraseÃ±a</label>
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
           {err && <div style={{ color: '#334155' }}>{err}</div>}
@@ -253,6 +313,10 @@ export default function App() {
 
   const isAdmin = session.role === 'ADMIN';
   const isDarkMode = themePreference === 'dark';
+  const selectedProject = useMemo(
+    () => projects.find((project) => String(project?._id || '') === String(selectedProjectId || '')) || null,
+    [projects, selectedProjectId]
+  );
 
   useEffect(() => {
     document.body.classList.toggle('theme-dark', isDarkMode);
@@ -363,11 +427,16 @@ export default function App() {
         onProjectChange={handleProjectChange}
       />
 
-      <div className="container grid" style={{ gap: 14 }}>
+      <div className="container app-shell grid" style={{ gap: 14 }}>
         {toast && <div className="card">{toast}</div>}
 
         {tab === 'dashboard' && (
-          <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} refreshKey={dataVersion} />
+          <Dashboard
+            isAdmin={isAdmin}
+            selectedProjectId={selectedProjectId}
+            selectedProject={selectedProject}
+            refreshKey={dataVersion}
+          />
         )}
 
         {tab === 'transactions' && (
@@ -400,7 +469,7 @@ export default function App() {
             onProjectCreated={loadProjects}
             onCatalogChanged={async () => {
               await refreshCatalog();
-              setToast('Catálogo actualizado');
+              setToast('CatÃ¡logo actualizado');
             }}
           />
         )}
@@ -416,7 +485,7 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
     <div className="grid" style={{ gap: 14 }}>
       <div className="card" style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <button type="button" className={section === 'catalog' ? '' : 'secondary'} onClick={() => setSection('catalog')}>
-          Catálogo
+          CatÃ¡logo
         </button>
         <button
           type="button"
@@ -443,7 +512,7 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
           disabled={!isAdmin}
           title={!isAdmin ? 'Solo disponible para administradores' : undefined}
         >
-          Proveedor → Categoría 2
+          Proveedor â†’ CategorÃ­a 2
         </button>
         {isAdmin && (
           <button
@@ -494,7 +563,7 @@ function Settings({ isAdmin, cats, vendors, projects, selectedProjectId, onCatal
         (isAdmin ? (
           <SupplierCategory2Assignment cats={cats} selectedProjectId={selectedProjectId} />
         ) : (
-          <div className="card">Solo los administradores pueden asignar categoría por proveedor.</div>
+          <div className="card">Solo los administradores pueden asignar categorÃ­a por proveedor.</div>
         ))}
 
       {section === 'projects' && isAdmin && <AdminProjectCreateSection onProjectCreated={onProjectCreated} />}
@@ -534,7 +603,7 @@ function SapLatestImportSection({ projects, selectedProjectId }) {
 
     const sourceLabel = selectedSources.length ? selectedSources.join(', ') : 'TODAS';
     const accepted = window.confirm(
-      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nFuentes: ${sourceLabel}.\n\n¿Deseas continuar?`
+      `Vas a ejecutar SAP Import para el proyecto: \"${destinationProjectName}\".\nFuentes: ${sourceLabel}.\n\nÂ¿Deseas continuar?`
     );
     if (!accepted) return;
 
@@ -666,7 +735,7 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
     setError('');
     setSuccess('');
     if (!selectedProjectId) return setError('Selecciona un proyecto para continuar.');
-    if (!supplierId || !categoryCode) return setError('Selecciona proveedor y categoría 2.');
+    if (!supplierId || !categoryCode) return setError('Selecciona proveedor y categorÃ­a 2.');
 
     setSaving(true);
     try {
@@ -678,7 +747,7 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
       );
       setSuccess(`Regla guardada. Movimientos actualizados: ${result?.applyToExistingModified ?? 0}.`);
     } catch (e) {
-      setError(e.message || 'No se pudo aplicar la categoría.');
+      setError(e.message || 'No se pudo aplicar la categorÃ­a.');
     } finally {
       setSaving(false);
     }
@@ -686,9 +755,9 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
 
   return (
     <div className="card">
-      <h3 style={{ marginTop: 0 }}>Asignar categoría 2 manual por proveedor</h3>
+      <h3 style={{ marginTop: 0 }}>Asignar categorÃ­a 2 manual por proveedor</h3>
       <div className="small" style={{ marginBottom: 10 }}>
-        Esta acción aplica la categoría 2 seleccionada a todos los egresos del proveedor en el proyecto activo.
+        Esta acciÃ³n aplica la categorÃ­a 2 seleccionada a todos los egresos del proveedor en el proyecto activo.
       </div>
       <form className="grid" onSubmit={onApply}>
         <div>
@@ -703,9 +772,9 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
           </select>
         </div>
         <div>
-          <label>Categoría 2</label>
+          <label>CategorÃ­a 2</label>
           <select value={categoryCode} onChange={(e) => setCategoryCode(e.target.value)} disabled={!cats.length}>
-            <option value="">Selecciona una categoría</option>
+            <option value="">Selecciona una categorÃ­a</option>
             {cats.map((category) => (
               <option key={category.id || category.code} value={category.code || category.id}>
                 {category.name}
@@ -724,7 +793,7 @@ function SupplierCategory2Assignment({ cats, selectedProjectId }) {
         {error && <div>{error}</div>}
         {success && <div>{success}</div>}
         <button type="submit" disabled={saving || loading || !suppliers.length || !cats.length}>
-          {saving ? 'Guardando...' : 'Guardar regla de categoría 2'}
+          {saving ? 'Guardando...' : 'Guardar regla de categorÃ­a 2'}
         </button>
       </form>
     </div>
@@ -916,7 +985,7 @@ function RawDataAdmin() {
         if (!active) return;
         setFields([]);
         setRows([]);
-        setError(e.message || 'No se pudo cargar la colección.');
+        setError(e.message || 'No se pudo cargar la colecciÃ³n.');
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -939,7 +1008,7 @@ function RawDataAdmin() {
     try {
       parsed = JSON.parse(nextRaw);
     } catch {
-      window.alert('Valor inválido. Debe ser JSON válido, por ejemplo: "texto", 123, true, null o {"a":1}.');
+      window.alert('Valor invÃ¡lido. Debe ser JSON vÃ¡lido, por ejemplo: "texto", 123, true, null o {"a":1}.');
       return;
     }
 
@@ -959,7 +1028,7 @@ function RawDataAdmin() {
     <div className="card" style={{ overflowX: 'auto' }}>
       <h3 style={{ marginTop: 0 }}>Raw data (solo admin)</h3>
       <div className="row" style={{ alignItems: 'center', gap: 8, marginBottom: 12 }}>
-        <label htmlFor="raw-data-collection">Colección:</label>
+        <label htmlFor="raw-data-collection">ColecciÃ³n:</label>
         <select id="raw-data-collection" value={collection} onChange={(e) => setCollection(e.target.value)}>
           {collections.map((name) => (
             <option key={name} value={name}>
@@ -996,11 +1065,11 @@ function RawDataAdmin() {
                 ))}
                 <td>
                   {savingRow === row.id ? (
-                    <span className="small">Guardando…</span>
+                    <span className="small">Guardandoâ€¦</span>
                   ) : (
                     <select defaultValue="" onChange={(e) => e.target.value && editCell(row.id, e.target.value)}>
                       <option value="" disabled>
-                        Editar campo…
+                        Editar campoâ€¦
                       </option>
                       {fields
                         .filter((field) => field !== 'id')
@@ -1104,8 +1173,8 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
     viewMode === 'supplier'
       ? 'Totales agrupados por proveedor (SAP).'
       : viewMode === 'experimental'
-        ? 'Vista visual experimental de categorías.'
-        : 'Porcentaje = gasto de la categoría / total de egresos';
+        ? 'Vista visual experimental de categorÃ­as.'
+        : 'Porcentaje = gasto de la categorÃ­a / total de egresos';
 
   const renderCategorySummaryHeader = () => (
     <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -1124,13 +1193,13 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
             }
           }}
         >
-          Seed categorías
+          Seed categorÃ­as
         </button>
       )}
     </div>
   );
 
-  let dashboardContent = <div style={{ padding: '12px 0' }}>No hay egresos aún. Registra uno para ver el dashboard.</div>;
+  let dashboardContent = <div style={{ padding: '12px 0' }}>No hay egresos aÃºn. Registra uno para ver el dashboard.</div>;
 
   if (loading) {
     dashboardContent = <div style={{ padding: '12px 0' }}>Cargando...</div>;
@@ -1174,39 +1243,39 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
         <div style={{ marginTop: 12 }} className="dashboard-experimental">
           <div className="dashboard-kpi-grid">
             <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">💰</div>
+              <div className="dashboard-kpi-icon">ðŸ’°</div>
               <strong>${formatMoney(stats.total_expenses || 0)}</strong>
               <span>Total egresos {showCategoryIva ? 'con IVA' : 'sin IVA'}</span>
             </div>
             <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">📊</div>
+              <div className="dashboard-kpi-icon">ðŸ“Š</div>
               <strong>{categoryRows.length}</strong>
-              <span>Categorías con movimiento</span>
+              <span>CategorÃ­as con movimiento</span>
             </div>
             <div className="dashboard-kpi-card">
-              <div className="dashboard-kpi-icon">🏷️</div>
+              <div className="dashboard-kpi-icon">ðŸ·ï¸</div>
               <strong>{biggestCategory?.category_name || 'Sin datos'}</strong>
-              <span>Mayor categoría (${formatMoney(biggestCategory?.amount || 0)})</span>
+              <span>Mayor categorÃ­a (${formatMoney(biggestCategory?.amount || 0)})</span>
             </div>
           </div>
 
           <div className="dashboard-experimental-grid">
             <section className="dashboard-panel">
-              <h3>Comportamiento por categoría</h3>
+              <h3>Comportamiento por categorÃ­a</h3>
               <svg
                 viewBox="0 0 100 100"
                 preserveAspectRatio="none"
                 className="dashboard-line-chart"
                 role="img"
-                aria-label="Tendencia de categorías por monto"
+                aria-label="Tendencia de categorÃ­as por monto"
               >
                 <polyline fill="none" stroke="#1f4d96" strokeWidth="2.5" points={chartPoints} />
               </svg>
-              <div className="small">Visual experimental para comparar magnitudes entre categorías.</div>
+              <div className="small">Visual experimental para comparar magnitudes entre categorÃ­as.</div>
             </section>
 
             <section className="dashboard-panel dashboard-gauge-panel">
-              <h3>Distribución top categorías</h3>
+              <h3>DistribuciÃ³n top categorÃ­as</h3>
               <div
                 className="dashboard-gauge"
                 style={{
@@ -1215,11 +1284,11 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
               >
                 <span>{allocatedPercent.toFixed(1)}%</span>
               </div>
-              <div className="small">Participación acumulada de las 6 categorías principales.</div>
+              <div className="small">ParticipaciÃ³n acumulada de las 6 categorÃ­as principales.</div>
             </section>
 
             <section className="dashboard-panel">
-              <h3>Avance por categoría</h3>
+              <h3>Avance por categorÃ­a</h3>
               <div className="grid">
                 {topCategories.map((r) => {
                   const percent = Number(r.percent) || 0;
@@ -1299,7 +1368,7 @@ function Dashboard({ isAdmin, selectedProjectId, refreshKey }) {
           Vista experimental
         </button>
         <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>
-          Por categoría
+          Por categorÃ­a
         </button>
         <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>
           Por proveedor
@@ -1360,13 +1429,13 @@ function TxnForm({ kind, cats, vendors, onDone }) {
     e.preventDefault();
     setErr('');
     const a = parseMoneyInput(amount);
-    if (!a || a <= 0) return setErr('Monto inválido');
+    if (!a || a <= 0) return setErr('Monto invÃ¡lido');
 
-    if (kind === 'EXPENSE' && (!categoryId || !vendorId)) return setErr('Selecciona categoría y proveedor');
+    if (kind === 'EXPENSE' && (!categoryId || !vendorId)) return setErr('Selecciona categorÃ­a y proveedor');
 
     const creatingNewVendor = kind === 'EXPENSE' && vendorId === ADD_NEW_VENDOR_VALUE;
     if (creatingNewVendor && newVendorName.trim().length < 2) {
-      return setErr('Escribe un nombre de proveedor válido');
+      return setErr('Escribe un nombre de proveedor vÃ¡lido');
     }
 
     setSaving(true);
@@ -1412,7 +1481,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
         {kind === 'EXPENSE' && (
           <>
             <div>
-              <label>Categoría</label>
+              <label>CategorÃ­a</label>
               <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
                 {cats.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -1444,7 +1513,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
         )}
 
         <div>
-          <label>Descripción</label>
+          <label>DescripciÃ³n</label>
           <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Opcional" />
         </div>
         <div>
@@ -1467,7 +1536,7 @@ function TxnForm({ kind, cats, vendors, onDone }) {
       </form>
 
       <div className="small" style={{ marginTop: 10 }}>
-        Nota: si no ves categorías/proveedores, ve a “Catálogo” o presiona “Seed categorías” en Dashboard.
+        Nota: si no ves categorÃ­as/proveedores, ve a â€œCatÃ¡logoâ€ o presiona â€œSeed categorÃ­asâ€ en Dashboard.
       </div>
     </div>
   );
@@ -1607,7 +1676,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   const shown = rows
     .filter((row) => {
       if (categoryFilter === 'ALL') return true;
-      if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categoría';
+      if (categoryFilter === UNCATEGORIZED_FILTER) return getTransactionCategoryLabel(row, catMap) === 'Sin categorÃ­a';
       return (row.categoryEffectiveCode || row.categoryEffectiveName || row.category_id || row.categoryId) === categoryFilter;
     })
     .filter((row) => {
@@ -1674,7 +1743,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
   async function createCategoryFromEdit() {
     const cleanName = newCategoryName.trim();
     if (cleanName.length < 2) {
-      setEditErr('Escribe un nombre de categoría válido.');
+      setEditErr('Escribe un nombre de categorÃ­a vÃ¡lido.');
       return;
     }
 
@@ -1687,14 +1756,14 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
       setEditing((prev) => (prev ? { ...prev, categoryManualCode: created.code || created.id, categoryManualName: created.name } : prev));
       setNewCategoryName('');
     } catch (e) {
-      setEditErr(e.message || 'No se pudo crear la categoría.');
+      setEditErr(e.message || 'No se pudo crear la categorÃ­a.');
     } finally {
       setSavingCategory(false);
     }
   }
 
   async function remove(id) {
-    if (confirm('¿Eliminar movimiento?')) {
+    if (confirm('Â¿Eliminar movimiento?')) {
       await api.deleteTransaction(id);
       load(page);
     }
@@ -1787,8 +1856,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             <option value="EXPENSE">Egresos</option>
           </select>
           <select value={categoryFilter} onChange={(e) => { setPage(1); setCategoryFilter(e.target.value); }}>
-            <option value="ALL">Todas las categorías 2</option>
-            <option value={UNCATEGORIZED_FILTER}>Sin categoría 2</option>
+            <option value="ALL">Todas las categorÃ­as 2</option>
+            <option value={UNCATEGORIZED_FILTER}>Sin categorÃ­a 2</option>
             {cats.map((c) => (
               <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
             ))}
@@ -1815,22 +1884,22 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             Solo IVA
           </button>
           <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
-            <option value="date_desc">Fecha (más reciente)</option>
-            <option value="created_desc">Fecha de añadido (más reciente)</option>
+            <option value="date_desc">Fecha (mÃ¡s reciente)</option>
+            <option value="created_desc">Fecha de aÃ±adido (mÃ¡s reciente)</option>
             <option value="supplier_asc">Proveedor (A-Z)</option>
           </select>
           <button className="secondary" onClick={() => load(page)}>Refrescar</button>
         </div>
       </div>
 
-      <div className="small" style={{ marginTop: 8 }}>Mostrando {rangeStart}–{rangeEnd} de {totalCount}</div>
+      <div className="small" style={{ marginTop: 8 }}>Mostrando {rangeStart}â€“{rangeEnd} de {totalCount}</div>
 
       {isAdmin && (
         <div className="row" style={{ marginTop: 10, justifyContent: 'space-between' }}>
           <div className="small">Seleccionados: {selectedRows.length}</div>
           <div className="row">
             <select value={bulkCategoryId} onChange={(e) => setBulkCategoryId(e.target.value)}>
-              <option value="">Sin categoría</option>
+              <option value="">Sin categorÃ­a</option>
               {cats.map((c) => (
                 <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
               ))}
@@ -1841,7 +1910,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
               onClick={applyBulkCategory}
               disabled={!selectedRows.length || bulkSaving}
             >
-              {bulkSaving ? 'Aplicando...' : 'Cambiar categoría (selección múltiple)'}
+              {bulkSaving ? 'Aplicando...' : 'Cambiar categorÃ­a (selecciÃ³n mÃºltiple)'}
             </button>
           </div>
         </div>
@@ -1866,9 +1935,9 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <th>Tipo</th>
                 <th>Origen</th>
                 <th>Base</th>
-                <th>Descripción</th>
-                <th>Categoría 2</th>
-                <th>Categoría SAP</th>
+                <th>DescripciÃ³n</th>
+                <th>CategorÃ­a 2</th>
+                <th>CategorÃ­a SAP</th>
                 <th>Proveedor</th>
                 <th>Monto</th>
                 <th>IVA</th>
@@ -1883,7 +1952,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                   <td colSpan={isAdmin ? 13 : 11} style={{ textAlign: 'right' }}>
                     <label className="row" style={{ justifyContent: 'flex-end' }}>
                       <input type="checkbox" checked={allShownSelected} onChange={toggleSelectAllShown} />
-                      Seleccionar todos (página actual)
+                      Seleccionar todos (pÃ¡gina actual)
                     </label>
                   </td>
                 </tr>
@@ -1901,8 +1970,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                     {getTransactionCategoryLabel(r, catMap)}
                     {r.categoryManualName && <span className="badge" style={{ marginLeft: 6 }}>Manual</span>}
                   </td>
-                  <td>{getSapCategoryLabel(r) || '—'}</td>
-                  <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
+                  <td>{getSapCategoryLabel(r) || 'â€”'}</td>
+                  <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || 'â€”'}</td>
                   <td style={{ fontWeight: 800 }}>${formatMoney(r.subtotal ?? r.amount)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.iva ?? 0)}</td>
                   <td style={{ fontWeight: 700 }}>${formatMoney(r.tax?.totalFactura ?? 0)}</td>
@@ -1948,8 +2017,8 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <td style={{ fontWeight: 800 }}>
                   ${formatMoney(backendTotals.incomeGross)} / ${formatMoney(backendTotals.expensesGross)}
                 </td>
-                <td style={{ fontWeight: 700 }}>—</td>
-                <td style={{ fontWeight: 700 }}>—</td>
+                <td style={{ fontWeight: 700 }}>â€”</td>
+                <td style={{ fontWeight: 700 }}>â€”</td>
                 {isAdmin && <td style={{ fontWeight: 700 }}>Neto: ${formatMoney(backendTotals.net)}</td>}
                 {isAdmin && <td />}
               </tr>
@@ -1967,7 +2036,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
 
       {editing && (
         <EditModal
-          title={isSapIvaTransaction(editing) ? 'Editar categoría IVA' : 'Editar movimiento'}
+          title={isSapIvaTransaction(editing) ? 'Editar categorÃ­a IVA' : 'Editar movimiento'}
           onClose={() => setEditing(null)}
           onSave={saveEdit}
         >
@@ -1978,16 +2047,16 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 <input value={editing.date || ''} onChange={(e) => setEditing({ ...editing, date: e.target.value })} />
                 <label>Monto</label>
                 <input value={editing.amount || ''} onChange={(e) => setEditing({ ...editing, amount: e.target.value })} />
-                <label>Descripción</label>
+                <label>DescripciÃ³n</label>
                 <input value={editing.description || ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
               </>
             )}
-            <label>Categoría</label>
+            <label>CategorÃ­a</label>
             <select value={editing.categoryManualCode || editing.categoryEffectiveCode || ''} onChange={(e) => {
               const selected = cats.find((c) => (c.code || c.id) === e.target.value);
               setEditing({ ...editing, categoryManualCode: e.target.value || null, categoryManualName: selected?.name || null });
             }}>
-              <option value="">Sin categoría</option>
+              <option value="">Sin categorÃ­a</option>
               {cats.map((c) => (
                 <option key={c.id} value={c.code || c.id}>{c.displayLabel || c.name}</option>
               ))}
@@ -1999,7 +2068,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
             >
               Revertir a SAP
             </button>
-            <label>Crear categoría nueva</label>
+            <label>Crear categorÃ­a nueva</label>
             <div className="row">
               <input
                 placeholder="Ej. Herramientas"
@@ -2007,7 +2076,7 @@ function Transactions({ isAdmin, cats, vendors, onCatalogChanged, onTransactions
                 onChange={(e) => setNewCategoryName(e.target.value)}
               />
               <button type="button" className="secondary" onClick={createCategoryFromEdit} disabled={savingCategory}>
-                {savingCategory ? 'Creando...' : 'Crear nueva categoría'}
+                {savingCategory ? 'Creando...' : 'Crear nueva categorÃ­a'}
               </button>
             </div>
             {editErr && <div style={{ color: '#b91c1c' }}>{editErr}</div>}
@@ -2086,9 +2155,9 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
 
       const printableRows = rows
         .map((r) => {
-          const provider = r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—';
-          const concept = r.description || r.concept || '—';
-          const category = getTransactionCategoryLabel(r, catMap) || '—';
+          const provider = r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || 'â€”';
+          const concept = r.description || r.concept || 'â€”';
+          const category = getTransactionCategoryLabel(r, catMap) || 'â€”';
           const ivaAmount = Number(r.tax?.iva ?? r.iva);
           const hasIva = Number.isFinite(ivaAmount) && Math.abs(ivaAmount) > 0;
           const totalAmount = Number(r.amount) || 0;
@@ -2098,11 +2167,11 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
 
           const ivaBreakdown = hasIva
             ? `Subtotal: $${formatMoney(safeSubtotal)} + IVA: $${formatMoney(ivaAmount)}`
-            : '—';
+            : 'â€”';
 
           return `
             <tr>
-              <td>${r.date || '—'}</td>
+              <td>${r.date || 'â€”'}</td>
               <td>${provider}</td>
               <td>${concept}</td>
               <td>${category}</td>
@@ -2156,17 +2225,17 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
             <section class="sheet">
               <header class="header">
                 <h1>${reportTitle}</h1>
-                <p>Generado: ${new Date().toLocaleString('es-MX')} · Consulta: ${query.trim() || 'Sin filtro de texto'}</p>
+                <p>Generado: ${new Date().toLocaleString('es-MX')} Â· Consulta: ${query.trim() || 'Sin filtro de texto'}</p>
               </header>
               <div class="summary">
-                <div class="summary-card"><div class="label">Resultados en página</div><div class="value">${rows.length}</div></div>
+                <div class="summary-card"><div class="label">Resultados en pÃ¡gina</div><div class="value">${rows.length}</div></div>
                 <div class="summary-card"><div class="label">Resultados totales</div><div class="value">${totalCount}</div></div>
                 ${amountSummaryCards}
               </div>
               <div class="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Desglose IVA</th><th style="text-align:right">Monto</th></tr>
+                    <tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>CategorÃ­a</th><th>Desglose IVA</th><th style="text-align:right">Monto</th></tr>
                   </thead>
                   <tbody>${printableRows}</tbody>
                 </table>
@@ -2190,7 +2259,7 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
       <h2 style={{ marginTop: 0 }}>Buscar movimientos</h2>
       <div className="search-toolbar">
         <input
-          placeholder="Buscar por proveedor, concepto o categoría"
+          placeholder="Buscar por proveedor, concepto o categorÃ­a"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           style={{ maxWidth: 420 }}
@@ -2207,14 +2276,14 @@ function SearchTransactions({ cats, vendors, projects, selectedProjectId }) {
         <table>
           <thead>
             <tr>
-              <th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Categoría</th><th>Monto sin IVA</th>
+              <th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>CategorÃ­a</th><th>Monto sin IVA</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.id}>
                 <td>{r.date}</td>
-                <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || '—'}</td>
+                <td>{r.proveedorNombre || r.supplierName || vendorMap[r.vendor_id] || r.proveedor?.name || 'â€”'}</td>
                 <td>{r.description || r.concept || ''}</td>
                 <td>{getTransactionCategoryLabel(r, catMap)}</td>
                 <td>${formatMoney(getAmountWithoutIva(r))}</td>
@@ -2251,7 +2320,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
   async function addCat(e) {
     e.preventDefault();
     setErr('');
-    if (catName.trim().length < 2) return setErr('Nombre de categoría inválido');
+    if (catName.trim().length < 2) return setErr('Nombre de categorÃ­a invÃ¡lido');
     await api.createCategory(catName.trim());
     setCatName('');
     onChanged();
@@ -2260,7 +2329,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
   async function addVendor(e) {
     e.preventDefault();
     setErr('');
-    if (vendorName.trim().length < 2) return setErr('Nombre de proveedor inválido');
+    if (vendorName.trim().length < 2) return setErr('Nombre de proveedor invÃ¡lido');
     await api.createVendor({ name: vendorName.trim(), category_ids: [] });
     setVendorName('');
     onChanged();
@@ -2269,12 +2338,12 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
   return (
     <div className="grid grid2">
       <div className="card">
-        <h2 style={{ margin: '0 0 8px' }}>Categorías</h2>
+        <h2 style={{ margin: '0 0 8px' }}>CategorÃ­as</h2>
 
         {isAdmin && (
           <form onSubmit={addCat} className="row">
             <div style={{ flex: 1 }}>
-              <label>Nueva categoría</label>
+              <label>Nueva categorÃ­a</label>
               <input value={catName} onChange={(e) => setCatName(e.target.value)} placeholder="Ej. Acabados" />
             </div>
             <div style={{ marginTop: 18 }}>
@@ -2293,14 +2362,14 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
                     className="secondary"
                     onClick={() => setCatEdit({ ...c })}
                     disabled={!isMongoObjectId(c.id)}
-                    title={!isMongoObjectId(c.id) ? 'Solo se pueden editar categorías del catálogo manual.' : ''}
+                    title={!isMongoObjectId(c.id) ? 'Solo se pueden editar categorÃ­as del catÃ¡logo manual.' : ''}
                   >
                     Editar
                   </button>{' '}
                   <button
                     className="secondary"
                     disabled={!isMongoObjectId(c.id)}
-                    title={!isMongoObjectId(c.id) ? 'Solo se pueden eliminar categorías del catálogo manual.' : ''}
+                    title={!isMongoObjectId(c.id) ? 'Solo se pueden eliminar categorÃ­as del catÃ¡logo manual.' : ''}
                     onClick={async () => {
                       await api.deleteCategory(c.id);
                       onChanged();
@@ -2312,7 +2381,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
               )}
             </div>
           ))}
-          {!cats.length && <div className="small">No hay categorías. Puedes presionar “Seed categorías” en Dashboard.</div>}
+          {!cats.length && <div className="small">No hay categorÃ­as. Puedes presionar â€œSeed categorÃ­asâ€ en Dashboard.</div>}
         </div>
       </div>
 
@@ -2323,7 +2392,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
           <form onSubmit={addVendor} className="row">
             <div style={{ flex: 1 }}>
               <label>Nuevo proveedor</label>
-              <input value={vendorName} onChange={(e) => setVendorName(e.target.value)} placeholder="Ej. Ferretería X" />
+              <input value={vendorName} onChange={(e) => setVendorName(e.target.value)} placeholder="Ej. FerreterÃ­a X" />
             </div>
             <div style={{ marginTop: 18 }}>
               <button>Agregar</button>
@@ -2353,7 +2422,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
               )}
             </div>
           ))}
-          {!vendors.length && <div className="small">No hay proveedores aún.</div>}
+          {!vendors.length && <div className="small">No hay proveedores aÃºn.</div>}
         </div>
 
         {err && <div style={{ marginTop: 10, color: '#b91c1c' }}>{err}</div>}
@@ -2361,7 +2430,7 @@ function Catalog({ isAdmin, cats, vendors, onChanged }) {
 
       {catEdit && (
         <EditModal
-          title="Editar categoría"
+          title="Editar categorÃ­a"
           onClose={() => setCatEdit(null)}
           onSave={async () => {
             await api.updateCategory(catEdit.id, { name: catEdit.name });

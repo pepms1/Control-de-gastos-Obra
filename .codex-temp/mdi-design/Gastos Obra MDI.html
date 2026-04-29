@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Control de Gastos MDI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script type="text/babel" src="tweaks-panel.jsx"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f1f3f6; min-height: 100vh; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: oklch(70% 0 0); border-radius: 99px; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useMemo } = React;
+
+// ─── Sample Data ──────────────────────────────────────────────────────────────
+const EGRESOS = [
+  { id:1, fecha:"2026-01-27", proyecto:"COSTAVENTURA", sbo:"SBO_GMDI", proveedor:"MASARI CASA DE BOLSA, S.A.", descripcion:"FACTURA NO. #T648 (SALDO COCINA)", categoria:"Trabajos sin clasificar", subtotal:49424.15, iva:7907.86, total:57332.01 },
+  { id:2, fecha:"2026-03-25", proyecto:"COSTAVENTURA", sbo:"SBO_GMDI", proveedor:"PORCELANOSA MEXICO, S.A. DE C.V.", descripcion:"SALDO 70%", categoria:"Acabados / Detallles", subtotal:11995.04, iva:1919.21, total:13914.25 },
+  { id:3, fecha:"2026-02-10", proyecto:"MDI TORRE", sbo:"SBO_GMDI", proveedor:"CONSTRUCTORA HERNANDEZ", descripcion:"ESTIMACION #3 ESTRUCTURA", categoria:"Estructura", subtotal:285000.00, iva:45600.00, total:330600.00 },
+  { id:4, fecha:"2026-02-18", proyecto:"PARQUE NORTE", sbo:"SBO_GMDI", proveedor:"GRUPO FERRETERO NORTE", descripcion:"MATERIAL ELECTRICO PISO 4", categoria:"Instalaciones", subtotal:18450.00, iva:2952.00, total:21402.00 },
+  { id:5, fecha:"2026-03-05", proyecto:"MDI TORRE", sbo:"SBO_GMDI", proveedor:"IMPERMEABILIZACIONES DEL BAJIO", descripcion:"APLICACION MEMBRANA CUBIERTA", categoria:"Impermeabilización", subtotal:42000.00, iva:6720.00, total:48720.00 },
+  { id:6, fecha:"2026-03-15", proyecto:"COSTAVENTURA", sbo:"SBO_GMDI", proveedor:"VIDRIOS Y ALUMINIOS PREMIUM", descripcion:"VENTANERIA FACHADA NORTE", categoria:"Fachada", subtotal:76300.00, iva:12208.00, total:88508.00 },
+  { id:7, fecha:"2026-04-01", proyecto:"PARQUE NORTE", sbo:"SBO_GMDI", proveedor:"CONCRETOS MONTERREY", descripcion:"SUMINISTRO CONCRETO FC250", categoria:"Estructura", subtotal:98500.00, iva:15760.00, total:114260.00 },
+];
+
+const PROYECTOS = ["COSTAVENTURA", "MDI TORRE", "PARQUE NORTE", "TODOS"];
+
+// ─── Themes ───────────────────────────────────────────────────────────────────
+const THEMES = {
+  limpio: {
+    label: "Limpio",
+    appBg: "#f5f6f8",
+    headerBg: "#ffffff",
+    headerBorder: "1px solid #e8eaed",
+    headerShadow: "0 1px 4px rgba(0,0,0,0.06)",
+    logoPrimary: "#1a3a6b",
+    logoSub: "#6b7fa3",
+    navBg: "#ffffff",
+    navBorder: "1px solid #e8eaed",
+    navActiveColor: "#1a3a6b",
+    navActiveBorder: "#1a3a6b",
+    navInactiveColor: "#6b7280",
+    contentBg: "#ffffff",
+    contentBorder: "1px solid #e8eaed",
+    contentRadius: "12px",
+    contentShadow: "0 2px 12px rgba(0,0,0,0.06)",
+    searchBg: "#f5f6f8",
+    searchBorder: "1px solid #e2e4e9",
+    tableHeadBg: "#f5f6f8",
+    tableHeadColor: "#6b7280",
+    tableRowHover: "#fafbfd",
+    tableRowBorder: "#f0f1f4",
+    tableCellColor: "#1f2937",
+    badge: { bg: "#eff6ff", color: "#1a3a6b" },
+    btnPrimary: { bg: "#1a3a6b", color: "#fff", hoverBg: "#15306a" },
+    btnSecondary: { bg: "#f5f6f8", color: "#374151", border: "#e2e4e9" },
+    kpiBg: "#f5f6f8",
+    kpiBorder: "#e8eaed",
+    kpiAccent: "#1a3a6b",
+    totalColor: "#1a3a6b",
+    dropdown: { bg: "#fff", border: "#e2e4e9", color: "#1f2937" },
+    sidebarLayout: false,
+  },
+  moderno: {
+    label: "Moderno",
+    appBg: "#0f172a",
+    headerBg: "linear-gradient(135deg, #1e3a5f 0%, #0f2440 100%)",
+    headerBorder: "none",
+    headerShadow: "0 4px 24px rgba(0,0,0,0.3)",
+    logoPrimary: "#ffffff",
+    logoSub: "#94a3b8",
+    navBg: "transparent",
+    navBorder: "none",
+    navActiveColor: "#ffffff",
+    navActiveBorder: "#38bdf8",
+    navInactiveColor: "rgba(255,255,255,0.55)",
+    contentBg: "#1e293b",
+    contentBorder: "1px solid #334155",
+    contentRadius: "16px",
+    contentShadow: "0 4px 32px rgba(0,0,0,0.25)",
+    searchBg: "#0f172a",
+    searchBorder: "1px solid #334155",
+    tableHeadBg: "#0f172a",
+    tableHeadColor: "#64748b",
+    tableRowHover: "#263348",
+    tableRowBorder: "#1e293b",
+    tableCellColor: "#e2e8f0",
+    badge: { bg: "#0c4a6e", color: "#38bdf8" },
+    btnPrimary: { bg: "#38bdf8", color: "#0f172a", hoverBg: "#0ea5e9" },
+    btnSecondary: { bg: "#1e293b", color: "#94a3b8", border: "#334155" },
+    kpiBg: "#0f172a",
+    kpiBorder: "#334155",
+    kpiAccent: "#38bdf8",
+    totalColor: "#38bdf8",
+    dropdown: { bg: "#1e293b", border: "#334155", color: "#e2e8f0" },
+    sidebarLayout: false,
+  },
+  sidebar: {
+    label: "Sidebar",
+    appBg: "#f0f2f5",
+    headerBg: "#18212f",
+    headerBorder: "none",
+    headerShadow: "none",
+    logoPrimary: "#ffffff",
+    logoSub: "#7c8fa6",
+    navBg: "#18212f",
+    navBorder: "none",
+    navActiveColor: "#ffffff",
+    navActiveBorder: "#4ade80",
+    navInactiveColor: "#7c8fa6",
+    contentBg: "#ffffff",
+    contentBorder: "1px solid #e5e7eb",
+    contentRadius: "12px",
+    contentShadow: "0 2px 16px rgba(0,0,0,0.07)",
+    searchBg: "#f9fafb",
+    searchBorder: "1px solid #e5e7eb",
+    tableHeadBg: "#f9fafb",
+    tableHeadColor: "#9ca3af",
+    tableRowHover: "#f5f7fa",
+    tableRowBorder: "#f3f4f6",
+    tableCellColor: "#111827",
+    badge: { bg: "#f0fdf4", color: "#16a34a" },
+    btnPrimary: { bg: "#4ade80", color: "#0f2018", hoverBg: "#22c55e" },
+    btnSecondary: { bg: "#fff", color: "#374151", border: "#e5e7eb" },
+    kpiBg: "#f9fafb",
+    kpiBorder: "#e5e7eb",
+    kpiAccent: "#4ade80",
+    totalColor: "#16a34a",
+    dropdown: { bg: "#253041", border: "#334155", color: "#e2e8f0" },
+    sidebarLayout: true,
+  },
+};
+
+const fmt = (n) => "$" + n.toLocaleString("es-MX", { minimumFractionDigits: 2 });
+
+// ─── Icons ────────────────────────────────────────────────────────────────────
+const Icon = ({ name, size = 16, color = "currentColor" }) => {
+  const paths = {
+    search: <><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></>,
+    filter: <><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></>,
+    download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>,
+    dashboard: <><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></>,
+    list: <><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></>,
+    budget: <><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>,
+    settings: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>,
+    moon: <><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></>,
+    sun: <><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></>,
+    logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>,
+    chevronDown: <><polyline points="6 9 12 15 18 9"/></>,
+    trending: <><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></>,
+    building: <><rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01M16 6h.01M8 10h.01M16 10h.01M8 14h.01M16 14h.01"/></>,
+    wallet: <><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/></>,
+  };
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none"
+      stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {paths[name]}
+    </svg>
+  );
+};
+
+// ─── Logo ─────────────────────────────────────────────────────────────────────
+const Logo = ({ theme }) => (
+  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+    <div style={{
+      width: 34, height: 34, borderRadius: 8,
+      background: theme.kpiAccent || "#1a3a6b",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      flexShrink: 0,
+    }}>
+      <Icon name="building" size={18} color={theme.appBg === "#0f172a" ? "#0f172a" : "#fff"} />
+    </div>
+    <div>
+      <div style={{ fontWeight: 700, fontSize: 13, color: theme.logoPrimary, letterSpacing: "-0.3px", lineHeight: 1.2 }}>
+        Control de Gastos
+      </div>
+      <div style={{ fontWeight: 500, fontSize: 10, color: theme.logoSub, letterSpacing: "0.5px", textTransform: "uppercase" }}>
+        Grupo MDI
+      </div>
+    </div>
+  </div>
+);
+
+// ─── KPI Cards ────────────────────────────────────────────────────────────────
+const KPICards = ({ theme, egresos }) => {
+  const total = egresos.reduce((a, e) => a + e.total, 0);
+  const sinIva = egresos.reduce((a, e) => a + e.subtotal, 0);
+  const ivaTotal = egresos.reduce((a, e) => a + e.iva, 0);
+  const proyectos = [...new Set(egresos.map(e => e.proyecto))].length;
+
+  const cards = [
+    { label: "Total con IVA", value: fmt(total), icon: "wallet", sub: `${egresos.length} egresos` },
+    { label: "Subtotal sin IVA", value: fmt(sinIva), icon: "trending", sub: "Base gravable" },
+    { label: "IVA Total", value: fmt(ivaTotal), icon: "budget", sub: "16%" },
+    { label: "Proyectos", value: proyectos, icon: "building", sub: "activos" },
+  ];
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 20 }}>
+      {cards.map((c, i) => (
+        <div key={i} style={{
+          background: theme.kpiBg,
+          border: `1px solid ${theme.kpiBorder}`,
+          borderRadius: 10,
+          padding: "14px 16px",
+          display: "flex", alignItems: "center", gap: 12,
+          transition: "transform 0.15s",
+        }}
+          onMouseEnter={e => e.currentTarget.style.transform = "translateY(-1px)"}
+          onMouseLeave={e => e.currentTarget.style.transform = "translateY(0)"}
+        >
+          <div style={{
+            width: 38, height: 38, borderRadius: 8,
+            background: `${theme.kpiAccent}18`,
+            display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+          }}>
+            <Icon name={c.icon} size={16} color={theme.kpiAccent} />
+          </div>
+          <div>
+            <div style={{ fontSize: 11, color: theme.tableHeadColor, fontWeight: 500, marginBottom: 2 }}>{c.label}</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: theme.totalColor, letterSpacing: "-0.5px" }}>{c.value}</div>
+            <div style={{ fontSize: 10, color: theme.tableHeadColor, marginTop: 1 }}>{c.sub}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+// ─── Table ────────────────────────────────────────────────────────────────────
+const EgresosTable = ({ theme, egresos }) => {
+  const cols = ["Fecha", "Proyecto", "Proveedor", "Descripción", "Categoría", "Subtotal", "IVA", "Total"];
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr>
+            {cols.map(c => (
+              <th key={c} style={{
+                background: theme.tableHeadBg,
+                color: theme.tableHeadColor,
+                fontWeight: 600,
+                fontSize: 11,
+                letterSpacing: "0.5px",
+                textTransform: "uppercase",
+                padding: "10px 14px",
+                textAlign: c.includes("total") || c === "Subtotal" || c === "IVA" || c === "Total" ? "right" : "left",
+                borderBottom: `1px solid ${theme.tableRowBorder}`,
+                whiteSpace: "nowrap",
+              }}>{c}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {egresos.map((e, i) => (
+            <tr key={e.id}
+              style={{ cursor: "pointer", transition: "background 0.1s" }}
+              onMouseEnter={ev => ev.currentTarget.style.background = theme.tableRowHover}
+              onMouseLeave={ev => ev.currentTarget.style.background = "transparent"}
+            >
+              <td style={{ padding: "12px 14px", color: theme.tableHeadColor, whiteSpace: "nowrap", borderBottom: `1px solid ${theme.tableRowBorder}`, fontVariantNumeric: "tabular-nums", fontSize: 12 }}>{e.fecha}</td>
+              <td style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.tableRowBorder}` }}>
+                <span style={{
+                  display: "inline-block",
+                  background: theme.badge.bg,
+                  color: theme.badge.color,
+                  borderRadius: 6,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  letterSpacing: "0.2px",
+                }}>{e.proyecto}</span>
+              </td>
+              <td style={{ padding: "12px 14px", color: theme.tableCellColor, borderBottom: `1px solid ${theme.tableRowBorder}`, fontWeight: 500, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.proveedor}</td>
+              <td style={{ padding: "12px 14px", color: theme.tableHeadColor, borderBottom: `1px solid ${theme.tableRowBorder}`, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12 }}>{e.descripcion}</td>
+              <td style={{ padding: "12px 14px", borderBottom: `1px solid ${theme.tableRowBorder}` }}>
+                <span style={{ fontSize: 12, color: theme.tableHeadColor }}>{e.categoria}</span>
+              </td>
+              <td style={{ padding: "12px 14px", color: theme.tableHeadColor, borderBottom: `1px solid ${theme.tableRowBorder}`, textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 12 }}>{fmt(e.subtotal)}</td>
+              <td style={{ padding: "12px 14px", color: theme.tableHeadColor, borderBottom: `1px solid ${theme.tableRowBorder}`, textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 12 }}>{fmt(e.iva)}</td>
+              <td style={{ padding: "12px 14px", color: theme.totalColor, borderBottom: `1px solid ${theme.tableRowBorder}`, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 13 }}>{fmt(e.total)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [tweaks, setTweakState] = useState(/*EDITMODE-BEGIN*/{
+    "theme": "limpio",
+    "activeTab": "Ajustes"
+  }/*EDITMODE-END*/);
+  const setTweak = (k, v) => {
+    const next = typeof k === "object" ? { ...tweaks, ...k } : { ...tweaks, [k]: v };
+    setTweakState(next);
+    window.parent.postMessage({ type: "__edit_mode_set_keys", edits: next }, "*");
+  };
+
+  const theme = THEMES[tweaks.theme] || THEMES.limpio;
+  const [search, setSearch] = useState("");
+  const [proyecto, setProyecto] = useState("TODOS");
+  const [showFilters, setShowFilters] = useState(false);
+
+  const filtered = useMemo(() => EGRESOS.filter(e => {
+    const q = search.toLowerCase();
+    const matchSearch = !q || e.proveedor.toLowerCase().includes(q)
+      || e.descripcion.toLowerCase().includes(q)
+      || e.categoria.toLowerCase().includes(q);
+    const matchProy = proyecto === "TODOS" || e.proyecto === proyecto;
+    return matchSearch && matchProy;
+  }), [search, proyecto]);
+
+  const TABS = [
+    { id: "Dashboard", icon: "dashboard" },
+    { id: "Buscar", icon: "list" },
+    { id: "Presupuestos", icon: "budget" },
+    { id: "Ajustes", icon: "settings" },
+  ];
+
+  const isSidebar = theme.sidebarLayout;
+  const isDark = tweaks.theme === "moderno";
+
+  // ── Sidebar Layout ──────────────────────────────────────────────────────
+  if (isSidebar) {
+    return (
+      <div style={{ display: "flex", minHeight: "100vh", fontFamily: "'Plus Jakarta Sans', sans-serif", background: theme.appBg }}>
+        {/* Sidebar */}
+        <aside style={{
+          width: 220, background: theme.headerBg, display: "flex", flexDirection: "column",
+          padding: "24px 16px", gap: 6, flexShrink: 0,
+        }}>
+          <div style={{ paddingBottom: 24, paddingLeft: 4 }}>
+            <Logo theme={theme} />
+          </div>
+          {/* Project selector */}
+          <div style={{
+            background: "rgba(255,255,255,0.07)", borderRadius: 8, padding: "10px 12px",
+            marginBottom: 12, cursor: "pointer",
+          }}>
+            <div style={{ fontSize: 10, color: theme.logoSub, letterSpacing: "0.5px", textTransform: "uppercase", marginBottom: 4 }}>Proyecto</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: theme.navActiveColor }}>{proyecto === "TODOS" ? "Todos" : proyecto}</span>
+              <Icon name="chevronDown" size={12} color={theme.logoSub} />
+            </div>
+          </div>
+          {TABS.map(t => {
+            const active = tweaks.activeTab === t.id;
+            return (
+              <button key={t.id} onClick={() => setTweak("activeTab", t.id)} style={{
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "10px 12px", borderRadius: 8, border: "none", cursor: "pointer",
+                background: active ? "rgba(74,222,128,0.15)" : "transparent",
+                color: active ? theme.navActiveColor : theme.navInactiveColor,
+                fontWeight: active ? 600 : 500, fontSize: 13,
+                textAlign: "left", width: "100%",
+                borderLeft: active ? `3px solid ${theme.navActiveBorder}` : "3px solid transparent",
+                transition: "all 0.15s",
+              }}>
+                <Icon name={t.icon} size={15} color={active ? theme.kpiAccent : theme.navInactiveColor} />
+                {t.id}
+              </button>
+            );
+          })}
+          <div style={{ flex: 1 }} />
+          <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, paddingLeft: 4, marginBottom: 12 }}>
+              <div style={{ width: 28, height: 28, borderRadius: "50%", background: theme.kpiAccent, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#0f2018" }}>AD</span>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: theme.logoPrimary }}>Administrador</div>
+                <div style={{ fontSize: 10, color: theme.logoSub }}>Superadmin</div>
+              </div>
+            </div>
+            <button style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "transparent", border: "none", color: theme.logoSub, cursor: "pointer", fontSize: 12, width: "100%", borderRadius: 6 }}>
+              <Icon name="logout" size={14} color={theme.logoSub} /> Salir
+            </button>
+          </div>
+        </aside>
+
+        {/* Main */}
+        <main style={{ flex: 1, padding: "28px 32px", overflow: "auto" }}>
+          <BuscarContent theme={theme} search={search} setSearch={setSearch}
+            proyecto={proyecto} setProyecto={setProyecto} showFilters={showFilters}
+            setShowFilters={setShowFilters} filtered={filtered} />
+        </main>
+        <TweaksOverlay tweaks={tweaks} setTweak={setTweak} theme={theme} />
+      </div>
+    );
+  }
+
+  // ── Top Nav Layout ──────────────────────────────────────────────────────
+  return (
+    <div style={{ minHeight: "100vh", fontFamily: "'Plus Jakarta Sans', sans-serif", background: theme.appBg }}>
+      {/* Header */}
+      <header style={{
+        background: theme.headerBg,
+        borderBottom: theme.headerBorder,
+        boxShadow: theme.headerShadow,
+        padding: "0 28px",
+        height: 56,
+        display: "flex", alignItems: "center", gap: 16,
+        position: "sticky", top: 0, zIndex: 100,
+      }}>
+        <Logo theme={theme} />
+        <div style={{ width: 1, height: 28, background: isDark ? "rgba(255,255,255,0.1)" : "#e8eaed", marginLeft: 4 }} />
+        {/* Project selector */}
+        <select value={proyecto} onChange={e => setProyecto(e.target.value)} style={{
+          background: theme.dropdown.bg,
+          border: `1px solid ${theme.dropdown.border}`,
+          color: theme.dropdown.color,
+          borderRadius: 8,
+          padding: "5px 10px",
+          fontSize: 12,
+          fontFamily: "'Plus Jakarta Sans', sans-serif",
+          fontWeight: 500,
+          cursor: "pointer",
+          outline: "none",
+        }}>
+          {PROYECTOS.map(p => <option key={p} value={p}>{p === "TODOS" ? "Todos los proyectos" : p}</option>)}
+        </select>
+        <div style={{ flex: 1 }} />
+        {/* Nav tabs in header */}
+        <nav style={{ display: "flex", gap: 2 }}>
+          {TABS.map(t => {
+            const active = tweaks.activeTab === t.id;
+            return (
+              <button key={t.id} onClick={() => setTweak("activeTab", t.id)} style={{
+                padding: "6px 14px", borderRadius: 8, border: "none", cursor: "pointer",
+                background: active ? (isDark ? "rgba(56,189,248,0.15)" : "rgba(26,58,107,0.08)") : "transparent",
+                color: active ? theme.navActiveColor : theme.navInactiveColor,
+                fontWeight: active ? 600 : 500, fontSize: 13,
+                fontFamily: "'Plus Jakarta Sans', sans-serif",
+                display: "flex", alignItems: "center", gap: 6,
+                transition: "all 0.15s",
+              }}>
+                <Icon name={t.icon} size={14} color={active ? theme.kpiAccent : theme.navInactiveColor} />
+                {t.id}
+              </button>
+            );
+          })}
+        </nav>
+        <div style={{ width: 1, height: 28, background: isDark ? "rgba(255,255,255,0.1)" : "#e8eaed" }} />
+        {/* User */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{
+            width: 30, height: 30, borderRadius: "50%",
+            background: theme.kpiAccent,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: isDark ? "#0f172a" : "#fff" }}>AD</span>
+          </div>
+          <div style={{ lineHeight: 1.2 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: theme.logoPrimary }}>Administrador</div>
+            <div style={{ fontSize: 10, color: theme.logoSub }}>Superadmin</div>
+          </div>
+          <button style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", background: "transparent", border: `1px solid ${isDark ? "rgba(255,255,255,0.15)" : "#e2e4e9"}`, borderRadius: 7, color: theme.logoSub, cursor: "pointer", fontSize: 12, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+            <Icon name="logout" size={12} color={theme.logoSub} /> Salir
+          </button>
+        </div>
+      </header>
+
+      {/* Content */}
+      <div style={{ padding: "24px 28px" }}>
+        <BuscarContent theme={theme} search={search} setSearch={setSearch}
+          proyecto={proyecto} setProyecto={setProyecto} showFilters={showFilters}
+          setShowFilters={setShowFilters} filtered={filtered} />
+      </div>
+      <TweaksOverlay tweaks={tweaks} setTweak={setTweak} theme={theme} />
+    </div>
+  );
+}
+
+// ─── Buscar Content ───────────────────────────────────────────────────────────
+function BuscarContent({ theme, search, setSearch, proyecto, setProyecto, showFilters, setShowFilters, filtered }) {
+  const totalFiltrado = filtered.reduce((a, e) => a + e.total, 0);
+  return (
+    <div>
+      <KPICards theme={theme} egresos={filtered} />
+      <div style={{
+        background: theme.contentBg,
+        border: theme.contentBorder,
+        borderRadius: theme.contentRadius,
+        boxShadow: theme.contentShadow,
+        overflow: "hidden",
+      }}>
+        {/* Toolbar */}
+        <div style={{
+          padding: "16px 20px",
+          display: "flex", alignItems: "center", gap: 10,
+          borderBottom: `1px solid ${theme.tableRowBorder}`,
+        }}>
+          {/* Search */}
+          <div style={{ position: "relative", flex: 1, maxWidth: 420 }}>
+            <div style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }}>
+              <Icon name="search" size={15} color={theme.tableHeadColor} />
+            </div>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Buscar por proveedor, descripción o categoría…"
+              style={{
+                width: "100%",
+                background: theme.searchBg,
+                border: theme.searchBorder,
+                borderRadius: 8,
+                padding: "8px 12px 8px 36px",
+                fontSize: 13,
+                color: theme.tableCellColor,
+                outline: "none",
+                fontFamily: "'Plus Jakarta Sans', sans-serif",
+              }}
+            />
+          </div>
+
+          {/* Filters toggle */}
+          <button onClick={() => setShowFilters(!showFilters)} style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "8px 14px", borderRadius: 8,
+            background: showFilters ? `${theme.kpiAccent}20` : theme.btnSecondary.bg,
+            border: `1px solid ${showFilters ? theme.kpiAccent : theme.btnSecondary.border}`,
+            color: showFilters ? theme.kpiAccent : theme.btnSecondary.color,
+            cursor: "pointer", fontSize: 13, fontWeight: 500,
+            fontFamily: "'Plus Jakarta Sans', sans-serif",
+            transition: "all 0.15s",
+          }}>
+            <Icon name="filter" size={13} color={showFilters ? theme.kpiAccent : theme.btnSecondary.color} />
+            Filtros
+          </button>
+
+          <div style={{ flex: 1 }} />
+
+          {/* Results count */}
+          <span style={{ fontSize: 12, color: theme.tableHeadColor }}>
+            <strong style={{ color: theme.tableCellColor }}>{filtered.length}</strong> resultado{filtered.length !== 1 ? "s" : ""}
+            &nbsp;·&nbsp;
+            <strong style={{ color: theme.totalColor }}>{fmt(totalFiltrado)}</strong>
+          </span>
+
+          {/* Export */}
+          <button style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "8px 16px", borderRadius: 8,
+            background: theme.btnPrimary.bg,
+            border: "none",
+            color: theme.btnPrimary.color,
+            cursor: "pointer", fontSize: 13, fontWeight: 600,
+            fontFamily: "'Plus Jakarta Sans', sans-serif",
+          }}
+            onMouseEnter={e => e.currentTarget.style.background = theme.btnPrimary.hoverBg}
+            onMouseLeave={e => e.currentTarget.style.background = theme.btnPrimary.bg}
+          >
+            <Icon name="download" size={13} color={theme.btnPrimary.color} />
+            Exportar PDF
+          </button>
+        </div>
+
+        {/* Filters row */}
+        {showFilters && (
+          <div style={{
+            padding: "12px 20px",
+            borderBottom: `1px solid ${theme.tableRowBorder}`,
+            display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center",
+            background: theme.searchBg,
+          }}>
+            <span style={{ fontSize: 12, color: theme.tableHeadColor, fontWeight: 500 }}>Proyecto:</span>
+            {["TODOS", "COSTAVENTURA", "MDI TORRE", "PARQUE NORTE"].map(p => (
+              <button key={p} onClick={() => setProyecto(p)} style={{
+                padding: "4px 12px", borderRadius: 20,
+                border: `1px solid ${proyecto === p ? theme.kpiAccent : theme.btnSecondary.border}`,
+                background: proyecto === p ? `${theme.kpiAccent}18` : theme.btnSecondary.bg,
+                color: proyecto === p ? theme.kpiAccent : theme.btnSecondary.color,
+                fontSize: 12, fontWeight: 500, cursor: "pointer",
+                fontFamily: "'Plus Jakarta Sans', sans-serif",
+                transition: "all 0.15s",
+              }}>
+                {p === "TODOS" ? "Todos" : p}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <EgresosTable theme={theme} egresos={filtered} />
+      </div>
+    </div>
+  );
+}
+
+// ─── Tweaks Overlay ───────────────────────────────────────────────────────────
+function TweaksOverlay({ tweaks, setTweak, theme }) {
+  const [visible, setVisible] = useState(false);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      if (e.data?.type === "__activate_edit_mode") setVisible(true);
+      if (e.data?.type === "__deactivate_edit_mode") setVisible(false);
+    };
+    window.addEventListener("message", handler);
+    window.parent.postMessage({ type: "__edit_mode_available" }, "*");
+    return () => window.removeEventListener("message", handler);
+  }, []);
+
+  if (!visible) return null;
+
+  return (
+    <TweaksPanel onClose={() => {
+      setVisible(false);
+      window.parent.postMessage({ type: "__edit_mode_dismissed" }, "*");
+    }}>
+      <TweakSection label="Estilo visual">
+        <TweakRadio id="theme" label="Tema" value={tweaks.theme}
+          options={[
+            { label: "Limpio", value: "limpio" },
+            { label: "Oscuro", value: "moderno" },
+            { label: "Sidebar", value: "sidebar" },
+          ]}
+          onChange={v => setTweak("theme", v)} />
+      </TweakSection>
+      <TweakSection label="Navegación">
+        <TweakSelect id="tab" label="Pantalla activa" value={tweaks.activeTab}
+          options={["Dashboard", "Buscar", "Presupuestos", "Ajustes"].map(t => ({ label: t, value: t }))}
+          onChange={v => setTweak("activeTab", v)} />
+      </TweakSection>
+    </TweaksPanel>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
