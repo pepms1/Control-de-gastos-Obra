@@ -467,33 +467,47 @@ function Login({ onLogin }) {
   }
 
   return (
-    <div className="container login-container">
-      <div className="card">
+    <div className="login-page">
+      <div className="login-card">
         <div className="login-brand">
-          <img
-            src="/LOGO%20GRUPO%20MDI.jpg"
-            alt="Logo Grupo MDI"
-            className="login-brand-image"
-            onError={(event) => {
-              event.currentTarget.onerror = null;
-              event.currentTarget.src = '/logo-grupo-mdi.svg';
-            }}
-          />
-          <h1>Grupo MDI</h1>
-          <p>control de obra</p>
+          <div className="login-logo-wrap">
+            <img
+              src="/LOGO%20GRUPO%20MDI.jpg"
+              alt="Logo Grupo MDI"
+              onError={(event) => {
+                event.currentTarget.onerror = null;
+                event.currentTarget.src = '/logo-grupo-mdi.svg';
+              }}
+            />
+          </div>
+          <p className="login-brand-title">Grupo MDI</p>
+          <p className="login-brand-subtitle">control de obra</p>
         </div>
-        <h2 style={{ marginTop: 0 }}>Iniciar sesión</h2>
-        <form onSubmit={submit} className="grid">
-          <div>
+        <p className="login-heading">Iniciar sesión</p>
+        <form onSubmit={submit} className="login-form">
+          <div className="login-field">
             <label>Usuario</label>
-            <input value={username} onChange={(e) => setUsername(e.target.value)} />
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoComplete="username"
+              placeholder="Ingresa tu usuario"
+            />
           </div>
-          <div>
+          <div className="login-field">
             <label>Contraseña</label>
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              placeholder="••••••••"
+            />
           </div>
-          {err && <div style={{ color: '#334155' }}>{err}</div>}
-          <button disabled={saving}>{saving ? 'Ingresando...' : 'Entrar'}</button>
+          {err && <div className="login-error">{err}</div>}
+          <button className="login-btn" disabled={saving}>
+            {saving ? 'Ingresando...' : 'Entrar'}
+          </button>
         </form>
       </div>
     </div>

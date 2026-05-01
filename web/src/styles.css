@@ -867,17 +867,136 @@ body.theme-dark .dashboard-column-track { background: var(--gray-100); }
 .dashboard-recent-item:hover { background: var(--gray-50); }
 
 /* ── Login ───────────────────────────────────────────── */
-.login-container { max-width: 420px; margin-top: 50px; }
-.login-brand { display: grid; justify-items: center; text-align: center; gap: 8px; margin-bottom: 16px; }
-.login-brand-image {
-  width: min(220px, 100%);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--gray-200);
-  background: #fff;
+.login-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(145deg, var(--primary-dark) 0%, var(--primary) 55%, var(--primary-mid) 100%);
+  padding: var(--space-4);
 }
-body.theme-dark .login-brand-image { background: #0f172a; border-color: var(--gray-200); }
-.login-brand h1 { margin: 0; font-size: 26px; letter-spacing: .08em; text-transform: uppercase; color: var(--primary-dark); }
-.login-brand p { margin: 0; font-size: 13px; letter-spacing: .16em; text-transform: uppercase; color: var(--gray-500); }
+body.theme-dark .login-page {
+  background: linear-gradient(145deg, #020617 0%, #0f172a 55%, #1e293b 100%);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  background: #fff;
+  border-radius: var(--radius-xl);
+  padding: 36px 32px 32px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .32), 0 4px 16px rgba(0, 0, 0, .16);
+}
+body.theme-dark .login-card {
+  background: #0f172a;
+  border: 1px solid var(--gray-200);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .6);
+}
+
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+  margin-bottom: 28px;
+  padding-bottom: 24px;
+  border-bottom: 1.5px solid var(--gray-100);
+}
+body.theme-dark .login-brand { border-bottom-color: var(--gray-200); }
+
+.login-logo-wrap {
+  width: 72px;
+  height: 72px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1.5px solid var(--gray-150);
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 10px;
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+body.theme-dark .login-logo-wrap {
+  border-color: var(--gray-200);
+  background: var(--gray-100);
+}
+.login-logo-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.login-brand-title {
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--primary-dark);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  margin: 0;
+  line-height: 1.1;
+}
+body.theme-dark .login-brand-title { color: var(--gray-800); }
+
+.login-brand-subtitle {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .2em;
+  text-transform: uppercase;
+  color: var(--gray-500);
+  margin: 0;
+}
+
+.login-heading {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--primary-dark);
+  margin: 0 0 20px;
+  letter-spacing: -.01em;
+}
+body.theme-dark .login-heading { color: var(--gray-800); }
+
+.login-form { display: grid; gap: 16px; }
+
+.login-field { display: grid; gap: 5px; }
+
+.login-error {
+  padding: 10px 12px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid #fca5a5;
+}
+body.theme-dark .login-error {
+  background: #3f1d2e;
+  color: #fecdd3;
+  border-color: #be123c;
+}
+
+.login-btn {
+  width: 100%;
+  min-height: 46px;
+  font-size: 15px;
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--primary-dark), var(--primary-mid));
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-btn);
+  letter-spacing: .03em;
+  margin-top: 4px;
+}
+.login-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--primary-mid), var(--primary-dark));
+  box-shadow: 0 6px 22px rgba(27, 20, 100, .38);
+  transform: translateY(-1px);
+}
+.login-btn:disabled {
+  opacity: .65;
+  background: linear-gradient(135deg, var(--primary-dark), var(--primary-mid));
+}
 
 /* ── Budgets ─────────────────────────────────────────── */
 .budgets-card { width: 100%; }
