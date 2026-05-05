@@ -6219,7 +6219,7 @@ def list_projects(user: dict = Depends(require_authenticated)):
 
     rows = db.projects.find(
         query,
-        {"name": 1, "displayName": 1, "slug": 1, "areaM2": 1},
+        {"name": 1, "displayName": 1, "slug": 1, "areaM2": 1, "estimatedBudget": 1},
     ).sort("name", 1)
     return [
         {
@@ -6228,6 +6228,7 @@ def list_projects(user: dict = Depends(require_authenticated)):
             "displayName": row.get("displayName"),
             "slug": row.get("slug"),
             "areaM2": row.get("areaM2"),
+            "estimatedBudget": row.get("estimatedBudget"),
         }
         for row in rows
     ]
@@ -6400,6 +6401,65 @@ def update_project_area_m2_admin(project_id: str, payload: dict, _: dict = Depen
         "ok": True,
         "_id": str(updated.get("_id")),
         "areaM2": updated.get("areaM2"),
+    }
+
+
+@app.patch("/api/projects/{project_id}/meta")
+def update_project_meta(project_id: str, payload: dict, user: dict = Depends(require_authenticated)):
+    """Update per-project display metadata (areaM2, estimatedBudget). Available to all authenticated users."""
+    accessible_project_ids = get_accessible_project_ids(user)
+    if accessible_project_ids is not None and project_id not in accessible_project_ids:
+        raise HTTPException(status_code=403, detail="No access to this project")
+
+    update: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    unset: dict = {}
+
+    if "areaM2" in payload:
+        raw = payload["areaM2"]
+        if raw == "" or raw is None:
+            unset["areaM2"] = ""
+        else:
+            try:
+                val = float(raw)
+                if val < 0:
+                    raise ValueError
+                update["areaM2"] = val
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="areaM2 must be a non-negative number")
+
+    if "estimatedBudget" in payload:
+        raw = payload["estimatedBudget"]
+        if raw == "" or raw is None:
+            unset["estimatedBudget"] = ""
+        else:
+            try:
+                val = float(raw)
+                if val < 0:
+                    raise ValueError
+                update["estimatedBudget"] = val
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="estimatedBudget must be a non-negative number")
+
+    if not update and not unset:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    update_op: dict = {"$set": update}
+    if unset:
+        update_op["$unset"] = unset
+
+    updated = db.projects.find_one_and_update(
+        {"_id": oid(project_id)},
+        update_op,
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    return {
+        "ok": True,
+        "_id": str(updated.get("_id")),
+        "areaM2": updated.get("areaM2"),
+        "estimatedBudget": updated.get("estimatedBudget"),
     }
 
 
