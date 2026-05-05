@@ -2844,77 +2844,79 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refres
           <div className="dashboard-summary-grid" style={{ marginTop: 14 }}>
 
             {/* Left panel — tabs + chart */}
-            <section className="dashboard-panel" style={{ gap: 0, alignContent: 'start' }}>
-              <div className="dashboard-tabs" style={{ marginBottom: 16, alignItems: 'center' }}>
+            <section className="dashboard-panel" style={{ display: 'flex', flexDirection: 'column', gap: 0, overflow: 'hidden', minHeight: 0 }}>
+              <div className="dashboard-tabs" style={{ marginBottom: 16, alignItems: 'center', flexShrink: 0 }}>
                 <button className={viewMode === 'month' ? '' : 'secondary'} onClick={() => setViewMode('month')}>Por mes</button>
                 <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>Por categoría</button>
                 <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>Por proveedor</button>
               </div>
 
-              {viewMode === 'month' && (
-                monthlyData.length === 0 ? (
-                  <div className="small" style={{ color: 'var(--gray-500)', padding: '12px 0' }}>No hay datos mensuales disponibles.</div>
-                ) : (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    {monthlyData.map((item) => (
-                      <div key={item.month}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                          <span style={{ fontSize: 13 }}>{item.label}</span>
-                          <span style={{ fontSize: 13, fontWeight: 700 }}>{formatCurrency(item.value)}</span>
-                        </div>
-                        <div style={{ height: 6, background: 'var(--gray-100)', borderRadius: 99 }}>
-                          <div style={{ height: '100%', width: `${Math.min((item.value / maxMonthlyValue) * 100, 100)}%`, background: 'linear-gradient(90deg, var(--primary-mid), var(--primary-dark))', borderRadius: 99 }} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )
-              )}
-
-              {viewMode === 'category' && (
-                topCategories.length === 0 ? (
-                  <div className="small" style={{ color: 'var(--gray-500)', padding: '12px 0' }}>No hay categorías disponibles.</div>
-                ) : (
-                  <div style={{ display: 'grid', gap: 10 }}>
-                    {topCategories.map((row) => (
-                      <div key={row.category_id}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                          <span style={{ fontSize: 13 }}>{row.category_name}</span>
-                          <span style={{ fontSize: 13, fontWeight: 700 }}>{formatCurrency(row.amount)}</span>
-                        </div>
-                        <div style={{ height: 6, background: 'var(--gray-100)', borderRadius: 99 }}>
-                          <div style={{ height: '100%', width: `${Math.min((Number(row.amount) / maxCatAmount) * 100, 100)}%`, background: 'linear-gradient(90deg, var(--primary-mid), var(--primary-dark))', borderRadius: 99 }} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )
-              )}
-
-              {viewMode === 'supplier' && (
-                supplierSummaryError ? (
-                  <div className="small" style={{ color: 'var(--danger-text,#b91c1c)' }}>{supplierSummaryError}</div>
-                ) : sortedSupplierSummary.length === 0 ? (
-                  <div className="small" style={{ color: 'var(--gray-500)', padding: '12px 0' }}>No hay proveedores disponibles.</div>
-                ) : (
-                  <>
-                    <div style={{ marginBottom: 12 }}><strong style={{ fontSize: 13 }}>Top proveedores</strong></div>
-                    <div style={{ display: 'grid', gap: 12 }}>
-                      {sortedSupplierSummary.map((row) => (
-                        <div key={row.supplierId || row.supplierName}>
+              <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+                {viewMode === 'month' && (
+                  monthlyData.length === 0 ? (
+                    <div className="small" style={{ color: 'var(--gray-500)', padding: '12px 0' }}>No hay datos mensuales disponibles.</div>
+                  ) : (
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      {monthlyData.map((item) => (
+                        <div key={item.month}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                            <span style={{ fontSize: 13 }}>{row.supplierName || '(Sin proveedor)'}</span>
-                            <span style={{ fontSize: 13, fontWeight: 700 }}>{formatCurrency(row.totalAmount)}</span>
+                            <span style={{ fontSize: 13 }}>{item.label}</span>
+                            <span style={{ fontSize: 13, fontWeight: 700 }}>{formatCurrency(item.value)}</span>
                           </div>
                           <div style={{ height: 6, background: 'var(--gray-100)', borderRadius: 99 }}>
-                            <div style={{ height: '100%', width: `${Math.min((Number(row.totalAmount) / maxSupplierAmount) * 100, 100)}%`, background: 'linear-gradient(90deg, var(--primary-mid), var(--primary-dark))', borderRadius: 99 }} />
+                            <div style={{ height: '100%', width: `${Math.min((item.value / maxMonthlyValue) * 100, 100)}%`, background: 'linear-gradient(90deg, var(--primary-mid), var(--primary-dark))', borderRadius: 99 }} />
                           </div>
                         </div>
                       ))}
                     </div>
-                  </>
-                )
-              )}
+                  )
+                )}
+
+                {viewMode === 'category' && (
+                  topCategories.length === 0 ? (
+                    <div className="small" style={{ color: 'var(--gray-500)', padding: '12px 0' }}>No hay categorías disponibles.</div>
+                  ) : (
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      {topCategories.map((row) => (
+                        <div key={row.category_id}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                            <span style={{ fontSize: 13 }}>{row.category_name}</span>
+                            <span style={{ fontSize: 13, fontWeight: 700 }}>{formatCurrency(row.amount)}</span>
+                          </div>
+                          <div style={{ height: 6, background: 'var(--gray-100)', borderRadius: 99 }}>
+                            <div style={{ height: '100%', width: `${Math.min((Number(row.amount) / maxCatAmount) * 100, 100)}%`, background: 'linear-gradient(90deg, var(--primary-mid), var(--primary-dark))', borderRadius: 99 }} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                )}
+
+                {viewMode === 'supplier' && (
+                  supplierSummaryError ? (
+                    <div className="small" style={{ color: 'var(--danger-text,#b91c1c)' }}>{supplierSummaryError}</div>
+                  ) : sortedSupplierSummary.length === 0 ? (
+                    <div className="small" style={{ color: 'var(--gray-500)', padding: '12px 0' }}>No hay proveedores disponibles.</div>
+                  ) : (
+                    <>
+                      <div style={{ marginBottom: 12 }}><strong style={{ fontSize: 13 }}>Top proveedores</strong></div>
+                      <div style={{ display: 'grid', gap: 12 }}>
+                        {sortedSupplierSummary.map((row) => (
+                          <div key={row.supplierId || row.supplierName}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                              <span style={{ fontSize: 13 }}>{row.supplierName || '(Sin proveedor)'}</span>
+                              <span style={{ fontSize: 13, fontWeight: 700 }}>{formatCurrency(row.totalAmount)}</span>
+                            </div>
+                            <div style={{ height: 6, background: 'var(--gray-100)', borderRadius: 99 }}>
+                              <div style={{ height: '100%', width: `${Math.min((Number(row.totalAmount) / maxSupplierAmount) * 100, 100)}%`, background: 'linear-gradient(90deg, var(--primary-mid), var(--primary-dark))', borderRadius: 99 }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )
+                )}
+              </div>
             </section>
 
             {/* Right column */}
