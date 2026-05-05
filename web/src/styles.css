@@ -782,33 +782,7 @@ body.theme-dark .dashboard-gauge::after { background: #0f172a; }
   color: var(--primary-dark);
 }
 
-.dashboard-column-chart {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  min-height: 180px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-}
-.dashboard-column-item { display: grid; gap: 6px; min-width: 90px; justify-items: center; }
-.dashboard-column-value { font-size: 11px; color: var(--gray-600); text-align: center; font-weight: 600; }
-.dashboard-column-track {
-  height: 120px;
-  width: 100%;
-  border-radius: 10px;
-  background: var(--gray-100);
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding: 3px;
-}
-body.theme-dark .dashboard-column-track { background: var(--gray-100); }
-.dashboard-column-fill {
-  width: 100%;
-  border-radius: 8px;
-  background: linear-gradient(180deg, var(--primary-mid), var(--primary-dark));
-}
-.dashboard-column-label { font-size: 11px; text-align: center; color: var(--gray-500); font-weight: 600; }
+
 
 /* ── Resumen / Categoría 2 / Proveedor tabs ──────────────
    JSX pattern: active = no class (default button = primary)
@@ -1152,10 +1126,7 @@ body.theme-dark .settings-menu-button.active {
 
   .dashboard-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-summary-grid { grid-template-columns: 1fr; }
-  .dashboard-column-item { min-width: 74px; }
-  .dashboard-column-chart { min-height: 150px; gap: 8px; }
-  .dashboard-column-track { height: 90px; }
-  .date-filter-inline { min-width: 100%; max-width: none; }
+.date-filter-inline { min-width: 100%; max-width: none; }
 
   .mobile-bottom-nav {
     display: grid;

@@ -2855,14 +2855,16 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refres
                 monthlyData.length === 0 ? (
                   <div className="small" style={{ color: 'var(--gray-500)', padding: '12px 0' }}>No hay datos mensuales disponibles.</div>
                 ) : (
-                  <div className="dashboard-column-chart">
+                  <div style={{ display: 'grid', gap: 10 }}>
                     {monthlyData.map((item) => (
-                      <div key={item.month} className="dashboard-column-item">
-                        <div className="dashboard-column-value">{formatCurrency(item.value)}</div>
-                        <div className="dashboard-column-track">
-                          <div className="dashboard-column-fill" style={{ height: `${Math.max(6, (item.value / maxMonthlyValue) * 100)}%` }} />
+                      <div key={item.month}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <span style={{ fontSize: 13 }}>{item.label}</span>
+                          <span style={{ fontSize: 13, fontWeight: 700 }}>{formatCurrency(item.value)}</span>
                         </div>
-                        <div className="dashboard-column-label">{item.label}</div>
+                        <div style={{ height: 6, background: 'var(--gray-100)', borderRadius: 99 }}>
+                          <div style={{ height: '100%', width: `${Math.min((item.value / maxMonthlyValue) * 100, 100)}%`, background: 'linear-gradient(90deg, var(--primary-mid), var(--primary-dark))', borderRadius: 99 }} />
+                        </div>
                       </div>
                     ))}
                   </div>
