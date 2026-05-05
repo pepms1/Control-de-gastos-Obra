@@ -2850,8 +2850,8 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refres
                 <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>Por proveedor</button>
               </div>
 
-              {/* ~13 filas × 36px/fila = 468px */}
-              <div style={{ maxHeight: 468, overflowY: 'auto' }}>
+              {/* ~14 filas × 36px/fila = 504px */}
+              <div style={{ maxHeight: 504, overflowY: 'auto' }}>
                 {viewMode === 'month' && (
                   monthlyData.length === 0 ? (
                     <div className="small" style={{ color: 'var(--gray-500)', padding: '12px 0' }}>No hay datos mensuales disponibles.</div>
