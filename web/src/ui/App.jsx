@@ -99,7 +99,7 @@ function getProjectDisplayName(project) {
 
 function getAdminPersonalizedProjects(projects, session) {
   const normalizedRole = normalizeRole(session?.role);
-  if (!isAdminRole(normalizedRole)) return Array.isArray(projects) ? projects : [];
+  if (!isAdminRole(normalizedRole) && !isSuperAdmin(normalizedRole)) return Array.isArray(projects) ? projects : [];
 
   const hiddenIds = new Set(
     Array.isArray(session?.uiPrefs?.hiddenProjectIds)
@@ -2817,7 +2817,7 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refres
     {
       label: 'Costo por m²',
       value: m2 > 0 ? formatCurrency(expenseTotalSinIva / m2) : '—',
-      helper: m2 > 0 ? `${m2.toLocaleString('es-MX')} m² del proyecto` : 'Sin área configurada',
+      helper: m2 > 0 ? `${m2.toLocaleString('es-MX')} m² · sin IVA` : 'Sin área configurada',
     },
   ];
 
@@ -2941,7 +2941,7 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refres
                       de {formatCurrency(totalObra)}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--gray-500)', textAlign: 'center', marginTop: 2 }}>
-                      Presupuesto estimado del proyecto
+                      Presupuesto estimado · calculado sin IVA
                     </div>
                   </>
                 ) : (
