@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
 import { isSapSboTransaction } from '../transactions/helpers.js';
 import { ImportSapScreen, LatestImportsScreen, SuspiciousProjectResolutionScreen } from './ImportAndAdminScreens.jsx';
@@ -2736,21 +2736,6 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refres
   const [monthlyData, setMonthlyData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [recentTransactions, setRecentTransactions] = useState([]);
-  const rightColRef = useRef(null);
-  const [rightColH, setRightColH] = useState(null);
-
-  useEffect(() => {
-    const el = rightColRef.current;
-    if (!el) return;
-    const mql = window.matchMedia('(min-width: 860px)');
-    const sync = () => setRightColH(mql.matches ? el.offsetHeight : null);
-    const ro = new ResizeObserver(sync);
-    ro.observe(el);
-    mql.addEventListener('change', sync);
-    sync();
-    return () => { ro.disconnect(); mql.removeEventListener('change', sync); };
-  }, []);
-
   const totalObra = estimatedBudget && estimatedBudget > 0 ? estimatedBudget : 0;
   const m2 = areaM2 && areaM2 > 0 ? areaM2 : 0;
 
@@ -2858,14 +2843,15 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refres
           <div className="dashboard-summary-grid" style={{ marginTop: 14 }}>
 
             {/* Left panel — tabs + chart */}
-            <section className="dashboard-panel" style={{ display: 'flex', flexDirection: 'column', gap: 0, overflow: 'hidden', ...(rightColH ? { height: rightColH } : {}) }}>
+            <section className="dashboard-panel" style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
               <div className="dashboard-tabs" style={{ marginBottom: 16, alignItems: 'center', flexShrink: 0 }}>
                 <button className={viewMode === 'month' ? '' : 'secondary'} onClick={() => setViewMode('month')}>Por mes</button>
                 <button className={viewMode === 'category' ? '' : 'secondary'} onClick={() => setViewMode('category')}>Por categoría</button>
                 <button className={viewMode === 'supplier' ? '' : 'secondary'} onClick={() => setViewMode('supplier')}>Por proveedor</button>
               </div>
 
-              <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+              {/* ~13 filas × 36px/fila = 468px */}
+              <div style={{ maxHeight: 468, overflowY: 'auto' }}>
                 {viewMode === 'month' && (
                   monthlyData.length === 0 ? (
                     <div className="small" style={{ color: 'var(--gray-500)', padding: '12px 0' }}>No hay datos mensuales disponibles.</div>
@@ -2934,7 +2920,7 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refres
             </section>
 
             {/* Right column */}
-            <div ref={rightColRef} style={{ display: 'grid', gap: 14, alignContent: 'start', alignSelf: 'start' }}>
+            <div style={{ display: 'grid', gap: 14, alignContent: 'start' }}>
 
               {/* Gauge — % Presupuesto ejecutado */}
               <section className="dashboard-panel dashboard-gauge-panel" style={{ alignItems: 'center', gap: 6 }}>
