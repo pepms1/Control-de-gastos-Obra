@@ -840,7 +840,13 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
         </div>
 
         <div className="grid" style={{ gap: 14 }}>
-          {section === 'project-meta' && <ProjectMetaSection />}
+          {section === 'project-meta' && (
+            <ProjectMetaSection
+              projects={projects}
+              selectedProjectId={selectedProjectId}
+              onProjectsUpdated={(updated) => onProjectCreated(updated)}
+            />
+          )}
 
           {section === 'my-project-visibility' && canUseAdminPreferences && (
             <MyProjectVisibilitySection
@@ -1021,48 +1027,126 @@ function FinancialKindReclassifySection({ projects, selectedProjectId }) {
 }
 
 
-function ProjectMetaSection() {
-  const [totalObra, setTotalObra] = useState(() => localStorage.getItem('dashboard_total_obra') || '');
-  const [saved, setSaved] = useState(false);
+function ProjectMetaSection({ projects, selectedProjectId, onProjectsUpdated }) {
+  const selectableProjects = Array.isArray(projects) ? projects : [];
+  const [projectId, setProjectId] = useState(selectedProjectId || selectableProjects[0]?._id || '');
+  const [areaM2, setAreaM2] = useState('');
+  const [estimatedBudget, setEstimatedBudget] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [messageType, setMessageType] = useState('success');
 
-  function handleSave(e) {
+  // Sync fields when project changes
+  useEffect(() => {
+    const proj = selectableProjects.find((p) => p._id === projectId);
+    setAreaM2(proj?.areaM2 != null ? String(proj.areaM2) : '');
+    setEstimatedBudget(proj?.estimatedBudget != null ? String(proj.estimatedBudget) : '');
+    setMessage('');
+  }, [projectId, projects]);
+
+  async function handleSave(e) {
     e.preventDefault();
-    if (totalObra.trim()) localStorage.setItem('dashboard_total_obra', totalObra.trim());
-    else localStorage.removeItem('dashboard_total_obra');
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    if (!projectId) return;
+    setSaving(true);
+    setMessage('');
+    try {
+      const fields = {
+        areaM2: areaM2.trim() === '' ? '' : areaM2.trim(),
+        estimatedBudget: estimatedBudget.trim() === '' ? '' : estimatedBudget.trim(),
+      };
+      const result = await api.updateProjectMeta(projectId, fields);
+      // Update local projects list so Dashboard reflects the change immediately
+      if (onProjectsUpdated) onProjectsUpdated(result);
+      setMessageType('success');
+      setMessage('✓ Guardado correctamente');
+    } catch (err) {
+      setMessageType('error');
+      setMessage(err?.message || 'Error al guardar');
+    } finally {
+      setSaving(false);
+      setTimeout(() => setMessage(''), 3000);
+    }
   }
+
+  const selectedProj = selectableProjects.find((p) => p._id === projectId);
 
   return (
     <div className="card" style={{ display: 'grid', gap: 16 }}>
       <div>
         <h4 style={{ margin: '0 0 4px', fontSize: 14, color: 'var(--primary-dark)' }}>Datos del proyecto</h4>
         <p className="small" style={{ margin: 0, color: 'var(--gray-500)' }}>
-          Configura el presupuesto total de la obra para ver el porcentaje ejecutado en el gauge del Dashboard.
-          El área en m² se configura directamente en el proyecto.
+          Configura los m² y el presupuesto estimado de cada proyecto. Estos valores se usan en el Dashboard
+          para calcular el costo por m² y el porcentaje de avance presupuestal.
         </p>
       </div>
-      <form onSubmit={handleSave} style={{ display: 'grid', gap: 14 }}>
-        <label style={{ display: 'grid', gap: 6 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--gray-700)' }}>Monto total de la obra (sin IVA)</span>
-          <input
-            type="number"
-            min="1"
-            step="0.01"
-            placeholder="Ej. 1200000"
-            value={totalObra}
-            onChange={(e) => setTotalObra(e.target.value)}
-            style={{ maxWidth: 280 }}
-          />
-          <span className="small" style={{ color: 'var(--gray-500)' }}>
-            Usado para calcular el % de presupuesto ejecutado en el Dashboard.
-          </span>
-        </label>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button type="submit">Guardar cambios</button>
-          {saved && <span style={{ fontSize: 13, color: 'var(--success-text,#15803d)', fontWeight: 600 }}>✓ Guardado</span>}
-        </div>
-      </form>
+
+      {selectableProjects.length === 0 ? (
+        <div className="small" style={{ color: 'var(--gray-500)' }}>No hay proyectos disponibles.</div>
+      ) : (
+        <form onSubmit={handleSave} style={{ display: 'grid', gap: 14 }}>
+          <label style={{ display: 'grid', gap: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--gray-700)' }}>Proyecto</span>
+            <select
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              style={{ maxWidth: 360 }}
+            >
+              {selectableProjects.map((p) => (
+                <option key={p._id} value={p._id}>
+                  {p.displayName || p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--gray-700)' }}>Área del proyecto (m²)</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                placeholder="Ej. 2500"
+                value={areaM2}
+                onChange={(e) => setAreaM2(e.target.value)}
+              />
+              <span className="small" style={{ color: 'var(--gray-500)' }}>
+                Usado para el KPI Costo por m² en el Dashboard.
+              </span>
+            </label>
+
+            <label style={{ display: 'grid', gap: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--gray-700)' }}>Presupuesto estimado (sin IVA)</span>
+              <input
+                type="number"
+                min="1"
+                step="0.01"
+                placeholder="Ej. 1200000"
+                value={estimatedBudget}
+                onChange={(e) => setEstimatedBudget(e.target.value)}
+              />
+              <span className="small" style={{ color: 'var(--gray-500)' }}>
+                Usado para el gauge de % ejecutado en el Dashboard.
+              </span>
+            </label>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <button type="submit" disabled={saving || !projectId}>
+              {saving ? 'Guardando…' : 'Guardar cambios'}
+            </button>
+            {message && (
+              <span style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: messageType === 'success' ? 'var(--success-text,#15803d)' : 'var(--danger-text,#b91c1c)',
+              }}>
+                {message}
+              </span>
+            )}
+          </div>
+        </form>
+      )}
     </div>
   );
 }
@@ -2567,6 +2651,7 @@ function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selec
   const isIncome = dashboardType === 'income';
   const selectedProject = (projects || []).find((p) => String(p._id) === String(selectedProjectId)) || null;
   const areaM2 = selectedProject?.areaM2 ?? null;
+  const estimatedBudget = selectedProject?.estimatedBudget ?? null;
 
   return (
     <div className="grid" style={{ gap: 10 }}>
@@ -2593,9 +2678,9 @@ function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selec
       </div>
 
       {isIncome ? (
-        <DashboardIngresos selectedProjectId={selectedProjectId} areaM2={areaM2} refreshKey={refreshKey} />
+        <DashboardIngresos selectedProjectId={selectedProjectId} areaM2={areaM2} estimatedBudget={estimatedBudget} refreshKey={refreshKey} />
       ) : (
-        <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} areaM2={areaM2} refreshKey={refreshKey} />
+        <Dashboard isAdmin={isAdmin} selectedProjectId={selectedProjectId} areaM2={areaM2} estimatedBudget={estimatedBudget} refreshKey={refreshKey} />
       )}
     </div>
   );
@@ -2641,7 +2726,7 @@ async function fetchExpenseStats() {
   };
 }
 
-function Dashboard({ isAdmin, selectedProjectId, areaM2, refreshKey }) {
+function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refreshKey }) {
   const [stats, setStats] = useState(null);
   const [supplierSummary, setSupplierSummary] = useState([]);
   const [supplierSummaryError, setSupplierSummaryError] = useState('');
@@ -2652,8 +2737,8 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, refreshKey }) {
   const [loading, setLoading] = useState(true);
   const [recentTransactions, setRecentTransactions] = useState([]);
 
-  const totalObra = Number(localStorage.getItem('dashboard_total_obra') || '') || 0;
-  const m2 = areaM2 && areaM2 > 0 ? areaM2 : (Number(localStorage.getItem('dashboard_m2') || '') || 0);
+  const totalObra = estimatedBudget && estimatedBudget > 0 ? estimatedBudget : 0;
+  const m2 = areaM2 && areaM2 > 0 ? areaM2 : 0;
 
   useEffect(() => {
     let ok = true;

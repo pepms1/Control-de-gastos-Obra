@@ -530,4 +530,10 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ areaM2: areaM2 === '' ? '' : Number(areaM2) }),
     }),
+
+  updateProjectMeta: (projectId, fields) =>
+    backendReq(`/api/projects/${projectId}/meta`, {
+      method: 'PATCH',
+      body: JSON.stringify(fields),
+    }),
 };
