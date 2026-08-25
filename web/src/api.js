@@ -395,6 +395,15 @@ export const api = {
       method: 'DELETE',
     }),
 
+  importEstimationConceptos: (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    return backendReq('/api/estimation-budgets/import-conceptos', {
+      method: 'POST',
+      body: formData,
+    });
+  },
+
   estimationBudgetTransactions: (id, params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return backendReq(`/api/estimation-budgets/${id}/transactions${qs ? `?${qs}` : ''}`);
