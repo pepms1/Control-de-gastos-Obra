@@ -45,10 +45,12 @@ class EstimationsPhase1Tests(unittest.TestCase):
     def setUp(self):
         self.project_id = str(ObjectId())
 
-    def _fake_db(self, estimation_budgets=None, estimations=None, projects=None):
+    def _fake_db(self, estimation_budgets=None, estimations=None, projects=None, transactions=None):
         return SimpleNamespace(
             estimationBudgets=FakeCollectionWithCursor(estimation_budgets or []),
             estimations=FakeCollectionWithCursor(estimations or []),
+            estimationPaymentLinks=FakeCollectionWithCursor([]),
+            transactions=FakeCollection(transactions or []),
             projects=FakeCollection(projects or [{'_id': ObjectId(self.project_id)}]),
         )
 
@@ -280,6 +282,109 @@ class EstimationsPhase1Tests(unittest.TestCase):
             with self.assertRaises(HTTPException) as ctx:
                 main.delete_estimation_budget(budget['id'], user=SUPERADMIN)
         self.assertEqual(ctx.exception.status_code, 409)
+
+    # ---- paidAmount: sole-active-budget fallback vs. manual assignment ----
+
+    def _acero_transaction(self, amount, **overrides):
+        tx = {
+            '_id': str(ObjectId()),
+            'projectId': self.project_id,
+            'type': 'EXPENSE',
+            'amount': amount,
+            'sap': {'cardCode': 'P001', 'businessPartner': 'ACERO SA'},
+        }
+        tx.update(overrides)
+        return tx
+
+    def test_paid_amount_falls_back_to_supplier_total_when_sole_active_budget(self):
+        tx = [self._acero_transaction(100), self._acero_transaction(150)]
+        fake_db = self._fake_db(transactions=tx)
+
+        with patch.object(main, 'db', fake_db), patch.object(
+            main, 'with_legacy_project_filter', side_effect=lambda q, _p: q
+        ), patch.object(main, 'build_transactions_query', return_value={}):
+            budget = self._create_budget(fake_db)
+
+        self.assertEqual(budget['paidAmount'], 250.0)
+        self.assertEqual(budget['remainingToPayAmount'], budget['totalContractedAmount'] - 250.0)
+
+    def test_paid_amount_does_not_fallback_when_supplier_has_two_active_budgets(self):
+        # first_budget's own create-time response legitimately shows the
+        # fallback total (it was the sole active budget for that instant);
+        # what matters is that once a second active budget exists for the
+        # same supplier, re-fetching EITHER one no longer double-counts via
+        # the fallback — both read 0 until payments are manually assigned.
+        tx = [self._acero_transaction(100)]
+        fake_db = self._fake_db(transactions=tx)
+
+        with patch.object(main, 'db', fake_db), patch.object(
+            main, 'with_legacy_project_filter', side_effect=lambda q, _p: q
+        ), patch.object(main, 'build_transactions_query', return_value={}):
+            first_budget = self._create_budget(fake_db)
+            second_budget = self._create_budget(fake_db, name='Segundo contrato mismo proveedor')
+            first_reloaded = main.get_estimation_budget(first_budget['id'], user=SUPERADMIN)
+            second_reloaded = main.get_estimation_budget(second_budget['id'], user=SUPERADMIN)
+
+        self.assertEqual(first_reloaded['paidAmount'], 0.0)
+        self.assertEqual(second_reloaded['paidAmount'], 0.0)
+
+    def test_manual_transaction_link_assigns_paid_amount_to_one_budget_only(self):
+        tx_a = self._acero_transaction(100)
+        tx_b = self._acero_transaction(50)
+        fake_db = self._fake_db(transactions=[tx_a, tx_b])
+
+        with patch.object(main, 'db', fake_db), patch.object(
+            main, 'with_legacy_project_filter', side_effect=lambda q, _p: q
+        ), patch.object(main, 'build_transactions_query', return_value={}):
+            first_budget = self._create_budget(fake_db)
+            second_budget = self._create_budget(fake_db, name='Segundo contrato mismo proveedor')
+
+            main.replace_estimation_budget_transaction_links(
+                first_budget['id'], {'selectedTransactionIds': [tx_a['_id']]}, user=SUPERADMIN
+            )
+            main.replace_estimation_budget_transaction_links(
+                second_budget['id'], {'selectedTransactionIds': [tx_b['_id']]}, user=SUPERADMIN
+            )
+
+            first_reloaded = main.get_estimation_budget(first_budget['id'], user=SUPERADMIN)
+            second_reloaded = main.get_estimation_budget(second_budget['id'], user=SUPERADMIN)
+
+        self.assertEqual(first_reloaded['paidAmount'], 100.0)
+        self.assertEqual(second_reloaded['paidAmount'], 50.0)
+
+    def test_assigning_transaction_already_linked_to_another_budget_conflicts(self):
+        tx_a = self._acero_transaction(100)
+        fake_db = self._fake_db(transactions=[tx_a])
+
+        with patch.object(main, 'db', fake_db), patch.object(
+            main, 'with_legacy_project_filter', side_effect=lambda q, _p: q
+        ), patch.object(main, 'build_transactions_query', return_value={}):
+            first_budget = self._create_budget(fake_db)
+            second_budget = self._create_budget(fake_db, name='Segundo contrato mismo proveedor')
+
+            main.replace_estimation_budget_transaction_links(
+                first_budget['id'], {'selectedTransactionIds': [tx_a['_id']]}, user=SUPERADMIN
+            )
+            with self.assertRaises(HTTPException) as ctx:
+                main.replace_estimation_budget_transaction_links(
+                    second_budget['id'], {'selectedTransactionIds': [tx_a['_id']]}, user=SUPERADMIN
+                )
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_delete_estimation_budget_cascades_payment_links(self):
+        tx_a = self._acero_transaction(100)
+        fake_db = self._fake_db(transactions=[tx_a])
+
+        with patch.object(main, 'db', fake_db), patch.object(
+            main, 'with_legacy_project_filter', side_effect=lambda q, _p: q
+        ), patch.object(main, 'build_transactions_query', return_value={}):
+            budget = self._create_budget(fake_db)
+            main.replace_estimation_budget_transaction_links(
+                budget['id'], {'selectedTransactionIds': [tx_a['_id']]}, user=SUPERADMIN
+            )
+            main.delete_estimation_budget(budget['id'], user=SUPERADMIN)
+
+        self.assertEqual(fake_db.estimationPaymentLinks.find({'estimationBudgetId': budget['id']}), [])
 
     def test_viewer_role_is_rejected(self):
         with self.assertRaises(HTTPException) as ctx:
