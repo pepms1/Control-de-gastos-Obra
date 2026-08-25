@@ -18,6 +18,7 @@ import boto3
 import re
 import csv
 import openpyxl
+import pdfplumber
 import os
 import logging
 import unicodedata
@@ -10673,6 +10674,213 @@ def delete_estimation(estimation_budget_id: str, estimation_id: str, user: dict 
         {"$set": {"isDeleted": True, "updatedAt": datetime.now(timezone.utc).isoformat()}},
     )
     return {"ok": True}
+
+
+# ---- Import de conceptos (Excel/CSV/PDF) para presupuestos de Estimaciones ----
+#
+# Stateless: solo lee el archivo y devuelve renglones candidatos; nunca
+# escribe en la base de datos. El guardado real sigue pasando por
+# POST/PATCH /api/estimation-budgets con lo que el usuario deje en la
+# tabla de conceptos (ya editable) tras revisar el resultado.
+
+
+def normalize_concepto_header(value) -> str:
+    text = unicodedata.normalize("NFD", str(value or "").replace("﻿", "").strip().lower())
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[^a-z0-9]", "", text)
+
+
+CONCEPTO_HEADER_ALIASES = {
+    "concepto": "concepto",
+    "descripcion": "concepto",
+    "descripciondelconcepto": "concepto",
+    "conceptodescripcion": "concepto",
+    "partida": "concepto",
+    "actividad": "concepto",
+    "trabajo": "concepto",
+    "unidad": "unidad",
+    "u": "unidad",
+    "um": "unidad",
+    "unid": "unidad",
+    "unidaddemedida": "unidad",
+    "cantidad": "cantidad",
+    "cant": "cantidad",
+    "qty": "cantidad",
+    "cantidadcontratada": "cantidad",
+    "preciounitario": "preciounitario",
+    "precunitario": "preciounitario",
+    "precunit": "preciounitario",
+    "punitario": "preciounitario",
+    "pu": "preciounitario",
+    "costounitario": "preciounitario",
+    "preciou": "preciounitario",
+    "precio": "preciounitario",
+}
+
+CONCEPTO_REQUIRED_CANONICAL_KEYS = ("concepto", "cantidad", "preciounitario")
+
+
+def detect_concepto_header_row(rows: list, max_scan_rows: int = 5):
+    for row_idx, row in enumerate(rows[:max_scan_rows]):
+        header_index: dict[str, int] = {}
+        for col_idx, cell in enumerate(row or []):
+            canonical = CONCEPTO_HEADER_ALIASES.get(normalize_concepto_header(cell))
+            if canonical and canonical not in header_index:
+                header_index[canonical] = col_idx
+        if all(key in header_index for key in CONCEPTO_REQUIRED_CANONICAL_KEYS):
+            return row_idx, header_index
+    return None, {}
+
+
+def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False):
+    warnings: list[str] = []
+    cleaned_rows = [
+        list(row) for row in (rows or []) if row is not None and any(str(cell or "").strip() for cell in row)
+    ]
+    if not cleaned_rows:
+        return [], warnings
+
+    header_row_idx, header_index = detect_concepto_header_row(cleaned_rows)
+    if header_row_idx is None:
+        header_index = {"concepto": 0, "unidad": 1, "cantidad": 2, "preciounitario": 3}
+        data_rows = cleaned_rows
+        warnings.append(
+            "No se detectaron encabezados reconocibles; se asumió el orden Concepto, Unidad, Cantidad, "
+            "Precio Unitario. Revisa cada renglón."
+        )
+    else:
+        data_rows = cleaned_rows[header_row_idx + 1:]
+
+    def cell_value(row, key):
+        idx = header_index.get(key)
+        if idx is None or idx >= len(row):
+            return None
+        return row[idx]
+
+    items = []
+    skipped = 0
+    for row in data_rows:
+        description = normalize_non_empty_string(cell_value(row, "concepto"))
+        unit = normalize_non_empty_string(cell_value(row, "unidad")) or ""
+        quantity_raw = cell_value(row, "cantidad")
+        unit_price_raw = cell_value(row, "preciounitario")
+
+        try:
+            quantity = parse_decimal(quantity_raw) if quantity_raw not in (None, "") else None
+        except ValueError:
+            quantity = None
+        try:
+            unit_price = parse_decimal(unit_price_raw) if unit_price_raw not in (None, "") else None
+        except ValueError:
+            unit_price = None
+
+        if not description or quantity is None or unit_price is None or quantity <= 0:
+            skipped += 1
+            continue
+
+        items.append(
+            {
+                "description": description,
+                "unit": unit,
+                "quantity": quantity,
+                "unitPrice": max(unit_price, 0.0),
+            }
+        )
+
+    if skipped:
+        warnings.append(f"Se omitieron {skipped} renglón(es) sin cantidad/precio numérico válido (posibles totales o notas).")
+    if low_confidence and items:
+        warnings.append("Estas filas se extrajeron de texto sin tabla clara (baja confianza); revísalas con cuidado.")
+
+    return items, warnings
+
+
+def extract_table_rows_from_xlsx_bytes(file_bytes: bytes) -> list:
+    wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    ws = wb.active
+    return [list(row) for row in ws.iter_rows(values_only=True)]
+
+
+def extract_table_rows_from_csv_bytes(file_bytes: bytes) -> list:
+    try:
+        decoded = file_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        decoded = file_bytes.decode("latin-1")
+    return list(csv.reader(decoded.splitlines()))
+
+
+def extract_concepto_rows_from_pdf_bytes(file_bytes: bytes):
+    warnings: list[str] = []
+    items: list[dict] = []
+    with pdfplumber.open(BytesIO(file_bytes)) as pdf:
+        for page_number, page in enumerate(pdf.pages, start=1):
+            tables = page.extract_tables() or []
+            page_items: list[dict] = []
+            for table in tables:
+                table_items, table_warnings = parse_concepto_rows_from_table(table)
+                page_items.extend(table_items)
+                warnings.extend(table_warnings)
+
+            if page_items:
+                items.extend(page_items)
+                continue
+
+            text = page.extract_text() or ""
+            if not text.strip():
+                warnings.append(f"La página {page_number} no tiene texto seleccionable (posible escaneo); no se pudo leer automáticamente.")
+                continue
+
+            text_rows = [re.split(r"\s{2,}", line.strip()) for line in text.splitlines() if line.strip()]
+            fallback_items, fallback_warnings = parse_concepto_rows_from_table(text_rows, low_confidence=True)
+            items.extend(fallback_items)
+            warnings.extend(fallback_warnings)
+
+    return items, warnings
+
+
+@app.post("/api/estimation-budgets/import-conceptos")
+async def import_estimation_conceptos(
+    file: UploadFile = File(...),
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    file_name = (file.filename or "").lower()
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="El archivo está vacío")
+
+    if file_name.endswith(".xlsx"):
+        source_type = "xlsx"
+        try:
+            rows = extract_table_rows_from_xlsx_bytes(file_bytes)
+        except Exception:
+            raise HTTPException(status_code=400, detail="No se pudo leer el archivo de Excel (.xlsx)")
+        items, warnings = parse_concepto_rows_from_table(rows)
+    elif file_name.endswith(".csv"):
+        source_type = "csv"
+        try:
+            rows = extract_table_rows_from_csv_bytes(file_bytes)
+        except Exception:
+            raise HTTPException(status_code=400, detail="No se pudo leer el archivo CSV")
+        items, warnings = parse_concepto_rows_from_table(rows)
+    elif file_name.endswith(".pdf"):
+        source_type = "pdf"
+        try:
+            items, warnings = extract_concepto_rows_from_pdf_bytes(file_bytes)
+        except Exception:
+            raise HTTPException(status_code=400, detail="No se pudo leer el archivo PDF")
+    else:
+        raise HTTPException(status_code=400, detail="Formato no soportado. Usa .xlsx, .csv o .pdf")
+
+    if not items:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No se pudo extraer ningún concepto del archivo. Si es un PDF escaneado, prueba con Excel/CSV "
+                "o captura los conceptos manualmente."
+            ),
+        )
+
+    return {"items": items, "warnings": warnings, "sourceType": source_type}
 
 
 @app.get("/api/admin/trabajos-especiales/suppliers")

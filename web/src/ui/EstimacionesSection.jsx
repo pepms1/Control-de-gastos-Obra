@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 
 const moneyFormatter = new Intl.NumberFormat('en-US', {
@@ -130,6 +130,10 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
   const [showEstimationForm, setShowEstimationForm] = useState(false);
   const [editingEstimation, setEditingEstimation] = useState(null);
   const [estimationForm, setEstimationForm] = useState(null);
+
+  const [importingConceptos, setImportingConceptos] = useState(false);
+  const [importWarnings, setImportWarnings] = useState([]);
+  const importFileInputRef = useRef(null);
 
   const [assigningBudget, setAssigningBudget] = useState(null);
   const [candidateTransactions, setCandidateTransactions] = useState([]);
@@ -271,11 +275,13 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
     setEditingBudgetRow(null);
     setShowForm(false);
     setForm(emptyBudgetForm(selectedProjectId));
+    setImportWarnings([]);
   }
 
   function startCreateBudget() {
     setEditingBudgetRow(null);
     setForm(emptyBudgetForm(selectedProjectId));
+    setImportWarnings([]);
     setShowForm(true);
   }
 
@@ -303,6 +309,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
         unitPrice: String(item.unitPrice ?? ''),
       })),
     });
+    setImportWarnings([]);
     setShowForm(true);
   }
 
@@ -319,6 +326,46 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
 
   function removeConceptoRow(index) {
     setForm((prev) => ({ ...prev, lineItems: prev.lineItems.filter((_, i) => i !== index) }));
+  }
+
+  function isBlankConceptoRow(row) {
+    return !String(row.description || '').trim() && !String(row.quantity || '').trim() && !String(row.unitPrice || '').trim();
+  }
+
+  async function handleImportConceptosFile(event) {
+    const file = event.target.files?.[0];
+    if (event.target) event.target.value = '';
+    if (!file) return;
+
+    setImportingConceptos(true);
+    setImportWarnings([]);
+    setError('');
+    try {
+      const result = await api.importEstimationConceptos(file);
+      const importedRows = (Array.isArray(result?.items) ? result.items : []).map((item) => ({
+        id: generateId(),
+        description: item.description || '',
+        unit: item.unit || '',
+        quantity: String(item.quantity ?? ''),
+        unitPrice: String(item.unitPrice ?? ''),
+      }));
+      if (!importedRows.length) {
+        setError('El archivo no arrojó conceptos importables.');
+        return;
+      }
+      setForm((prev) => ({
+        ...prev,
+        lineItems:
+          prev.lineItems.length === 1 && isBlankConceptoRow(prev.lineItems[0])
+            ? importedRows
+            : [...prev.lineItems, ...importedRows],
+      }));
+      setImportWarnings(Array.isArray(result?.warnings) ? result.warnings : []);
+    } catch (e) {
+      setError(e.message || 'No se pudo importar el archivo');
+    } finally {
+      setImportingConceptos(false);
+    }
   }
 
   async function submitBudgetForm(event) {
@@ -700,8 +747,32 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
           <div>
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
               <label>Conceptos</label>
-              <button type="button" className="secondary" onClick={addConceptoRow}>+ Agregar concepto</button>
+              <div className="row" style={{ gap: 6 }}>
+                <input
+                  ref={importFileInputRef}
+                  type="file"
+                  accept=".xlsx,.csv,.pdf"
+                  onChange={handleImportConceptosFile}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => importFileInputRef.current?.click()}
+                  disabled={importingConceptos}
+                >
+                  {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF'}
+                </button>
+                <button type="button" className="secondary" onClick={addConceptoRow}>+ Agregar concepto</button>
+              </div>
             </div>
+            {importWarnings.length > 0 && (
+              <div className="small" style={{ color: 'var(--gray-600)', background: 'var(--gray-100)', borderRadius: 6, padding: 8, marginBottom: 6 }}>
+                {importWarnings.map((warning, idx) => (
+                  <div key={idx}>⚠ {warning}</div>
+                ))}
+              </div>
+            )}
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
