@@ -131,6 +131,12 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
   const [editingEstimation, setEditingEstimation] = useState(null);
   const [estimationForm, setEstimationForm] = useState(null);
 
+  const [assigningBudget, setAssigningBudget] = useState(null);
+  const [candidateTransactions, setCandidateTransactions] = useState([]);
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState(new Set());
+  const [transactionSearch, setTransactionSearch] = useState('');
+  const [loadingTransactions, setLoadingTransactions] = useState(false);
+
   async function loadEstimationBudgets() {
     setLoading(true);
     setError('');
@@ -163,6 +169,10 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
     setEditingEstimation(null);
     setShowForm(false);
     setEditingBudgetRow(null);
+    setAssigningBudget(null);
+    setCandidateTransactions([]);
+    setSelectedTransactionIds(new Set());
+    setTransactionSearch('');
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -239,9 +249,10 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
           acc.totalContractedAmount += Number(row.totalContractedAmount) || 0;
           acc.totalRetainedToDate += Number(row.totalRetainedToDate) || 0;
           acc.remainingAdvanceBalance += Number(row.remainingAdvanceBalance) || 0;
+          acc.paidAmount += Number(row.paidAmount) || 0;
           return acc;
         },
-        { totalContractedAmount: 0, totalRetainedToDate: 0, remainingAdvanceBalance: 0 },
+        { totalContractedAmount: 0, totalRetainedToDate: 0, remainingAdvanceBalance: 0, paidAmount: 0 },
       ),
     [rows],
   );
@@ -414,6 +425,56 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
     setEstimationsList([]);
     setShowEstimationForm(false);
     setEditingEstimation(null);
+    closeAssignPayments();
+  }
+
+  async function loadBudgetPaymentTransactions(budgetId, search = '') {
+    if (!budgetId) return;
+    setLoadingTransactions(true);
+    setError('');
+    try {
+      const payload = await api.estimationBudgetTransactions(budgetId, search ? { search } : {});
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      setCandidateTransactions(items);
+      setSelectedTransactionIds(new Set(items.filter((item) => item.isAssignedToCurrentBudget).map((item) => item.id)));
+    } catch (e) {
+      setCandidateTransactions([]);
+      setSelectedTransactionIds(new Set());
+      setError(e.message || 'No se pudieron cargar las transacciones del presupuesto');
+    } finally {
+      setLoadingTransactions(false);
+    }
+  }
+
+  function startAssignPayments(row) {
+    setAssigningBudget(row);
+    setTransactionSearch('');
+    loadBudgetPaymentTransactions(row.id);
+  }
+
+  function closeAssignPayments() {
+    setAssigningBudget(null);
+    setCandidateTransactions([]);
+    setSelectedTransactionIds(new Set());
+    setTransactionSearch('');
+  }
+
+  async function saveAssignedPayments() {
+    if (!assigningBudget?.id) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api.saveEstimationBudgetTransactionLinks(assigningBudget.id, {
+        selectedTransactionIds: Array.from(selectedTransactionIds),
+      });
+      await loadEstimationBudgets();
+      if (selectedBudgetId === assigningBudget.id) await loadBudgetDetail(assigningBudget.id);
+      await loadBudgetPaymentTransactions(assigningBudget.id, transactionSearch);
+    } catch (e) {
+      setError(e.message || 'No se pudieron guardar las asignaciones');
+    } finally {
+      setSaving(false);
+    }
   }
 
   function buildEstimationFormFromBudget(previousCumulativeByConceptoId) {
@@ -747,6 +808,13 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
             </div>
             <div className="kpi-card">
               <div>
+                <div className="kpi-label">Total pagado</div>
+                <div className="kpi-value">{formatCurrency(listTotals.paidAmount)}</div>
+                <div className="kpi-sub">egresos ligados a estos presupuestos</div>
+              </div>
+            </div>
+            <div className="kpi-card">
+              <div>
                 <div className="kpi-label">Retenido a la fecha</div>
                 <div className="kpi-value">{formatCurrency(listTotals.totalRetainedToDate)}</div>
                 <div className="kpi-sub">fondo de garantía acumulado</div>
@@ -799,6 +867,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                       <th>Proveedor</th>
                       <th>Presupuesto</th>
                       <th>Total contratado</th>
+                      <th>Pagado</th>
                       <th>Anticipo</th>
                       <th>% Retención</th>
                       <th># Estimaciones</th>
@@ -812,6 +881,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                         <td>{row.supplierNameSnapshot || row.supplierKey}</td>
                         <td>{row.name || '—'}</td>
                         <td>{formatCurrency(row.totalContractedAmount)}</td>
+                        <td>{formatCurrency(row.paidAmount)}</td>
                         <td>{formatCurrency(row.advanceAmount)}</td>
                         <td>{formatPct(row.retentionPct)}</td>
                         <td>{row.estimationsCount}</td>
@@ -826,7 +896,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                     ))}
                     {!rows.length && (
                       <tr>
-                        <td colSpan={8} className="small" style={{ textAlign: 'center' }}>
+                        <td colSpan={9} className="small" style={{ textAlign: 'center' }}>
                           No hay presupuestos para los filtros seleccionados.
                         </td>
                       </tr>
@@ -853,6 +923,13 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                     <div className="kpi-label">{budgetDetail.name || budgetDetail.supplierNameSnapshot}</div>
                     <div className="kpi-value">{formatCurrency(budgetDetail.totalContractedAmount)}</div>
                     <div className="kpi-sub">total contratado</div>
+                  </div>
+                </div>
+                <div className="kpi-card">
+                  <div>
+                    <div className="kpi-label">Pagado</div>
+                    <div className="kpi-value">{formatCurrency(budgetDetail.paidAmount)}</div>
+                    <div className="kpi-sub">saldo: {formatCurrency(budgetDetail.remainingToPayAmount)}</div>
                   </div>
                 </div>
                 <div className="kpi-card">
@@ -885,6 +962,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                   <strong>{budgetDetail.supplierNameSnapshot}</strong>
                   <div style={{ flex: 1 }} />
                   <button type="button" className="secondary" onClick={() => startEditBudget(budgetDetail)}>Editar presupuesto</button>
+                  <button type="button" className="secondary" onClick={() => startAssignPayments(budgetDetail)}>Asignar pagos</button>
                   {!showEstimationForm && (
                     <button type="button" onClick={startCreateEstimation} disabled={budgetDetail.isActive === false}>
                       + Nueva estimación
@@ -952,6 +1030,88 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                   </table>
                 </div>
               </div>
+
+              {assigningBudget && (
+                <div className="grid budgets-assignment-panel" style={{ gap: 8, borderRadius: 10, padding: 12 }}>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong>Asignar pagos · {assigningBudget.supplierNameSnapshot || assigningBudget.supplierKey}</strong>
+                    <button type="button" className="secondary" onClick={closeAssignPayments}>Cerrar</button>
+                  </div>
+                  <div className="small">
+                    Por defecto, si este es el único presupuesto activo del proveedor, se le atribuyen automáticamente todos sus
+                    egresos. En cuanto exista más de un presupuesto activo para el mismo proveedor, asigna aquí manualmente qué
+                    pagos corresponden a cada uno.
+                  </div>
+                  <div className="row" style={{ gap: 8 }}>
+                    <input
+                      value={transactionSearch}
+                      onChange={(e) => setTransactionSearch(e.target.value)}
+                      placeholder="Buscar por descripción / concepto"
+                      style={{ minWidth: 260 }}
+                    />
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => loadBudgetPaymentTransactions(assigningBudget.id, transactionSearch)}
+                      disabled={loadingTransactions}
+                    >
+                      Filtrar
+                    </button>
+                    <button type="button" onClick={saveAssignedPayments} disabled={saving || loadingTransactions}>
+                      {saving ? 'Guardando...' : 'Guardar asignación'}
+                    </button>
+                  </div>
+                  {loadingTransactions ? (
+                    <div className="small">Cargando transacciones...</div>
+                  ) : (
+                    <div style={{ overflowX: 'auto', maxHeight: 320 }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th></th>
+                            <th>Fecha</th>
+                            <th>Descripción</th>
+                            <th>Monto</th>
+                            <th>Estado</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {candidateTransactions.map((tx) => {
+                            const disabled = tx.isAssignedToOtherBudget;
+                            const checked = selectedTransactionIds.has(tx.id);
+                            return (
+                              <tr key={tx.id}>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={disabled}
+                                    onChange={(e) => {
+                                      const next = new Set(selectedTransactionIds);
+                                      if (e.target.checked) next.add(tx.id);
+                                      else next.delete(tx.id);
+                                      setSelectedTransactionIds(next);
+                                    }}
+                                  />
+                                </td>
+                                <td>{formatDate(tx.date)}</td>
+                                <td>{tx.description || '—'}</td>
+                                <td>{formatCurrency(tx.amountWithTax)}</td>
+                                <td>{tx.isAssignedToOtherBudget ? 'Asignado a otro presupuesto' : (tx.isAssignedToCurrentBudget ? 'Asignado a este presupuesto' : 'Libre')}</td>
+                              </tr>
+                            );
+                          })}
+                          {!candidateTransactions.length && (
+                            <tr>
+                              <td colSpan={5} className="small" style={{ textAlign: 'center' }}>No hay transacciones disponibles.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {showEstimationForm && estimationForm && (
                 <form className="card" style={{ display: 'grid', gap: 10, padding: 16 }} onSubmit={submitEstimationForm}>

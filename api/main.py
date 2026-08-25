@@ -10105,9 +10105,79 @@ def validate_concepto_shrink_allowed(existing_line_items: list[dict], new_line_i
             raise HTTPException(status_code=409, detail=f"Cannot reduce concepto quantity below recorded progress: {concepto_id}")
 
 
+def _count_active_estimation_budgets_for_supplier(project_id: str, supplier_key: str) -> int:
+    if not project_id or not supplier_key:
+        return 0
+    rows = db.estimationBudgets.find(
+        {"projectId": project_id, "supplierKey": supplier_key, "isActive": True},
+        {"_id": 1},
+    )
+    return len(list(rows))
+
+
+# Mirrors compute_budget_metrics' paidAmount logic for the legacy Presupuestos
+# module: manual links win once any exist; otherwise, if this is the ONLY
+# active estimation budget for the supplier, fall back to every EXPENSE
+# transaction bucketed to that supplier (avoids double counting once a
+# supplier has more than one active estimation budget and needs manual
+# assignment). Always tax-inclusive — this reflects real money paid out.
+def compute_estimation_budget_paid_amount(
+    project_id: str,
+    supplier_key: str,
+    estimation_budget_id: str,
+    estimation_budget_is_active: bool = True,
+) -> float:
+    link_rows = list(db.estimationPaymentLinks.find({"estimationBudgetId": estimation_budget_id}, {"transactionId": 1}))
+    linked_transaction_ids = _normalize_transaction_id_values([row.get("transactionId") for row in link_rows])
+    if linked_transaction_ids:
+        tx_query = _build_transaction_ids_query(linked_transaction_ids)
+        if not tx_query:
+            return 0.0
+        movements = list(
+            db.transactions.find(
+                {
+                    "$and": [
+                        with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id),
+                        tx_query,
+                    ]
+                },
+                {
+                    "_id": 1,
+                    "amount": 1,
+                    "tax": 1,
+                    "supplierId": 1,
+                    "supplier_id": 1,
+                    "vendor_id": 1,
+                    "supplierName": 1,
+                    "supplierCardCode": 1,
+                    "businessPartner": 1,
+                    "proveedorNombre": 1,
+                    "beneficiario": 1,
+                    "sap.cardCode": 1,
+                    "sap.businessPartner": 1,
+                },
+            )
+        )
+        trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
+        paid_amount = 0.0
+        for tx in movements:
+            if _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key) != supplier_key:
+                continue
+            paid_amount += float(tx.get("amount") or 0)
+        return round(paid_amount, 2)
+
+    if estimation_budget_is_active and _count_active_estimation_budgets_for_supplier(project_id, supplier_key) == 1:
+        totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=True)
+        return round(float(totals_by_bucket.get(supplier_key) or 0), 2)
+
+    return 0.0
+
+
 def serialize_estimation_budget(doc: dict) -> dict:
     payload = serialize_raw_doc(doc)
     estimation_budget_id = str(payload.get("id") or "")
+    project_id = str(payload.get("projectId") or "")
+    supplier_key = str(payload.get("supplierKey") or "")
     rows = list(
         db.estimations.find(
             {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}},
@@ -10120,6 +10190,13 @@ def serialize_estimation_budget(doc: dict) -> dict:
     payload["remainingAdvanceBalance"] = round(max(float(payload.get("advanceAmount") or 0) - amortized, 0), 2)
     history = compute_previous_cumulative_quantities(estimation_budget_id)
     payload["conceptoIdsWithHistory"] = [concepto_id for concepto_id, qty in history.items() if qty > 0]
+    payload["paidAmount"] = compute_estimation_budget_paid_amount(
+        project_id,
+        supplier_key,
+        estimation_budget_id,
+        estimation_budget_is_active=bool(payload.get("isActive", True)),
+    )
+    payload["remainingToPayAmount"] = round(float(payload.get("totalContractedAmount") or 0) - payload["paidAmount"], 2)
     return payload
 
 
@@ -10219,6 +10296,167 @@ def get_estimation_budget(estimation_budget_id: str, user: dict = Depends(requir
     return serialize_estimation_budget(doc)
 
 
+@app.get("/api/estimation-budgets/{estimation_budget_id}/transactions")
+def list_estimation_budget_candidate_transactions(
+    estimation_budget_id: str,
+    search: str | None = None,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    estimation_budget = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    if not estimation_budget:
+        raise HTTPException(status_code=404, detail="Estimation budget not found")
+
+    project_id = str(estimation_budget.get("projectId") or "")
+    supplier_key = str(estimation_budget.get("supplierKey") or "")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
+    movements = list(
+        db.transactions.find(
+            tx_query,
+            {
+                "_id": 1,
+                "date": 1,
+                "description": 1,
+                "concept": 1,
+                "amount": 1,
+                "tax": 1,
+                "type": 1,
+                "supplierId": 1,
+                "supplier_id": 1,
+                "vendor_id": 1,
+                "supplierName": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "proveedorNombre": 1,
+                "beneficiario": 1,
+                "sap.cardCode": 1,
+                "sap.businessPartner": 1,
+            },
+        )
+    )
+    trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
+    normalized_search = normalize_non_empty_string(search)
+
+    links = list(
+        db.estimationPaymentLinks.find(
+            {"projectId": project_id, "supplierKey": supplier_key},
+            {"estimationBudgetId": 1, "transactionId": 1},
+        )
+    )
+    assignment_by_tx = {str(row.get("transactionId") or ""): str(row.get("estimationBudgetId") or "") for row in links}
+
+    rows = []
+    for tx in movements:
+        if _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key) != supplier_key:
+            continue
+        description = str(tx.get("description") or tx.get("concept") or "").strip()
+        if normalized_search and normalized_search.lower() not in description.lower():
+            continue
+        transaction_id = str(tx.get("_id") or "")
+        assigned_id = assignment_by_tx.get(transaction_id)
+        rows.append(
+            {
+                "id": transaction_id,
+                "date": tx.get("date"),
+                "description": description,
+                "type": tx.get("type") or "EXPENSE",
+                "amountWithTax": round(float(tx.get("amount") or 0), 2),
+                "amountWithoutTax": round(float(compute_monto_sin_iva(tx)), 2),
+                "isAssignedToCurrentBudget": assigned_id == estimation_budget_id,
+                "isAssignedToOtherBudget": bool(assigned_id and assigned_id != estimation_budget_id),
+                "assignedEstimationBudgetId": assigned_id or None,
+            }
+        )
+
+    rows.sort(key=lambda item: str(item.get("date") or ""), reverse=True)
+    return {"items": rows, "estimationBudgetId": estimation_budget_id}
+
+
+@app.put("/api/estimation-budgets/{estimation_budget_id}/transaction-links")
+def replace_estimation_budget_transaction_links(
+    estimation_budget_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    estimation_budget = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    if not estimation_budget:
+        raise HTTPException(status_code=404, detail="Estimation budget not found")
+
+    project_id = str(estimation_budget.get("projectId") or "")
+    supplier_key = str(estimation_budget.get("supplierKey") or "")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    selected_transaction_ids = _normalize_transaction_id_values((payload or {}).get("selectedTransactionIds") or [])
+    valid_rows = list_estimation_budget_candidate_transactions(estimation_budget_id, search=None, user=user).get("items") or []
+    valid_ids = {str(row.get("id") or "") for row in valid_rows}
+    invalid_ids = [tx_id for tx_id in selected_transaction_ids if tx_id not in valid_ids]
+    if invalid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Some transactions are not valid for this estimation budget", "transactionIds": invalid_ids},
+        )
+
+    conflict_rows = list(
+        db.estimationPaymentLinks.find(
+            {"transactionId": {"$in": selected_transaction_ids}, "estimationBudgetId": {"$ne": estimation_budget_id}},
+            {"transactionId": 1, "estimationBudgetId": 1},
+        )
+    )
+    if conflict_rows:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Some transactions are already assigned to another estimation budget",
+                "conflicts": [
+                    {"transactionId": str(row.get("transactionId") or ""), "estimationBudgetId": str(row.get("estimationBudgetId") or "")}
+                    for row in conflict_rows
+                ],
+            },
+        )
+
+    current_rows = list(db.estimationPaymentLinks.find({"estimationBudgetId": estimation_budget_id}, {"transactionId": 1}))
+    current_ids = {str(row.get("transactionId") or "") for row in current_rows}
+    selected_set = set(selected_transaction_ids)
+
+    to_delete = list(current_ids - selected_set)
+    if to_delete:
+        db.estimationPaymentLinks.delete_many({"estimationBudgetId": estimation_budget_id, "transactionId": {"$in": to_delete}})
+
+    to_add = [tx_id for tx_id in selected_transaction_ids if tx_id not in current_ids]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    created_by = normalize_non_empty_string(user.get("username")) or "system"
+    for tx_id in to_add:
+        try:
+            db.estimationPaymentLinks.insert_one(
+                {
+                    "estimationBudgetId": estimation_budget_id,
+                    "transactionId": tx_id,
+                    "projectId": project_id,
+                    "supplierKey": supplier_key,
+                    "createdBy": created_by,
+                    "createdAt": now_iso,
+                    "updatedAt": now_iso,
+                }
+            )
+        except DuplicateKeyError:
+            raise HTTPException(status_code=409, detail="Some transactions were assigned concurrently to another estimation budget")
+
+    db.estimationPaymentLinks.update_many(
+        {"estimationBudgetId": estimation_budget_id, "transactionId": {"$in": selected_transaction_ids}},
+        {"$set": {"updatedAt": now_iso}},
+    )
+
+    return {
+        "ok": True,
+        "estimationBudgetId": estimation_budget_id,
+        "selectedTransactionIds": selected_transaction_ids,
+        "assignedCount": len(selected_transaction_ids),
+    }
+
+
 @app.patch("/api/estimation-budgets/{estimation_budget_id}")
 def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
     existing = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
@@ -10281,6 +10519,7 @@ def delete_estimation_budget(estimation_budget_id: str, user: dict = Depends(req
     if remaining > 0:
         raise HTTPException(status_code=409, detail="Cannot delete an estimation budget with recorded estimaciones; deactivate it instead")
 
+    db.estimationPaymentLinks.delete_many({"estimationBudgetId": estimation_budget_id})
     db.estimationBudgets.delete_one({"_id": oid(estimation_budget_id)})
     return {"ok": True}
 
