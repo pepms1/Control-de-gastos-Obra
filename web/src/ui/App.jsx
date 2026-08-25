@@ -7,6 +7,7 @@ import { dedupeCategories, dedupeVendors } from './dropdownOptions.js';
 import { isAdmin as isAdminRole, isSuperAdmin, isViewer, normalizeRole } from './roles.js';
 import { validatePasswordResetFields } from './passwordResetValidation.js';
 import { BudgetsSection } from './BudgetsSection.jsx';
+import { EstimacionesSection } from './EstimacionesSection.jsx';
 
 const THEME_STORAGE_KEY = 'mdi-theme-preference';
 
@@ -349,6 +350,7 @@ function Nav({
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar', true],
     ['budgets', 'Presupuestos', canSeeBudgets],
+    ['estimaciones', 'Estimaciones', canSeeBudgets],
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
@@ -666,7 +668,7 @@ export default function App() {
     if (tab === 'transactions') {
       setTab('settings');
     }
-    if (!(isSuperAdminUser || isAdminUser) && tab === 'budgets') {
+    if (!(isSuperAdminUser || isAdminUser) && (tab === 'budgets' || tab === 'estimaciones')) {
       setTab('dashboard');
     }
     if (isViewerUser && tab === 'settings') {
@@ -692,7 +694,7 @@ export default function App() {
         onProjectChange={handleProjectChange}
       />
 
-      <div className={`container app-content grid${tab === 'budgets' ? ' app-content--budgets' : ''}`} style={{ gap: 14 }}>
+      <div className={`container app-content grid${tab === 'budgets' || tab === 'estimaciones' ? ' app-content--budgets' : ''}`} style={{ gap: 14 }}>
         {toast && <div className="card">{toast}</div>}
 
         {tab === 'dashboard' && (
@@ -715,6 +717,13 @@ export default function App() {
 
         {tab === 'budgets' && (isSuperAdminUser || isAdminUser) && (
           <BudgetsSection
+            projects={personalizedProjects}
+            selectedProjectId={selectedProjectId}
+          />
+        )}
+
+        {tab === 'estimaciones' && (isSuperAdminUser || isAdminUser) && (
+          <EstimacionesSection
             projects={personalizedProjects}
             selectedProjectId={selectedProjectId}
           />

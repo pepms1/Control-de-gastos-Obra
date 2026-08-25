@@ -22,6 +22,7 @@ import os
 import logging
 import unicodedata
 import threading
+import uuid
 
 app = FastAPI(title="Control de Obra API")
 
@@ -9905,6 +9906,533 @@ def delete_budget(budget_id: str, user: dict = Depends(require_admin_or_superadm
 
     db.budgetPaymentLinks.delete_many({"budgetId": budget_id})
     db.budgets.delete_one({"_id": oid(budget_id)})
+    return {"ok": True}
+
+
+# ============================================================
+# ---- Estimaciones de obra (contractor progress billing) ----
+# ============================================================
+#
+# Standalone module: own collections (`estimationBudgets`, `estimations`), no
+# links to transactions/SAP/IVA. `retentionPct` and `advancePct` are stored
+# as percentage points (e.g. 5 for 5%), not fractions.
+
+
+def validate_concepto_row(raw: dict) -> dict:
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=400, detail="Invalid concepto row")
+    description = normalize_non_empty_string(raw.get("description"))
+    if not description:
+        raise HTTPException(status_code=400, detail="concepto.description is required")
+    unit = normalize_non_empty_string(raw.get("unit")) or ""
+    try:
+        quantity = parse_decimal(raw.get("quantity"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="concepto.quantity is invalid")
+    if quantity <= 0:
+        raise HTTPException(status_code=400, detail="concepto.quantity must be greater than 0")
+    try:
+        unit_price = parse_decimal(raw.get("unitPrice"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="concepto.unitPrice is invalid")
+    if unit_price < 0:
+        raise HTTPException(status_code=400, detail="concepto.unitPrice must be greater than or equal to 0")
+    concepto_id = normalize_non_empty_string(raw.get("id")) or str(uuid.uuid4())
+    return {
+        "id": concepto_id,
+        "description": description,
+        "unit": unit,
+        "quantity": quantity,
+        "unitPrice": unit_price,
+        "amount": round(quantity * unit_price, 2),
+    }
+
+
+def validate_concepto_rows(raw_rows) -> list[dict]:
+    rows = raw_rows if isinstance(raw_rows, list) else []
+    if not rows:
+        raise HTTPException(status_code=400, detail="At least one concepto is required")
+    seen_ids: set[str] = set()
+    result = []
+    for raw in rows:
+        row = validate_concepto_row(raw)
+        if row["id"] in seen_ids:
+            row["id"] = str(uuid.uuid4())
+        seen_ids.add(row["id"])
+        result.append(row)
+    return result
+
+
+def resolve_retention_pct(value) -> float:
+    if value is None:
+        return 0.0
+    pct = parse_decimal(value)
+    if pct < 0 or pct > 100:
+        raise HTTPException(status_code=400, detail="retentionPct must be between 0 and 100")
+    return pct
+
+
+def compute_estimation_budget_totals(line_items: list[dict], advance_amount: float) -> dict:
+    total_contracted_amount = round(sum(float(item.get("amount") or 0) for item in line_items), 2)
+    advance_pct = round((float(advance_amount or 0) / total_contracted_amount) * 100, 4) if total_contracted_amount > 0 else 0.0
+    return {"totalContractedAmount": total_contracted_amount, "advancePct": advance_pct}
+
+
+def compute_next_estimation_folio(estimation_budget_id: str) -> int:
+    return db.estimations.count_documents({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}) + 1
+
+
+def get_latest_estimation(estimation_budget_id: str) -> dict | None:
+    rows = list(
+        db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}})
+        .sort("folio", -1)
+        .limit(1)
+    )
+    return rows[0] if rows else None
+
+
+def is_latest_estimation(estimation: dict) -> bool:
+    latest = get_latest_estimation(str(estimation.get("estimationBudgetId") or ""))
+    if not latest:
+        return False
+    return str(latest.get("_id")) == str(estimation.get("_id"))
+
+
+def compute_previous_cumulative_quantities(estimation_budget_id: str, exclude_estimation_id: str | None = None) -> dict[str, float]:
+    query: dict = {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
+    if exclude_estimation_id:
+        query["_id"] = {"$ne": oid(exclude_estimation_id)}
+    totals: dict[str, float] = {}
+    for row in db.estimations.find(query, {"lineItems": 1}):
+        for item in row.get("lineItems") or []:
+            concepto_id = str(item.get("conceptoId") or "")
+            if not concepto_id:
+                continue
+            totals[concepto_id] = round(float(totals.get(concepto_id) or 0) + float(item.get("periodQuantity") or 0), 2)
+    return totals
+
+
+def compute_remaining_advance_balance(estimation_budget: dict, exclude_estimation_id: str | None = None) -> float:
+    advance_amount = float(estimation_budget.get("advanceAmount") or 0)
+    estimation_budget_id = str(estimation_budget.get("_id") or "")
+    query: dict = {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
+    if exclude_estimation_id:
+        query["_id"] = {"$ne": oid(exclude_estimation_id)}
+    amortized = sum(
+        float(row.get("advanceAmortizationAmount") or 0)
+        for row in db.estimations.find(query, {"advanceAmortizationAmount": 1})
+    )
+    return round(max(advance_amount - amortized, 0), 2)
+
+
+def build_estimation_line_items(
+    estimation_budget: dict,
+    period_quantities_by_concepto_id: dict,
+    previous_cumulative_by_concepto_id: dict,
+) -> list[dict]:
+    concepto_by_id = {str(item.get("id") or ""): item for item in estimation_budget.get("lineItems") or []}
+    line_items = []
+    for concepto_id, raw_period_quantity in (period_quantities_by_concepto_id or {}).items():
+        concepto = concepto_by_id.get(str(concepto_id))
+        if not concepto:
+            raise HTTPException(status_code=400, detail=f"Unknown conceptoId: {concepto_id}")
+        try:
+            period_quantity = parse_decimal(raw_period_quantity)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid periodQuantity for concepto {concepto_id}")
+        if period_quantity < 0:
+            raise HTTPException(status_code=400, detail="periodQuantity must be greater than or equal to 0")
+        previous_cumulative_quantity = float(previous_cumulative_by_concepto_id.get(str(concepto_id)) or 0)
+        cumulative_quantity = round(previous_cumulative_quantity + period_quantity, 2)
+        unit_price = float(concepto.get("unitPrice") or 0)
+        contracted_quantity = float(concepto.get("quantity") or 0)
+        period_amount = round(period_quantity * unit_price, 2)
+        line_items.append(
+            {
+                "conceptoId": str(concepto_id),
+                "description": concepto.get("description") or "",
+                "unit": concepto.get("unit") or "",
+                "unitPrice": unit_price,
+                "contractedQuantity": contracted_quantity,
+                "previousCumulativeQuantity": round(previous_cumulative_quantity, 2),
+                "periodQuantity": period_quantity,
+                "cumulativeQuantity": cumulative_quantity,
+                "periodAmount": period_amount,
+                "cumulativeAmount": round(cumulative_quantity * unit_price, 2),
+                "contractedAmount": round(contracted_quantity * unit_price, 2),
+            }
+        )
+    if not line_items:
+        raise HTTPException(status_code=400, detail="At least one concepto with progress is required")
+    return line_items
+
+
+def compute_estimation_money_fields(estimation_budget: dict, line_items: list[dict], exclude_estimation_id: str | None = None) -> dict:
+    period_subtotal = round(sum(float(item.get("periodAmount") or 0) for item in line_items), 2)
+    retention_pct = float(estimation_budget.get("retentionPct") or 0)
+    retention_amount = round(period_subtotal * retention_pct / 100, 2)
+
+    advance_amortization_amount = 0.0
+    if bool(estimation_budget.get("advanceAmortizationEnabled")):
+        advance_pct = float(estimation_budget.get("advancePct") or 0)
+        remaining_balance = compute_remaining_advance_balance(estimation_budget, exclude_estimation_id=exclude_estimation_id)
+        advance_amortization_amount = round(min(period_subtotal * advance_pct / 100, remaining_balance), 2)
+        if advance_amortization_amount < 0:
+            advance_amortization_amount = 0.0
+
+    total_to_pay = round(period_subtotal - retention_amount - advance_amortization_amount, 2)
+    return {
+        "periodSubtotal": period_subtotal,
+        "retentionPctSnapshot": retention_pct,
+        "retentionAmount": retention_amount,
+        "advanceAmortizationAmount": advance_amortization_amount,
+        "totalToPay": total_to_pay,
+    }
+
+
+def validate_concepto_shrink_allowed(existing_line_items: list[dict], new_line_items: list[dict], estimation_budget_id: str) -> None:
+    history = compute_previous_cumulative_quantities(estimation_budget_id)
+    new_by_id = {str(item.get("id") or ""): item for item in new_line_items}
+    for existing in existing_line_items:
+        concepto_id = str(existing.get("id") or "")
+        recorded_quantity = float(history.get(concepto_id) or 0)
+        if recorded_quantity <= 0:
+            continue
+        new_item = new_by_id.get(concepto_id)
+        if new_item is None:
+            raise HTTPException(status_code=409, detail=f"Cannot remove concepto with recorded progress: {concepto_id}")
+        if float(new_item.get("quantity") or 0) < recorded_quantity:
+            raise HTTPException(status_code=409, detail=f"Cannot reduce concepto quantity below recorded progress: {concepto_id}")
+
+
+def serialize_estimation_budget(doc: dict) -> dict:
+    payload = serialize_raw_doc(doc)
+    estimation_budget_id = str(payload.get("id") or "")
+    rows = list(
+        db.estimations.find(
+            {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}},
+            {"retentionAmount": 1, "advanceAmortizationAmount": 1},
+        )
+    )
+    payload["estimationsCount"] = len(rows)
+    payload["totalRetainedToDate"] = round(sum(float(r.get("retentionAmount") or 0) for r in rows), 2)
+    amortized = round(sum(float(r.get("advanceAmortizationAmount") or 0) for r in rows), 2)
+    payload["remainingAdvanceBalance"] = round(max(float(payload.get("advanceAmount") or 0) - amortized, 0), 2)
+    history = compute_previous_cumulative_quantities(estimation_budget_id)
+    payload["conceptoIdsWithHistory"] = [concepto_id for concepto_id, qty in history.items() if qty > 0]
+    return payload
+
+
+def serialize_estimation(doc: dict) -> dict:
+    payload = serialize_raw_doc(doc)
+    payload["isLatest"] = is_latest_estimation(doc)
+    return payload
+
+
+@app.get("/api/estimation-budgets")
+def list_estimation_budgets(
+    projectId: str | None = None,
+    supplier: str | None = None,
+    includeInactive: bool = False,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    project_id = resolve_project_id(projectId or get_active_project_id(request))
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    query: dict = {"projectId": project_id}
+    if not includeInactive:
+        query["isActive"] = {"$ne": False}
+
+    supplier_search = normalize_non_empty_string(supplier)
+    if supplier_search:
+        escaped = re.escape(supplier_search)
+        query["$or"] = [
+            {"supplierKey": {"$regex": escaped, "$options": "i"}},
+            {"supplierNameSnapshot": {"$regex": escaped, "$options": "i"}},
+            {"supplierCardCode": {"$regex": escaped, "$options": "i"}},
+            {"businessPartner": {"$regex": escaped, "$options": "i"}},
+            {"name": {"$regex": escaped, "$options": "i"}},
+        ]
+
+    rows = list(db.estimationBudgets.find(query).sort("updatedAt", -1))
+    return [serialize_estimation_budget(row) for row in rows]
+
+
+@app.post("/api/estimation-budgets", status_code=201)
+def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict = Depends(require_admin_or_superadmin)):
+    project_id = resolve_project_id((payload or {}).get("projectId") or get_active_project_id(request))
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    supplier_key = resolve_budget_supplier_key(payload)
+    supplier_name_snapshot = normalize_non_empty_string((payload or {}).get("supplierName")) or supplier_key
+    name = normalize_non_empty_string((payload or {}).get("name")) or supplier_name_snapshot
+    vendor_id = normalize_non_empty_string((payload or {}).get("vendorId"))
+    supplier_card_code = normalize_non_empty_string((payload or {}).get("supplierCardCode"))
+    business_partner = normalize_non_empty_string((payload or {}).get("businessPartner"))
+    currency = normalize_non_empty_string((payload or {}).get("currency")) or "MXN"
+    notes = normalize_non_empty_string((payload or {}).get("notes")) or ""
+    is_active = (payload or {}).get("isActive")
+    is_active = True if is_active is None else bool(is_active)
+    retention_pct = resolve_retention_pct((payload or {}).get("retentionPct"))
+    advance_amortization_enabled = bool((payload or {}).get("advanceAmortizationEnabled"))
+    advance_amount = validate_budget_amount((payload or {}).get("advanceAmount") or 0)
+    line_items = validate_concepto_rows((payload or {}).get("lineItems"))
+    totals = compute_estimation_budget_totals(line_items, advance_amount)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "projectId": project_id,
+        "supplierKey": supplier_key,
+        "supplierNameSnapshot": supplier_name_snapshot,
+        "vendorId": vendor_id,
+        "supplierCardCode": supplier_card_code,
+        "businessPartner": business_partner,
+        "name": name,
+        "currency": currency,
+        "notes": notes,
+        "isActive": is_active,
+        "retentionPct": retention_pct,
+        "advanceAmortizationEnabled": advance_amortization_enabled,
+        "advanceAmount": advance_amount,
+        "lineItems": line_items,
+        "totalContractedAmount": totals["totalContractedAmount"],
+        "advancePct": totals["advancePct"],
+        "createdBy": normalize_non_empty_string(user.get("username")) or "system",
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+    }
+    inserted_id = db.estimationBudgets.insert_one(doc).inserted_id
+    saved = db.estimationBudgets.find_one({"_id": inserted_id})
+    return serialize_estimation_budget(saved) if saved else {"ok": True, "id": str(inserted_id)}
+
+
+@app.get("/api/estimation-budgets/{estimation_budget_id}")
+def get_estimation_budget(estimation_budget_id: str, user: dict = Depends(require_admin_or_superadmin)):
+    doc = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Estimation budget not found")
+    if not can_access_project(user, str(doc.get("projectId") or "")):
+        raise HTTPException(status_code=403, detail="Project access denied")
+    return serialize_estimation_budget(doc)
+
+
+@app.patch("/api/estimation-budgets/{estimation_budget_id}")
+def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    existing = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Estimation budget not found")
+    project_id = str(existing.get("projectId") or "")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    updates: dict = {}
+    if "name" in payload:
+        updates["name"] = normalize_non_empty_string(payload.get("name")) or existing.get("name") or ""
+    if "notes" in payload:
+        updates["notes"] = normalize_non_empty_string(payload.get("notes")) or ""
+    if "isActive" in payload:
+        updates["isActive"] = bool(payload.get("isActive"))
+    if "currency" in payload:
+        updates["currency"] = normalize_non_empty_string(payload.get("currency")) or "MXN"
+    if "retentionPct" in payload:
+        updates["retentionPct"] = resolve_retention_pct(payload.get("retentionPct"))
+    if "advanceAmortizationEnabled" in payload:
+        updates["advanceAmortizationEnabled"] = bool(payload.get("advanceAmortizationEnabled"))
+
+    advance_amount = float(existing.get("advanceAmount") or 0)
+    if "advanceAmount" in payload:
+        advance_amount = validate_budget_amount(payload.get("advanceAmount") or 0)
+        updates["advanceAmount"] = advance_amount
+
+    line_items = existing.get("lineItems") or []
+    if "lineItems" in payload:
+        new_line_items = validate_concepto_rows(payload.get("lineItems"))
+        validate_concepto_shrink_allowed(line_items, new_line_items, estimation_budget_id)
+        line_items = new_line_items
+        updates["lineItems"] = line_items
+
+    if "lineItems" in payload or "advanceAmount" in payload:
+        totals = compute_estimation_budget_totals(line_items, advance_amount)
+        updates["totalContractedAmount"] = totals["totalContractedAmount"]
+        updates["advancePct"] = totals["advancePct"]
+
+    if not updates:
+        return serialize_estimation_budget(existing)
+
+    updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    db.estimationBudgets.update_one({"_id": oid(estimation_budget_id)}, {"$set": updates})
+    saved = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    return serialize_estimation_budget(saved) if saved else {"ok": True}
+
+
+@app.delete("/api/estimation-budgets/{estimation_budget_id}")
+def delete_estimation_budget(estimation_budget_id: str, user: dict = Depends(require_admin_or_superadmin)):
+    existing = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Estimation budget not found")
+    project_id = str(existing.get("projectId") or "")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    remaining = db.estimations.count_documents({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}})
+    if remaining > 0:
+        raise HTTPException(status_code=409, detail="Cannot delete an estimation budget with recorded estimaciones; deactivate it instead")
+
+    db.estimationBudgets.delete_one({"_id": oid(estimation_budget_id)})
+    return {"ok": True}
+
+
+def _get_estimation_budget_or_404(estimation_budget_id: str, user: dict) -> dict:
+    doc = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Estimation budget not found")
+    if not can_access_project(user, str(doc.get("projectId") or "")):
+        raise HTTPException(status_code=403, detail="Project access denied")
+    return doc
+
+
+@app.get("/api/estimation-budgets/{estimation_budget_id}/estimations")
+def list_estimations(estimation_budget_id: str, user: dict = Depends(require_admin_or_superadmin)):
+    _get_estimation_budget_or_404(estimation_budget_id, user)
+    rows = list(
+        db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}).sort("folio", 1)
+    )
+    return [serialize_estimation(row) for row in rows]
+
+
+@app.post("/api/estimation-budgets/{estimation_budget_id}/estimations", status_code=201)
+def create_estimation(estimation_budget_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
+    if not estimation_budget.get("isActive", True):
+        raise HTTPException(status_code=409, detail="Cannot create an estimación for an inactive estimation budget")
+
+    period_start = normalize_non_empty_string((payload or {}).get("periodStart"))
+    period_end = normalize_non_empty_string((payload or {}).get("periodEnd"))
+    if not period_start or not period_end:
+        raise HTTPException(status_code=400, detail="periodStart and periodEnd are required")
+    notes = normalize_non_empty_string((payload or {}).get("notes")) or ""
+    status_value = normalize_non_empty_string((payload or {}).get("status")) or "Registrada"
+
+    raw_line_items = (payload or {}).get("lineItems")
+    if not isinstance(raw_line_items, list) or not raw_line_items:
+        raise HTTPException(status_code=400, detail="lineItems with periodQuantity per concepto are required")
+    period_quantities_by_concepto_id = {}
+    for row in raw_line_items:
+        concepto_id = normalize_non_empty_string((row or {}).get("conceptoId"))
+        if not concepto_id:
+            raise HTTPException(status_code=400, detail="Each lineItem requires a conceptoId")
+        period_quantities_by_concepto_id[concepto_id] = (row or {}).get("periodQuantity")
+
+    previous_cumulative = compute_previous_cumulative_quantities(estimation_budget_id)
+    line_items = build_estimation_line_items(estimation_budget, period_quantities_by_concepto_id, previous_cumulative)
+    money_fields = compute_estimation_money_fields(estimation_budget, line_items)
+    folio = compute_next_estimation_folio(estimation_budget_id)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "estimationBudgetId": estimation_budget_id,
+        "projectId": str(estimation_budget.get("projectId") or ""),
+        "folio": folio,
+        "periodStart": period_start,
+        "periodEnd": period_end,
+        "notes": notes,
+        "status": status_value,
+        "lineItems": line_items,
+        **money_fields,
+        "isDeleted": False,
+        "createdBy": normalize_non_empty_string(user.get("username")) or "system",
+        "createdAt": now_iso,
+        "updatedAt": now_iso,
+    }
+    inserted_id = db.estimations.insert_one(doc).inserted_id
+    saved = db.estimations.find_one({"_id": inserted_id})
+    return serialize_estimation(saved) if saved else {"ok": True, "id": str(inserted_id)}
+
+
+@app.get("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}")
+def get_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_admin_or_superadmin)):
+    _get_estimation_budget_or_404(estimation_budget_id, user)
+    doc = db.estimations.find_one(
+        {"_id": oid(estimation_id), "estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Estimación not found")
+    return serialize_estimation(doc)
+
+
+@app.patch("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}")
+def update_estimation(estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
+    existing = db.estimations.find_one(
+        {"_id": oid(estimation_id), "estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Estimación not found")
+
+    is_latest = is_latest_estimation(existing)
+    restricted_fields = {"periodStart", "periodEnd", "lineItems"}
+    if not is_latest and restricted_fields.intersection((payload or {}).keys()):
+        raise HTTPException(status_code=400, detail="Only the latest estimación can have its period/quantities edited")
+
+    updates: dict = {}
+    if "notes" in payload:
+        updates["notes"] = normalize_non_empty_string(payload.get("notes")) or ""
+    if "status" in payload:
+        updates["status"] = normalize_non_empty_string(payload.get("status")) or "Registrada"
+
+    if is_latest:
+        if "periodStart" in payload:
+            updates["periodStart"] = normalize_non_empty_string(payload.get("periodStart")) or existing.get("periodStart")
+        if "periodEnd" in payload:
+            updates["periodEnd"] = normalize_non_empty_string(payload.get("periodEnd")) or existing.get("periodEnd")
+        if "lineItems" in payload:
+            raw_line_items = payload.get("lineItems")
+            if not isinstance(raw_line_items, list) or not raw_line_items:
+                raise HTTPException(status_code=400, detail="lineItems with periodQuantity per concepto are required")
+            period_quantities_by_concepto_id = {}
+            for row in raw_line_items:
+                concepto_id = normalize_non_empty_string((row or {}).get("conceptoId"))
+                if not concepto_id:
+                    raise HTTPException(status_code=400, detail="Each lineItem requires a conceptoId")
+                period_quantities_by_concepto_id[concepto_id] = (row or {}).get("periodQuantity")
+
+            previous_cumulative = compute_previous_cumulative_quantities(
+                estimation_budget_id, exclude_estimation_id=estimation_id
+            )
+            line_items = build_estimation_line_items(estimation_budget, period_quantities_by_concepto_id, previous_cumulative)
+            money_fields = compute_estimation_money_fields(
+                estimation_budget, line_items, exclude_estimation_id=estimation_id
+            )
+            updates["lineItems"] = line_items
+            updates.update(money_fields)
+
+    if not updates:
+        return serialize_estimation(existing)
+
+    updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    db.estimations.update_one({"_id": oid(estimation_id)}, {"$set": updates})
+    saved = db.estimations.find_one({"_id": oid(estimation_id)})
+    return serialize_estimation(saved) if saved else {"ok": True}
+
+
+@app.delete("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}")
+def delete_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_admin_or_superadmin)):
+    _get_estimation_budget_or_404(estimation_budget_id, user)
+    existing = db.estimations.find_one(
+        {"_id": oid(estimation_id), "estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Estimación not found")
+    if not is_latest_estimation(existing):
+        raise HTTPException(status_code=409, detail="Only the latest estimación can be deleted")
+
+    db.estimations.update_one(
+        {"_id": oid(estimation_id)},
+        {"$set": {"isDeleted": True, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+    )
     return {"ok": True}
 
 

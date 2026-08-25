@@ -38,6 +38,7 @@ export function shouldInjectProjectId(method, path) {
     '/api/movimientos',
     '/api/expenses/summary-by-supplier',
     '/api/budgets',
+    '/api/estimation-budgets',
     '/api/suppliers',
     '/stats/spend-by-category',
     '/categories',
@@ -369,6 +370,55 @@ export const api = {
     const qs = new URLSearchParams(params).toString();
     return backendReq(`/api/budgets/summary-by-project${qs ? `?${qs}` : ''}`);
   },
+
+  estimationBudgets: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/estimation-budgets${qs ? `?${qs}` : ''}`);
+  },
+
+  createEstimationBudget: (payload) =>
+    backendReq('/api/estimation-budgets', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getEstimationBudget: (id) => backendReq(`/api/estimation-budgets/${id}`),
+
+  updateEstimationBudget: (id, payload) =>
+    backendReq(`/api/estimation-budgets/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteEstimationBudget: (id) =>
+    backendReq(`/api/estimation-budgets/${id}`, {
+      method: 'DELETE',
+    }),
+
+  estimations: (estimationBudgetId, params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations${qs ? `?${qs}` : ''}`);
+  },
+
+  createEstimation: (estimationBudgetId, payload) =>
+    backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getEstimation: (estimationBudgetId, estimationId) =>
+    backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}`),
+
+  updateEstimation: (estimationBudgetId, estimationId, payload) =>
+    backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteEstimation: (estimationBudgetId, estimationId) =>
+    backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}`, {
+      method: 'DELETE',
+    }),
 
   importSapPayments: (file, project, projectId, force = false) => {
     const formData = new FormData();
