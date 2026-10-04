@@ -561,6 +561,7 @@ def serialize_admin_user(user):
     user_doc["role"] = resolve_effective_user_role(user, fallback_role=user_doc.get("role"))
     user_doc["allowedProjectIds"] = normalize_allowed_project_ids(user_doc.get("allowedProjectIds"))
     user_doc["isActive"] = bool(user_doc.get("isActive", user_doc.get("active", True)))
+    user_doc["canCaptureEstimations"] = bool(user_doc.get("canCaptureEstimations"))
     return user_doc
 
 
@@ -702,6 +703,7 @@ def build_current_user_payload(username: str, role: str, display_name: str, user
         "active": is_active,
         "allowedProjectIds": allowed_project_ids,
         "uiPrefs": ui_prefs,
+        "canCaptureEstimations": bool((user_doc or {}).get("canCaptureEstimations")),
     }
 
 
@@ -756,6 +758,19 @@ def require_admin(user=Depends(role_from_token)):
 def require_admin_or_superadmin(user=Depends(role_from_token)):
     if user.get("role") not in {"SUPERADMIN", "ADMIN"}:
         raise HTTPException(status_code=403, detail="ADMIN or SUPERADMIN role required")
+    return user
+
+
+def can_capture_estimations(user: dict | None) -> bool:
+    """ADMIN/SUPERADMIN always can; any other user needs the per-user flag."""
+    if not user:
+        return False
+    return user.get("role") in {"SUPERADMIN", "ADMIN"} or bool(user.get("canCaptureEstimations"))
+
+
+def require_estimation_capture(user=Depends(role_from_token)):
+    if not can_capture_estimations(user):
+        raise HTTPException(status_code=403, detail="Estimation capture permission required")
     return user
 
 
@@ -5216,6 +5231,7 @@ def me(user=Depends(require_authenticated)):
         "displayName": user.get("displayName") or user.get("name") or user.get("username"),
         "allowedProjectIds": normalize_allowed_project_ids(user.get("allowedProjectIds")),
         "uiPrefs": normalize_ui_prefs(user.get("uiPrefs")),
+        "canCaptureEstimations": bool(user.get("canCaptureEstimations")),
     }
 
 
@@ -5311,6 +5327,7 @@ def create_user(payload: dict, _: dict = Depends(require_admin)):
         "active": active,
         "isActive": active,
         "allowedProjectIds": allowed_project_ids,
+        "canCaptureEstimations": bool(payload.get("canCaptureEstimations")),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     _id = db.users.insert_one(doc).inserted_id
@@ -5361,6 +5378,9 @@ def update_admin_user(user_id: str, payload: dict, _: dict = Depends(require_adm
 
         update_fields["role"] = next_role
         update_fields["roleVersion"] = ROLE_SCHEMA_VERSION
+
+    if "canCaptureEstimations" in payload:
+        update_fields["canCaptureEstimations"] = bool(payload.get("canCaptureEstimations"))
 
     if "displayName" in payload or "name" in payload:
         display_name = str(payload.get("displayName") or payload.get("name") or "").strip()
@@ -9557,7 +9577,7 @@ def list_budgets(
     supplier: str | None = None,
     includeInactive: bool = False,
     request: FastAPIRequest = None,
-    user: dict = Depends(require_admin_or_superadmin),
+    user: dict = Depends(require_estimation_capture),
 ):
     project_id = resolve_project_id(projectId or get_active_project_id(request))
     if not can_access_project(user, project_id):
@@ -10009,7 +10029,7 @@ def compute_previous_cumulative_quantities(estimation_budget_id: str, exclude_es
             concepto_id = str(item.get("conceptoId") or "")
             if not concepto_id:
                 continue
-            totals[concepto_id] = round(float(totals.get(concepto_id) or 0) + float(item.get("periodQuantity") or 0), 2)
+            totals[concepto_id] = round(float(totals.get(concepto_id) or 0) + float(item.get("periodQuantity") or 0), 4)
     return totals
 
 
@@ -10044,7 +10064,7 @@ def build_estimation_line_items(
         if period_quantity < 0:
             raise HTTPException(status_code=400, detail="periodQuantity must be greater than or equal to 0")
         previous_cumulative_quantity = float(previous_cumulative_by_concepto_id.get(str(concepto_id)) or 0)
-        cumulative_quantity = round(previous_cumulative_quantity + period_quantity, 2)
+        cumulative_quantity = round(previous_cumulative_quantity + period_quantity, 4)
         unit_price = float(concepto.get("unitPrice") or 0)
         contracted_quantity = float(concepto.get("quantity") or 0)
         period_amount = round(period_quantity * unit_price, 2)
@@ -10055,8 +10075,10 @@ def build_estimation_line_items(
                 "unit": concepto.get("unit") or "",
                 "unitPrice": unit_price,
                 "contractedQuantity": contracted_quantity,
-                "previousCumulativeQuantity": round(previous_cumulative_quantity, 2),
+                "previousCumulativeQuantity": round(previous_cumulative_quantity, 4),
                 "periodQuantity": period_quantity,
+                "previousProgressPct": round(previous_cumulative_quantity / contracted_quantity * 100, 2) if contracted_quantity else 0.0,
+                "progressPct": round(cumulative_quantity / contracted_quantity * 100, 2) if contracted_quantity else 0.0,
                 "cumulativeQuantity": cumulative_quantity,
                 "periodAmount": period_amount,
                 "cumulativeAmount": round(cumulative_quantity * unit_price, 2),
@@ -10174,7 +10196,152 @@ def compute_estimation_budget_paid_amount(
     return 0.0
 
 
-def serialize_estimation_budget(doc: dict) -> dict:
+# ---- Flujo de captura y autorización de estimaciones ----
+#
+# BORRADOR  -> la persona de captura (bandera canCaptureEstimations) llena el
+#              avance y puede editarlo/borrarlo.
+# ENVIADA   -> espera revisión de ADMIN/SUPERADMIN, que la aprueba (con monto
+#              autorizado igual o distinto al calculado) o la devuelve.
+# APROBADA  -> cerrada; queda "Por pagar" (paymentStatus) para contabilidad
+#              hasta que un admin la marca PAGADA.
+# Estimaciones creadas antes del flujo no tienen workflowStatus y se tratan
+# como REGISTRADA (legado): solo ADMIN/SUPERADMIN, con las reglas anteriores.
+
+ESTIMATION_STATUS_DRAFT = "BORRADOR"
+ESTIMATION_STATUS_SUBMITTED = "ENVIADA"
+ESTIMATION_STATUS_APPROVED = "APROBADA"
+ESTIMATION_STATUS_LEGACY = "REGISTRADA"
+ESTIMATION_OPEN_STATUSES = (ESTIMATION_STATUS_DRAFT, ESTIMATION_STATUS_SUBMITTED)
+ESTIMATION_PAYMENT_PENDING = "POR_PAGAR"
+ESTIMATION_PAYMENT_PAID = "PAGADA"
+ESTIMATION_CAPTURE_MODES = ("quantity", "global", "concept")
+
+
+def estimation_workflow_status(doc: dict) -> str:
+    return str((doc or {}).get("workflowStatus") or ESTIMATION_STATUS_LEGACY)
+
+
+def is_admin_or_superadmin_user(user: dict | None) -> bool:
+    return (user or {}).get("role") in {"SUPERADMIN", "ADMIN"}
+
+
+def parse_progress_pct(value, label: str) -> float:
+    try:
+        pct = parse_decimal(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"{label} is invalid")
+    if pct < 0 or pct > 100:
+        raise HTTPException(status_code=400, detail=f"{label} must be between 0 and 100")
+    return pct
+
+
+def resolve_period_quantities(estimation_budget: dict, payload: dict, previous_cumulative: dict[str, float]) -> tuple[dict, dict]:
+    """Translate the capture payload into period quantities per concepto.
+
+    - quantity: explicit `periodQuantity` per concepto (modo original).
+    - global:   `globalProgressPct` = avance ACUMULADO del contrato aplicado a
+                todos los conceptos (si un concepto ya va por encima, no baja).
+    - concept:  `progressPct` ACUMULADO por concepto en `lineItems`; los
+                conceptos omitidos no avanzan este periodo.
+    Returns (period quantities by concepto id, capture metadata to persist).
+    """
+    mode = (normalize_non_empty_string((payload or {}).get("captureMode")) or "quantity").lower()
+    if mode not in ESTIMATION_CAPTURE_MODES:
+        raise HTTPException(status_code=400, detail="captureMode must be quantity, global or concept")
+
+    conceptos = estimation_budget.get("lineItems") or []
+    raw_line_items = (payload or {}).get("lineItems")
+    quantities: dict = {}
+
+    if mode == "quantity":
+        if not isinstance(raw_line_items, list) or not raw_line_items:
+            raise HTTPException(status_code=400, detail="lineItems with periodQuantity per concepto are required")
+        for row in raw_line_items:
+            concepto_id = normalize_non_empty_string((row or {}).get("conceptoId"))
+            if not concepto_id:
+                raise HTTPException(status_code=400, detail="Each lineItem requires a conceptoId")
+            quantities[concepto_id] = (row or {}).get("periodQuantity")
+        return quantities, {"captureMode": mode}
+
+    if mode == "global":
+        pct = parse_progress_pct((payload or {}).get("globalProgressPct"), "globalProgressPct")
+        for concepto in conceptos:
+            concepto_id = str(concepto.get("id") or "")
+            target = float(concepto.get("quantity") or 0) * pct / 100
+            previous = float(previous_cumulative.get(concepto_id) or 0)
+            quantities[concepto_id] = round(max(target - previous, 0), 4)
+        return quantities, {"captureMode": mode, "globalProgressPct": pct}
+
+    if not isinstance(raw_line_items, list) or not raw_line_items:
+        raise HTTPException(status_code=400, detail="lineItems with progressPct per concepto are required")
+    pct_by_concepto_id: dict[str, float] = {}
+    for row in raw_line_items:
+        concepto_id = normalize_non_empty_string((row or {}).get("conceptoId"))
+        if not concepto_id:
+            raise HTTPException(status_code=400, detail="Each lineItem requires a conceptoId")
+        pct_by_concepto_id[concepto_id] = parse_progress_pct((row or {}).get("progressPct"), f"progressPct of {concepto_id}")
+    known_ids = {str(c.get("id") or "") for c in conceptos}
+    for concepto_id in pct_by_concepto_id:
+        if concepto_id not in known_ids:
+            raise HTTPException(status_code=400, detail=f"Unknown conceptoId: {concepto_id}")
+    for concepto in conceptos:
+        concepto_id = str(concepto.get("id") or "")
+        contracted = float(concepto.get("quantity") or 0)
+        previous = float(previous_cumulative.get(concepto_id) or 0)
+        if concepto_id not in pct_by_concepto_id:
+            quantities[concepto_id] = 0
+            continue
+        target = contracted * pct_by_concepto_id[concepto_id] / 100
+        if target < previous - 0.0001:
+            raise HTTPException(
+                status_code=400,
+                detail=f"progressPct for '{concepto.get('description')}' is lower than the progress already estimated",
+            )
+        quantities[concepto_id] = round(max(target - previous, 0), 4)
+    return quantities, {"captureMode": mode}
+
+
+def compute_estimation_cumulative_progress_pct(estimation_budget: dict, previous_cumulative: dict[str, float], line_items: list[dict]) -> float:
+    period_by_concepto = {str(li.get("conceptoId") or ""): float(li.get("periodQuantity") or 0) for li in line_items}
+    total = 0.0
+    done = 0.0
+    for concepto in estimation_budget.get("lineItems") or []:
+        concepto_id = str(concepto.get("id") or "")
+        unit_price = float(concepto.get("unitPrice") or 0)
+        total += float(concepto.get("quantity") or 0) * unit_price
+        cumulative = float(previous_cumulative.get(concepto_id) or 0) + period_by_concepto.get(concepto_id, 0.0)
+        done += cumulative * unit_price
+    return round(done / total * 100, 2) if total else 0.0
+
+
+def build_estimation_content(
+    estimation_budget: dict, payload: dict, exclude_estimation_id: str | None = None
+) -> dict:
+    """lineItems + money fields + capture metadata computed from a payload."""
+    estimation_budget_id = str(estimation_budget.get("_id") or "")
+    previous_cumulative = compute_previous_cumulative_quantities(estimation_budget_id, exclude_estimation_id=exclude_estimation_id)
+    quantities, capture_meta = resolve_period_quantities(estimation_budget, payload, previous_cumulative)
+    line_items = build_estimation_line_items(estimation_budget, quantities, previous_cumulative)
+    money_fields = compute_estimation_money_fields(estimation_budget, line_items, exclude_estimation_id=exclude_estimation_id)
+    return {
+        "lineItems": line_items,
+        "cumulativeProgressPct": compute_estimation_cumulative_progress_pct(estimation_budget, previous_cumulative, line_items),
+        **capture_meta,
+        **money_fields,
+    }
+
+
+def get_open_estimation(estimation_budget_id: str, exclude_estimation_id: str | None = None) -> dict | None:
+    for row in db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}):
+        if exclude_estimation_id and str(row.get("_id")) == str(exclude_estimation_id):
+            continue
+        if estimation_workflow_status(row) in ESTIMATION_OPEN_STATUSES:
+            return row
+    return None
+
+
+
+def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dict:
     payload = serialize_raw_doc(doc)
     estimation_budget_id = str(payload.get("id") or "")
     project_id = str(payload.get("projectId") or "")
@@ -10191,19 +10358,21 @@ def serialize_estimation_budget(doc: dict) -> dict:
     payload["remainingAdvanceBalance"] = round(max(float(payload.get("advanceAmount") or 0) - amortized, 0), 2)
     history = compute_previous_cumulative_quantities(estimation_budget_id)
     payload["conceptoIdsWithHistory"] = [concepto_id for concepto_id, qty in history.items() if qty > 0]
-    payload["paidAmount"] = compute_estimation_budget_paid_amount(
-        project_id,
-        supplier_key,
-        estimation_budget_id,
-        estimation_budget_is_active=bool(payload.get("isActive", True)),
-    )
-    payload["remainingToPayAmount"] = round(float(payload.get("totalContractedAmount") or 0) - payload["paidAmount"], 2)
+    if include_payments:
+        payload["paidAmount"] = compute_estimation_budget_paid_amount(
+            project_id,
+            supplier_key,
+            estimation_budget_id,
+            estimation_budget_is_active=bool(payload.get("isActive", True)),
+        )
+        payload["remainingToPayAmount"] = round(float(payload.get("totalContractedAmount") or 0) - payload["paidAmount"], 2)
     return payload
 
 
 def serialize_estimation(doc: dict) -> dict:
     payload = serialize_raw_doc(doc)
     payload["isLatest"] = is_latest_estimation(doc)
+    payload["workflowStatus"] = estimation_workflow_status(doc)
     return payload
 
 
@@ -10235,7 +10404,8 @@ def list_estimation_budgets(
         ]
 
     rows = list(db.estimationBudgets.find(query).sort("updatedAt", -1))
-    return [serialize_estimation_budget(row) for row in rows]
+    include_payments = is_admin_or_superadmin_user(user)
+    return [serialize_estimation_budget(row, include_payments=include_payments) for row in rows]
 
 
 @app.post("/api/estimation-budgets", status_code=201)
@@ -10288,13 +10458,13 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
 
 
 @app.get("/api/estimation-budgets/{estimation_budget_id}")
-def get_estimation_budget(estimation_budget_id: str, user: dict = Depends(require_admin_or_superadmin)):
+def get_estimation_budget(estimation_budget_id: str, user: dict = Depends(require_estimation_capture)):
     doc = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
     if not doc:
         raise HTTPException(status_code=404, detail="Estimation budget not found")
     if not can_access_project(user, str(doc.get("projectId") or "")):
         raise HTTPException(status_code=403, detail="Project access denied")
-    return serialize_estimation_budget(doc)
+    return serialize_estimation_budget(doc, include_payments=is_admin_or_superadmin_user(user))
 
 
 @app.get("/api/estimation-budgets/{estimation_budget_id}/transactions")
@@ -10534,8 +10704,28 @@ def _get_estimation_budget_or_404(estimation_budget_id: str, user: dict) -> dict
     return doc
 
 
+def _get_estimation_or_404(estimation_budget_id: str, estimation_id: str) -> dict:
+    doc = db.estimations.find_one(
+        {"_id": oid(estimation_id), "estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="Estimación not found")
+    return doc
+
+
+def _require_estimation_status(estimation: dict, allowed: tuple[str, ...], action: str) -> None:
+    current = estimation_workflow_status(estimation)
+    if current not in allowed:
+        raise HTTPException(status_code=409, detail=f"Cannot {action} an estimación in status {current}")
+
+
+def _require_positive_progress(estimation: dict) -> None:
+    if float(estimation.get("periodSubtotal") or 0) <= 0:
+        raise HTTPException(status_code=400, detail="La estimación no tiene avance capturado")
+
+
 @app.get("/api/estimation-budgets/{estimation_budget_id}/estimations")
-def list_estimations(estimation_budget_id: str, user: dict = Depends(require_admin_or_superadmin)):
+def list_estimations(estimation_budget_id: str, user: dict = Depends(require_estimation_capture)):
     _get_estimation_budget_or_404(estimation_budget_id, user)
     rows = list(
         db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}).sort("folio", 1)
@@ -10544,7 +10734,7 @@ def list_estimations(estimation_budget_id: str, user: dict = Depends(require_adm
 
 
 @app.post("/api/estimation-budgets/{estimation_budget_id}/estimations", status_code=201)
-def create_estimation(estimation_budget_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+def create_estimation(estimation_budget_id: str, payload: dict, user: dict = Depends(require_estimation_capture)):
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
     if not estimation_budget.get("isActive", True):
         raise HTTPException(status_code=409, detail="Cannot create an estimación for an inactive estimation budget")
@@ -10554,73 +10744,72 @@ def create_estimation(estimation_budget_id: str, payload: dict, user: dict = Dep
     if not period_start or not period_end:
         raise HTTPException(status_code=400, detail="periodStart and periodEnd are required")
     notes = normalize_non_empty_string((payload or {}).get("notes")) or ""
-    status_value = normalize_non_empty_string((payload or {}).get("status")) or "Registrada"
 
-    raw_line_items = (payload or {}).get("lineItems")
-    if not isinstance(raw_line_items, list) or not raw_line_items:
-        raise HTTPException(status_code=400, detail="lineItems with periodQuantity per concepto are required")
-    period_quantities_by_concepto_id = {}
-    for row in raw_line_items:
-        concepto_id = normalize_non_empty_string((row or {}).get("conceptoId"))
-        if not concepto_id:
-            raise HTTPException(status_code=400, detail="Each lineItem requires a conceptoId")
-        period_quantities_by_concepto_id[concepto_id] = (row or {}).get("periodQuantity")
+    # El avance acumulado depende de las estimaciones previas: no se abre otra
+    # mientras la anterior siga en borrador o en revisión.
+    open_estimation = get_open_estimation(estimation_budget_id)
+    if open_estimation:
+        raise HTTPException(
+            status_code=409,
+            detail=f"La estimación #{open_estimation.get('folio')} sigue abierta ({estimation_workflow_status(open_estimation)}); ciérrala antes de crear otra",
+        )
 
-    previous_cumulative = compute_previous_cumulative_quantities(estimation_budget_id)
-    line_items = build_estimation_line_items(estimation_budget, period_quantities_by_concepto_id, previous_cumulative)
-    money_fields = compute_estimation_money_fields(estimation_budget, line_items)
-    folio = compute_next_estimation_folio(estimation_budget_id)
+    content = build_estimation_content(estimation_budget, payload or {})
+    submit_now = bool((payload or {}).get("submit"))
+    if submit_now:
+        _require_positive_progress(content)
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    username = normalize_non_empty_string(user.get("username")) or "system"
     doc = {
         "estimationBudgetId": estimation_budget_id,
         "projectId": str(estimation_budget.get("projectId") or ""),
-        "folio": folio,
+        "folio": compute_next_estimation_folio(estimation_budget_id),
         "periodStart": period_start,
         "periodEnd": period_end,
         "notes": notes,
-        "status": status_value,
-        "lineItems": line_items,
-        **money_fields,
+        "workflowStatus": ESTIMATION_STATUS_SUBMITTED if submit_now else ESTIMATION_STATUS_DRAFT,
+        **content,
         "isDeleted": False,
-        "createdBy": normalize_non_empty_string(user.get("username")) or "system",
+        "createdBy": username,
         "createdAt": now_iso,
         "updatedAt": now_iso,
     }
+    if submit_now:
+        doc["submittedBy"] = username
+        doc["submittedAt"] = now_iso
     inserted_id = db.estimations.insert_one(doc).inserted_id
     saved = db.estimations.find_one({"_id": inserted_id})
     return serialize_estimation(saved) if saved else {"ok": True, "id": str(inserted_id)}
 
 
 @app.get("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}")
-def get_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_admin_or_superadmin)):
+def get_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_estimation_capture)):
     _get_estimation_budget_or_404(estimation_budget_id, user)
-    doc = db.estimations.find_one(
-        {"_id": oid(estimation_id), "estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="Estimación not found")
-    return serialize_estimation(doc)
+    return serialize_estimation(_get_estimation_or_404(estimation_budget_id, estimation_id))
 
 
 @app.patch("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}")
-def update_estimation(estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+def update_estimation(estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_estimation_capture)):
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
-    existing = db.estimations.find_one(
-        {"_id": oid(estimation_id), "estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
-    )
-    if not existing:
-        raise HTTPException(status_code=404, detail="Estimación not found")
+    existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+
+    workflow = estimation_workflow_status(existing)
+    is_legacy = workflow == ESTIMATION_STATUS_LEGACY
+    if is_legacy and not is_admin_or_superadmin_user(user):
+        raise HTTPException(status_code=403, detail="ADMIN or SUPERADMIN role required")
+    if workflow in (ESTIMATION_STATUS_SUBMITTED, ESTIMATION_STATUS_APPROVED):
+        raise HTTPException(status_code=409, detail="La estimación está en revisión o cerrada; devuélvela a borrador para editarla")
 
     is_latest = is_latest_estimation(existing)
-    restricted_fields = {"periodStart", "periodEnd", "lineItems"}
-    if not is_latest and restricted_fields.intersection((payload or {}).keys()):
+    content_fields = {"periodStart", "periodEnd", "lineItems", "captureMode", "globalProgressPct"}
+    if not is_latest and content_fields.intersection((payload or {}).keys()):
         raise HTTPException(status_code=400, detail="Only the latest estimación can have its period/quantities edited")
 
     updates: dict = {}
     if "notes" in payload:
         updates["notes"] = normalize_non_empty_string(payload.get("notes")) or ""
-    if "status" in payload:
+    if is_legacy and "status" in payload:
         updates["status"] = normalize_non_empty_string(payload.get("status")) or "Registrada"
 
     if is_latest:
@@ -10628,26 +10817,8 @@ def update_estimation(estimation_budget_id: str, estimation_id: str, payload: di
             updates["periodStart"] = normalize_non_empty_string(payload.get("periodStart")) or existing.get("periodStart")
         if "periodEnd" in payload:
             updates["periodEnd"] = normalize_non_empty_string(payload.get("periodEnd")) or existing.get("periodEnd")
-        if "lineItems" in payload:
-            raw_line_items = payload.get("lineItems")
-            if not isinstance(raw_line_items, list) or not raw_line_items:
-                raise HTTPException(status_code=400, detail="lineItems with periodQuantity per concepto are required")
-            period_quantities_by_concepto_id = {}
-            for row in raw_line_items:
-                concepto_id = normalize_non_empty_string((row or {}).get("conceptoId"))
-                if not concepto_id:
-                    raise HTTPException(status_code=400, detail="Each lineItem requires a conceptoId")
-                period_quantities_by_concepto_id[concepto_id] = (row or {}).get("periodQuantity")
-
-            previous_cumulative = compute_previous_cumulative_quantities(
-                estimation_budget_id, exclude_estimation_id=estimation_id
-            )
-            line_items = build_estimation_line_items(estimation_budget, period_quantities_by_concepto_id, previous_cumulative)
-            money_fields = compute_estimation_money_fields(
-                estimation_budget, line_items, exclude_estimation_id=estimation_id
-            )
-            updates["lineItems"] = line_items
-            updates.update(money_fields)
+        if "lineItems" in payload or "globalProgressPct" in payload or "captureMode" in payload:
+            updates.update(build_estimation_content(estimation_budget, payload, exclude_estimation_id=estimation_id))
 
     if not updates:
         return serialize_estimation(existing)
@@ -10659,13 +10830,14 @@ def update_estimation(estimation_budget_id: str, estimation_id: str, payload: di
 
 
 @app.delete("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}")
-def delete_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_admin_or_superadmin)):
+def delete_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_estimation_capture)):
     _get_estimation_budget_or_404(estimation_budget_id, user)
-    existing = db.estimations.find_one(
-        {"_id": oid(estimation_id), "estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
-    )
-    if not existing:
-        raise HTTPException(status_code=404, detail="Estimación not found")
+    existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    workflow = estimation_workflow_status(existing)
+    if workflow == ESTIMATION_STATUS_LEGACY and not is_admin_or_superadmin_user(user):
+        raise HTTPException(status_code=403, detail="ADMIN or SUPERADMIN role required")
+    if workflow in (ESTIMATION_STATUS_SUBMITTED, ESTIMATION_STATUS_APPROVED):
+        raise HTTPException(status_code=409, detail="Solo se pueden eliminar estimaciones en borrador")
     if not is_latest_estimation(existing):
         raise HTTPException(status_code=409, detail="Only the latest estimación can be deleted")
 
@@ -10674,6 +10846,163 @@ def delete_estimation(estimation_budget_id: str, estimation_id: str, user: dict 
         {"$set": {"isDeleted": True, "updatedAt": datetime.now(timezone.utc).isoformat()}},
     )
     return {"ok": True}
+
+
+@app.post("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}/submit")
+def submit_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_estimation_capture)):
+    _get_estimation_budget_or_404(estimation_budget_id, user)
+    existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    _require_estimation_status(existing, (ESTIMATION_STATUS_DRAFT,), "submit")
+    _require_positive_progress(existing)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db.estimations.update_one(
+        {"_id": oid(estimation_id)},
+        {
+            "$set": {
+                "workflowStatus": ESTIMATION_STATUS_SUBMITTED,
+                "submittedBy": normalize_non_empty_string(user.get("username")) or "system",
+                "submittedAt": now_iso,
+                "updatedAt": now_iso,
+            }
+        },
+    )
+    return serialize_estimation(db.estimations.find_one({"_id": oid(estimation_id)}))
+
+
+@app.post("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}/return")
+def return_estimation_to_draft(
+    estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)
+):
+    _get_estimation_budget_or_404(estimation_budget_id, user)
+    existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    _require_estimation_status(existing, (ESTIMATION_STATUS_SUBMITTED,), "return")
+    reason = normalize_non_empty_string((payload or {}).get("reason"))
+    if not reason:
+        raise HTTPException(status_code=400, detail="reason is required to return an estimación")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db.estimations.update_one(
+        {"_id": oid(estimation_id)},
+        {
+            "$set": {
+                "workflowStatus": ESTIMATION_STATUS_DRAFT,
+                "returnReason": reason,
+                "returnedBy": normalize_non_empty_string(user.get("username")) or "system",
+                "returnedAt": now_iso,
+                "updatedAt": now_iso,
+            }
+        },
+    )
+    return serialize_estimation(db.estimations.find_one({"_id": oid(estimation_id)}))
+
+
+@app.post("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}/approve")
+def approve_estimation(
+    estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)
+):
+    _get_estimation_budget_or_404(estimation_budget_id, user)
+    existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    _require_estimation_status(existing, (ESTIMATION_STATUS_SUBMITTED,), "approve")
+
+    calculated = round(float(existing.get("totalToPay") or 0), 2)
+    raw_authorized = (payload or {}).get("authorizedAmount")
+    if raw_authorized in (None, ""):
+        authorized = calculated
+    else:
+        try:
+            authorized = round(parse_decimal(raw_authorized), 2)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="authorizedAmount is invalid")
+        if authorized < 0:
+            raise HTTPException(status_code=400, detail="authorizedAmount must be greater than or equal to 0")
+    note = normalize_non_empty_string((payload or {}).get("authorizationNote")) or ""
+    difference = round(authorized - calculated, 2)
+    if abs(difference) >= 0.01 and not note:
+        raise HTTPException(status_code=400, detail="authorizationNote is required when the authorized amount differs from the calculated total")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db.estimations.update_one(
+        {"_id": oid(estimation_id)},
+        {
+            "$set": {
+                "workflowStatus": ESTIMATION_STATUS_APPROVED,
+                "authorizedAmount": authorized,
+                "authorizedDifference": difference,
+                "authorizationNote": note,
+                "approvedBy": normalize_non_empty_string(user.get("username")) or "system",
+                "approvedAt": now_iso,
+                "paymentStatus": ESTIMATION_PAYMENT_PENDING,
+                "updatedAt": now_iso,
+            }
+        },
+    )
+    return serialize_estimation(db.estimations.find_one({"_id": oid(estimation_id)}))
+
+
+@app.post("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}/mark-paid")
+def mark_estimation_paid(
+    estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)
+):
+    _get_estimation_budget_or_404(estimation_budget_id, user)
+    existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    _require_estimation_status(existing, (ESTIMATION_STATUS_APPROVED,), "mark as paid")
+    if existing.get("paymentStatus") == ESTIMATION_PAYMENT_PAID:
+        raise HTTPException(status_code=409, detail="La estimación ya está marcada como pagada")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db.estimations.update_one(
+        {"_id": oid(estimation_id)},
+        {
+            "$set": {
+                "paymentStatus": ESTIMATION_PAYMENT_PAID,
+                "paidMarkedBy": normalize_non_empty_string(user.get("username")) or "system",
+                "paidMarkedAt": now_iso,
+                "paidNote": normalize_non_empty_string((payload or {}).get("note")) or "",
+                "updatedAt": now_iso,
+            }
+        },
+    )
+    return serialize_estimation(db.estimations.find_one({"_id": oid(estimation_id)}))
+
+
+@app.get("/api/estimations/queue")
+def list_estimations_queue(
+    projectId: str | None = None,
+    status: str | None = None,
+    paymentStatus: str | None = None,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_estimation_capture),
+):
+    """Cross-budget inbox: borradores/enviadas por revisar, o aprobadas por pagar."""
+    project_id = resolve_project_id(projectId or get_active_project_id(request))
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    statuses = [part.strip().upper() for part in str(status or "").split(",") if part.strip()]
+    allowed_statuses = {ESTIMATION_STATUS_DRAFT, ESTIMATION_STATUS_SUBMITTED, ESTIMATION_STATUS_APPROVED}
+    if any(item not in allowed_statuses for item in statuses):
+        raise HTTPException(status_code=400, detail="status must be BORRADOR, ENVIADA or APROBADA")
+    if not statuses:
+        statuses = [ESTIMATION_STATUS_DRAFT, ESTIMATION_STATUS_SUBMITTED]
+    query: dict = {"isDeleted": {"$ne": True}, "projectId": project_id, "workflowStatus": {"$in": statuses}}
+    payment_filter = normalize_non_empty_string(paymentStatus)
+    if payment_filter:
+        if payment_filter.upper() not in (ESTIMATION_PAYMENT_PENDING, ESTIMATION_PAYMENT_PAID):
+            raise HTTPException(status_code=400, detail="paymentStatus must be POR_PAGAR or PAGADA")
+        query["paymentStatus"] = payment_filter.upper()
+
+    rows = list(db.estimations.find(query).sort("updatedAt", -1))
+    budget_cache: dict[str, dict | None] = {}
+    items = []
+    for row in rows:
+        budget_id = str(row.get("estimationBudgetId") or "")
+        if budget_id not in budget_cache:
+            budget_cache[budget_id] = db.estimationBudgets.find_one({"_id": oid(budget_id)})
+        budget = budget_cache[budget_id] or {}
+        payload = serialize_estimation(row)
+        payload["budgetName"] = budget.get("name") or ""
+        payload["supplierName"] = budget.get("supplierNameSnapshot") or budget.get("supplierKey") or ""
+        payload["currency"] = budget.get("currency") or "MXN"
+        items.append(payload)
+    return {"items": items}
 
 
 # ---- Import de conceptos (Excel/CSV/PDF) para presupuestos de Estimaciones ----

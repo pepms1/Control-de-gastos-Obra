@@ -334,6 +334,7 @@ function Nav({
   tab,
   setTab,
   role,
+  canCaptureEstimations,
   username,
   displayName,
   onLogout,
@@ -350,7 +351,7 @@ function Nav({
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar', true],
     ['budgets', 'Presupuestos', canSeeBudgets],
-    ['estimaciones', 'Estimaciones', canSeeBudgets],
+    ['estimaciones', 'Estimaciones', canSeeBudgets || Boolean(canCaptureEstimations)],
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
@@ -539,6 +540,7 @@ export default function App() {
   const isAdminUser = isAdminRole(userRole);
   const canUseAdminPreferences = isAdminUser || isSuperAdminUser;
   const isAdmin = isSuperAdminUser;
+  const canCaptureEstimations = isSuperAdminUser || isAdminUser || Boolean(session.canCaptureEstimations);
   const isDarkMode = themePreference === 'dark';
 
   useEffect(() => {
@@ -668,13 +670,16 @@ export default function App() {
     if (tab === 'transactions') {
       setTab('settings');
     }
-    if (!(isSuperAdminUser || isAdminUser) && (tab === 'budgets' || tab === 'estimaciones')) {
+    if (!(isSuperAdminUser || isAdminUser) && tab === 'budgets') {
+      setTab('dashboard');
+    }
+    if (!canCaptureEstimations && tab === 'estimaciones') {
       setTab('dashboard');
     }
     if (isViewerUser && tab === 'settings') {
       setTab('dashboard');
     }
-  }, [isSuperAdminUser, isAdminUser, isViewerUser, tab]);
+  }, [isSuperAdminUser, isAdminUser, isViewerUser, canCaptureEstimations, tab]);
 
   if (!session.token) return <Login onLogin={setSession} />;
 
@@ -684,6 +689,7 @@ export default function App() {
         tab={tab}
         setTab={setTab}
         role={userRole}
+        canCaptureEstimations={canCaptureEstimations}
         username={session.username}
         displayName={session.displayName}
         onLogout={logout}
@@ -722,10 +728,11 @@ export default function App() {
           />
         )}
 
-        {tab === 'estimaciones' && (isSuperAdminUser || isAdminUser) && (
+        {tab === 'estimaciones' && canCaptureEstimations && (
           <EstimacionesSection
             projects={personalizedProjects}
             selectedProjectId={selectedProjectId}
+            isReviewer={isSuperAdminUser || isAdminUser}
           />
         )}
 
@@ -1402,6 +1409,7 @@ function AdminUsersAccessSection() {
     password: '',
     email: '',
     role: 'VIEWER',
+    canCaptureEstimations: false,
     allowedProjectIds: [],
   });
   const [editingNameUserId, setEditingNameUserId] = useState('');
@@ -1512,6 +1520,7 @@ function AdminUsersAccessSection() {
       email: createForm.email,
       role: createForm.role,
       allowedProjectIds: createForm.role === 'VIEWER' ? createForm.allowedProjectIds : [],
+      canCaptureEstimations: createForm.role === 'VIEWER' ? createForm.canCaptureEstimations : false,
     };
     setCreating(true);
     setError('');
@@ -1519,7 +1528,7 @@ function AdminUsersAccessSection() {
       const created = await api.createAdminUser(payload);
       setUsers((prev) => [created, ...prev]);
       setShowCreateForm(false);
-      setCreateForm({ displayName: '', username: '', password: '', email: '', role: 'VIEWER', allowedProjectIds: [] });
+      setCreateForm({ displayName: '', username: '', password: '', email: '', role: 'VIEWER', canCaptureEstimations: false, allowedProjectIds: [] });
     } catch (e) {
       setError(e.message || 'No se pudo crear el usuario.');
     } finally {
@@ -1531,6 +1540,21 @@ function AdminUsersAccessSection() {
     const key = String(userId || '');
     if (!key) return;
     setDraftRoleByUserId((prev) => ({ ...prev, [key]: normalizeRole(role) }));
+  }
+
+  async function toggleCanCaptureEstimations(user, nextValue) {
+    const userId = String(user?.id || user?._id || '');
+    if (!userId) return;
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await api.updateAdminUser(userId, { canCaptureEstimations: nextValue });
+      setUsers((prev) => prev.map((row) => (String(row?.id || row?._id || '') === userId ? { ...row, ...updated } : row)));
+    } catch (e) {
+      setError(e.message || 'No se pudo cambiar el permiso de captura de estimaciones.');
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function saveRole(user) {
@@ -1684,6 +1708,12 @@ function AdminUsersAccessSection() {
               </select>
             </label>
             {createForm.role === 'VIEWER' && (
+              <label className="small" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input type="checkbox" checked={createForm.canCaptureEstimations} onChange={(e) => setCreateForm((prev) => ({ ...prev, canCaptureEstimations: e.target.checked }))} />
+                <span>Puede capturar estimaciones (avance semanal para revisión de un admin)</span>
+              </label>
+            )}
+            {createForm.role === 'VIEWER' && (
               <div>
                 <div className="small" style={{ marginBottom: 6 }}>Proyectos permitidos (el VIEWER solo verá estos proyectos)</div>
                 <div style={{ display: 'grid', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
@@ -1779,6 +1809,17 @@ function AdminUsersAccessSection() {
                           </select>
                           <div><button type="button" className="secondary" onClick={() => saveRole(user)} disabled={!roleDirty || savingRole || saving}>{savingRole ? 'Guardando rol...' : 'Guardar rol'}</button></div>
                           <div className="small">{getRoleHelp(role)}</div>
+                          {viewer && (
+                            <label className="small" style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                              <input
+                                type="checkbox"
+                                checked={Boolean(user?.canCaptureEstimations)}
+                                onChange={(e) => toggleCanCaptureEstimations(user, e.target.checked)}
+                                disabled={saving}
+                              />
+                              Puede capturar estimaciones
+                            </label>
+                          )}
                         </div>
                       </td>
                       <td><span className="badge">{user?.isActive === false ? 'Inactivo' : 'Activo'}</span></td>
