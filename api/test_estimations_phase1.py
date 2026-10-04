@@ -80,7 +80,10 @@ class EstimationsPhase1Tests(unittest.TestCase):
                 user=SUPERADMIN,
             )
 
-    def _create_estimation(self, fake_db, budget_id, quantities_by_concepto_id, **overrides):
+    def _create_estimation(self, fake_db, budget_id, quantities_by_concepto_id, close=True, **overrides):
+        """Creates an estimación; by default it also walks it through
+        submit + approve so the next one can be opened (only one open
+        estimación per presupuesto is allowed)."""
         payload = {
             'periodStart': '2026-01-01',
             'periodEnd': '2026-01-07',
@@ -91,7 +94,11 @@ class EstimationsPhase1Tests(unittest.TestCase):
         }
         payload.update(overrides)
         with patch.object(main, 'db', fake_db):
-            return main.create_estimation(budget_id, payload, user=SUPERADMIN)
+            created = main.create_estimation(budget_id, payload, user=SUPERADMIN)
+            if not close:
+                return created
+            main.submit_estimation(budget_id, created['id'], user=SUPERADMIN)
+            return main.approve_estimation(budget_id, created['id'], {}, user=SUPERADMIN)
 
     # ---- estimation budget (presupuesto por conceptos) ----
 
@@ -191,7 +198,7 @@ class EstimationsPhase1Tests(unittest.TestCase):
         conexiones_id = budget['lineItems'][1]['id']
 
         first = self._create_estimation(fake_db, budget['id'], {tuberia_id: 10, conexiones_id: 1})
-        second = self._create_estimation(fake_db, budget['id'], {tuberia_id: 10, conexiones_id: 1})
+        second = self._create_estimation(fake_db, budget['id'], {tuberia_id: 10, conexiones_id: 1}, close=False)
 
         with patch.object(main, 'db', fake_db):
             with self.assertRaises(HTTPException) as ctx:
@@ -201,7 +208,7 @@ class EstimationsPhase1Tests(unittest.TestCase):
                     {'periodQuantity': 99, 'lineItems': [{'conceptoId': tuberia_id, 'periodQuantity': 99}]},
                     user=SUPERADMIN,
                 )
-        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.status_code, 409)
 
         with patch.object(main, 'db', fake_db):
             with self.assertRaises(HTTPException) as ctx:

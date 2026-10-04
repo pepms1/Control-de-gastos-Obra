@@ -50,6 +50,51 @@ function generateId() {
   return `c_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
+const WORKFLOW_LABELS = {
+  BORRADOR: 'Borrador',
+  ENVIADA: 'Por autorizar',
+  APROBADA: 'Aprobada',
+  REGISTRADA: 'Registrada',
+};
+
+function describeEstimationStatus(estimation) {
+  const workflow = estimation?.workflowStatus || 'REGISTRADA';
+  if (workflow === 'APROBADA') {
+    return estimation?.paymentStatus === 'PAGADA' ? 'Pagada' : 'Aprobada · Por pagar';
+  }
+  return WORKFLOW_LABELS[workflow] || workflow;
+}
+
+function statusBadgeStyle(estimation) {
+  const workflow = estimation?.workflowStatus || 'REGISTRADA';
+  if (workflow === 'APROBADA') {
+    return estimation?.paymentStatus === 'PAGADA'
+      ? { background: '#dcfce7', color: '#166534' }
+      : { background: '#dbeafe', color: '#1e40af' };
+  }
+  if (workflow === 'ENVIADA') return { background: '#fef3c7', color: '#92400e' };
+  if (workflow === 'BORRADOR') return { background: '#e5e7eb', color: '#374151' };
+  return { background: '#f3f4f6', color: '#4b5563' };
+}
+
+function StatusBadge({ estimation }) {
+  return (
+    <span className="badge" style={statusBadgeStyle(estimation)}>
+      {describeEstimationStatus(estimation)}
+    </span>
+  );
+}
+
+// Same math as the backend's resolve_period_quantities, for live preview only.
+function computePeriodQuantity(mode, li, globalPct) {
+  if (mode === 'quantity') return Number(li.periodQuantity) || 0;
+  const pctRaw = mode === 'global' ? globalPct : li.progressPct;
+  if (pctRaw === '' || pctRaw === null || pctRaw === undefined) return 0;
+  const pct = Number(pctRaw) || 0;
+  const target = ((Number(li.contractedQuantity) || 0) * pct) / 100;
+  return Math.max(target - (Number(li.previousCumulativeQuantity) || 0), 0);
+}
+
 function emptyConceptoRow() {
   return { id: generateId(), description: '', unit: '', quantity: '', unitPrice: '' };
 }
@@ -70,9 +115,9 @@ function computeBudgetFormTotals(lineItems, advanceAmount) {
 // Mirrors the backend's compute_estimation_money_fields — used only for
 // live preview while typing; the authoritative values come back from the
 // server response on save.
-function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalanceOverride) {
+function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalanceOverride, mode = 'quantity', globalPct = '') {
   const periodSubtotal = (lineItemInputs || []).reduce(
-    (sum, li) => sum + (Number(li.periodQuantity) || 0) * (Number(li.unitPrice) || 0),
+    (sum, li) => sum + computePeriodQuantity(mode, li, globalPct) * (Number(li.unitPrice) || 0),
     0,
   );
   const retentionPct = Number(budgetDetail?.retentionPct) || 0;
@@ -108,8 +153,14 @@ function emptyBudgetForm(projectId) {
   };
 }
 
-export function EstimacionesSection({ projects, selectedProjectId }) {
+export function EstimacionesSection({ projects, selectedProjectId, isReviewer = false }) {
   const [view, setView] = useState('list');
+  const [section, setSection] = useState('budgets');
+  const [queueRows, setQueueRows] = useState([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [viewingEstimation, setViewingEstimation] = useState(null);
+  const [authorizedAmount, setAuthorizedAmount] = useState('');
+  const [authorizationNote, setAuthorizationNote] = useState('');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -171,6 +222,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
     setEstimationsList([]);
     setShowEstimationForm(false);
     setEditingEstimation(null);
+    setViewingEstimation(null);
     setShowForm(false);
     setEditingBudgetRow(null);
     setAssigningBudget(null);
@@ -180,7 +232,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
   }, [selectedProjectId]);
 
   useEffect(() => {
-    if (!selectedProjectId) return;
+    if (!selectedProjectId || !isReviewer) return;
     let active = true;
     const normalizeRows = (payload) => {
       if (Array.isArray(payload)) return payload;
@@ -524,21 +576,33 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
     }
   }
 
+  function pctOf(quantity, contracted) {
+    const base = Number(contracted) || 0;
+    return base > 0 ? Math.round(((Number(quantity) || 0) / base) * 10000) / 100 : 0;
+  }
+
   function buildEstimationFormFromBudget(previousCumulativeByConceptoId) {
     return {
       periodStart: '',
       periodEnd: '',
       notes: '',
-      status: 'Registrada',
-      lineItems: (budgetDetail?.lineItems || []).map((item) => ({
-        conceptoId: item.id,
-        description: item.description,
-        unit: item.unit,
-        unitPrice: item.unitPrice,
-        contractedQuantity: item.quantity,
-        previousCumulativeQuantity: Number(previousCumulativeByConceptoId?.[item.id]) || 0,
-        periodQuantity: '',
-      })),
+      captureMode: 'global',
+      globalProgressPct: '',
+      lineItems: (budgetDetail?.lineItems || []).map((item) => {
+        const previous = Number(previousCumulativeByConceptoId?.[item.id]) || 0;
+        const previousPct = String(pctOf(previous, item.quantity));
+        return {
+          conceptoId: item.id,
+          description: item.description,
+          unit: item.unit,
+          unitPrice: item.unitPrice,
+          contractedQuantity: item.quantity,
+          previousCumulativeQuantity: previous,
+          previousProgressPct: previousPct,
+          progressPct: previousPct,
+          periodQuantity: '',
+        };
+      }),
     };
   }
 
@@ -550,18 +614,22 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
         previousCumulativeByConceptoId[li.conceptoId] = li.cumulativeQuantity;
       });
     }
+    setViewingEstimation(null);
     setEditingEstimation(null);
     setEstimationForm(buildEstimationFormFromBudget(previousCumulativeByConceptoId));
     setShowEstimationForm(true);
   }
 
   function startEditEstimation(estimation) {
+    const mode = ['global', 'concept', 'quantity'].includes(estimation.captureMode) ? estimation.captureMode : 'quantity';
+    setViewingEstimation(null);
     setEditingEstimation(estimation);
     setEstimationForm({
       periodStart: estimation.periodStart || '',
       periodEnd: estimation.periodEnd || '',
       notes: estimation.notes || '',
-      status: estimation.status || 'Registrada',
+      captureMode: mode,
+      globalProgressPct: estimation.globalProgressPct != null ? String(estimation.globalProgressPct) : '',
       lineItems: (estimation.lineItems || []).map((li) => ({
         conceptoId: li.conceptoId,
         description: li.description,
@@ -569,6 +637,8 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
         unitPrice: li.unitPrice,
         contractedQuantity: li.contractedQuantity,
         previousCumulativeQuantity: li.previousCumulativeQuantity,
+        previousProgressPct: String(li.previousProgressPct ?? pctOf(li.previousCumulativeQuantity, li.contractedQuantity)),
+        progressPct: String(li.progressPct ?? pctOf(li.cumulativeQuantity, li.contractedQuantity)),
         periodQuantity: String(li.periodQuantity ?? ''),
       })),
     });
@@ -581,10 +651,10 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
     setEstimationForm(null);
   }
 
-  function updateEstimationQuantity(conceptoId, value) {
+  function updateEstimationLine(conceptoId, field, value) {
     setEstimationForm((prev) => ({
       ...prev,
-      lineItems: prev.lineItems.map((li) => (li.conceptoId === conceptoId ? { ...li, periodQuantity: value } : li)),
+      lineItems: prev.lineItems.map((li) => (li.conceptoId === conceptoId ? { ...li, [field]: value } : li)),
     }));
   }
 
@@ -593,38 +663,170 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
     const remainingOverride = editingEstimation
       ? (Number(budgetDetail.remainingAdvanceBalance) || 0) + (Number(editingEstimation.advanceAmortizationAmount) || 0)
       : undefined;
-    return computeEstimationPreview(budgetDetail, estimationForm.lineItems, remainingOverride);
+    return computeEstimationPreview(
+      budgetDetail,
+      estimationForm.lineItems,
+      remainingOverride,
+      estimationForm.captureMode,
+      estimationForm.globalProgressPct,
+    );
   }, [estimationForm, budgetDetail, editingEstimation]);
 
-  async function submitEstimationForm(event) {
-    event.preventDefault();
+  function buildEstimationPayload() {
+    const payload = {
+      periodStart: estimationForm.periodStart,
+      periodEnd: estimationForm.periodEnd,
+      notes: estimationForm.notes,
+      captureMode: estimationForm.captureMode,
+    };
+    if (estimationForm.captureMode === 'global') {
+      payload.globalProgressPct = Number(estimationForm.globalProgressPct) || 0;
+    } else if (estimationForm.captureMode === 'concept') {
+      // Solo se mandan los conceptos que el usuario movio; el resto no avanza.
+      payload.lineItems = estimationForm.lineItems
+        .filter((li) => String(li.progressPct) !== String(li.previousProgressPct))
+        .map((li) => ({ conceptoId: li.conceptoId, progressPct: Number(li.progressPct) || 0 }));
+    } else {
+      payload.lineItems = estimationForm.lineItems.map((li) => ({
+        conceptoId: li.conceptoId,
+        periodQuantity: Number(li.periodQuantity) || 0,
+      }));
+    }
+    return payload;
+  }
+
+  async function submitEstimationForm(event, { sendForReview = false } = {}) {
+    event?.preventDefault?.();
     if (!selectedBudgetId || !estimationForm) return;
+    if (estimationForm.captureMode === 'concept' && !buildEstimationPayload().lineItems.length) {
+      setError('Captura el avance de al menos un concepto.');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
-      const payload = {
-        periodStart: estimationForm.periodStart,
-        periodEnd: estimationForm.periodEnd,
-        notes: estimationForm.notes,
-        status: estimationForm.status,
-        lineItems: estimationForm.lineItems.map((li) => ({
-          conceptoId: li.conceptoId,
-          periodQuantity: Number(li.periodQuantity) || 0,
-        })),
-      };
+      const payload = buildEstimationPayload();
       if (editingEstimation) {
         await api.updateEstimation(selectedBudgetId, editingEstimation.id, payload);
+        if (sendForReview) await api.submitEstimation(selectedBudgetId, editingEstimation.id);
       } else {
-        await api.createEstimation(selectedBudgetId, payload);
+        await api.createEstimation(selectedBudgetId, { ...payload, submit: sendForReview });
       }
       await loadBudgetDetail(selectedBudgetId);
       await loadEstimationBudgets();
+      await loadQueue();
       resetEstimationForm();
     } catch (e) {
       setError(e.message || 'No se pudo guardar la estimación');
     } finally {
       setSaving(false);
     }
+  }
+
+  async function runEstimationAction(action, estimation, ...args) {
+    setSaving(true);
+    setError('');
+    try {
+      await action(estimation.estimationBudgetId || selectedBudgetId, estimation.id, ...args);
+      if (selectedBudgetId) await loadBudgetDetail(selectedBudgetId);
+      await loadEstimationBudgets();
+      await loadQueue();
+      setViewingEstimation(null);
+    } catch (e) {
+      setError(e.message || 'No se pudo completar la acción');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function sendDraftForReview(estimation) {
+    if (!window.confirm(`¿Enviar la estimación #${estimation.folio} a revisión? Ya no podrás editarla.`)) return;
+    runEstimationAction(api.submitEstimation, estimation);
+  }
+
+  function approveViewingEstimation() {
+    const estimation = viewingEstimation;
+    if (!estimation) return;
+    const calculated = Number(estimation.totalToPay) || 0;
+    const amount = authorizedAmount === '' ? calculated : Number(authorizedAmount);
+    if (!Number.isFinite(amount) || amount < 0) {
+      setError('El monto autorizado no es válido.');
+      return;
+    }
+    if (Math.abs(amount - calculated) >= 0.01 && !authorizationNote.trim()) {
+      setError('Indica el motivo cuando el monto autorizado es distinto al calculado.');
+      return;
+    }
+    runEstimationAction(api.approveEstimation, estimation, {
+      authorizedAmount: amount,
+      authorizationNote: authorizationNote.trim(),
+    });
+  }
+
+  function returnViewingEstimation() {
+    const estimation = viewingEstimation;
+    if (!estimation) return;
+    const reason = window.prompt('Motivo de la devolución (se le mostrará a quien capturó):');
+    if (!reason || !reason.trim()) return;
+    runEstimationAction(api.returnEstimation, estimation, { reason: reason.trim() });
+  }
+
+  function markEstimationPaid(estimation) {
+    if (!window.confirm(`¿Marcar la estimación #${estimation.folio} como pagada?`)) return;
+    runEstimationAction(api.markEstimationPaid, estimation, {});
+  }
+
+  function openEstimationView(estimation) {
+    setShowEstimationForm(false);
+    setEditingEstimation(null);
+    setViewingEstimation(estimation);
+    setAuthorizedAmount(String(estimation.authorizedAmount ?? estimation.totalToPay ?? ''));
+    setAuthorizationNote(estimation.authorizationNote || '');
+  }
+
+  async function loadQueue() {
+    if (!selectedProjectId) return;
+    setQueueLoading(true);
+    try {
+      let params;
+      if (section === 'review') params = { projectId: selectedProjectId, status: 'ENVIADA' };
+      else if (section === 'payable') params = { projectId: selectedProjectId, status: 'APROBADA', paymentStatus: 'POR_PAGAR' };
+      else if (section === 'drafts') params = { projectId: selectedProjectId, status: 'BORRADOR,ENVIADA' };
+      else {
+        setQueueRows([]);
+        return;
+      }
+      const data = await api.estimationsQueue(params);
+      setQueueRows(Array.isArray(data?.items) ? data.items : []);
+    } catch (e) {
+      setQueueRows([]);
+      setError(e.message || 'No se pudo cargar la bandeja de estimaciones');
+    } finally {
+      setQueueLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadQueue();
+  }, [section, selectedProjectId]);
+
+  // Contador del tab "Por autorizar" aunque se este en otra seccion.
+  const [pendingReviewCount, setPendingReviewCount] = useState(0);
+  useEffect(() => {
+    if (!isReviewer || !selectedProjectId) return;
+    api.estimationsQueue({ projectId: selectedProjectId, status: 'ENVIADA' })
+      .then((data) => setPendingReviewCount(Array.isArray(data?.items) ? data.items.length : 0))
+      .catch(() => setPendingReviewCount(0));
+  }, [isReviewer, selectedProjectId, estimationsList, section]);
+
+  async function openEstimationFromQueue(row) {
+    setSection('budgets');
+    setSelectedBudgetId(row.estimationBudgetId);
+    setView('detail');
+    setShowEstimationForm(false);
+    setEditingEstimation(null);
+    await loadBudgetDetail(row.estimationBudgetId);
+    openEstimationView(row);
   }
 
   async function deleteEstimationRow(estimation) {
@@ -636,12 +838,15 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
       await api.deleteEstimation(selectedBudgetId, estimation.id);
       await loadBudgetDetail(selectedBudgetId);
       await loadEstimationBudgets();
+      await loadQueue();
     } catch (e) {
       setError(e.message || 'No se pudo eliminar la estimación');
     } finally {
       setSaving(false);
     }
   }
+
+  const hasOpenEstimation = estimationsList.some((row) => row.workflowStatus === 'BORRADOR' || row.workflowStatus === 'ENVIADA');
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -867,7 +1072,95 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
         </form>
       )}
 
-      {view === 'list' ? (
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <button type="button" className={section === 'budgets' ? '' : 'secondary'} onClick={() => setSection('budgets')}>
+          Presupuestos
+        </button>
+        {isReviewer ? (
+          <>
+            <button type="button" className={section === 'review' ? '' : 'secondary'} onClick={() => setSection('review')}>
+              Por autorizar{pendingReviewCount > 0 ? ` (${pendingReviewCount})` : ''}
+            </button>
+            <button type="button" className={section === 'payable' ? '' : 'secondary'} onClick={() => setSection('payable')}>
+              Por pagar
+            </button>
+          </>
+        ) : (
+          <button type="button" className={section === 'drafts' ? '' : 'secondary'} onClick={() => setSection('drafts')}>
+            Mis estimaciones abiertas
+          </button>
+        )}
+      </div>
+
+      {section !== 'budgets' ? (
+        <div className="card" style={{ overflow: 'hidden' }}>
+          <div className="card-header">
+            <strong>
+              {section === 'review' && 'Estimaciones por autorizar'}
+              {section === 'payable' && 'Estimaciones aprobadas por pagar'}
+              {section === 'drafts' && 'Borradores y estimaciones en revisión'}
+            </strong>
+            <div style={{ flex: 1 }} />
+            <button type="button" className="secondary" onClick={loadQueue}>Actualizar</button>
+          </div>
+          {queueLoading ? (
+            <div className="small" style={{ padding: 16 }}>Cargando...</div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Proveedor</th>
+                    <th>Presupuesto</th>
+                    <th>Folio</th>
+                    <th>Periodo</th>
+                    <th>Avance acum.</th>
+                    <th>Total calculado</th>
+                    {section === 'payable' && <th>Autorizado</th>}
+                    <th>Estatus</th>
+                    <th>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queueRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.supplierName || '—'}</td>
+                      <td>{row.budgetName || '—'}</td>
+                      <td>#{row.folio}</td>
+                      <td>{formatDate(row.periodStart)} – {formatDate(row.periodEnd)}</td>
+                      <td>{formatPct(row.cumulativeProgressPct)}</td>
+                      <td>{formatCurrency(row.totalToPay)}</td>
+                      {section === 'payable' && <td><strong>{formatCurrency(row.authorizedAmount)}</strong></td>}
+                      <td><StatusBadge estimation={row} /></td>
+                      <td>
+                        <div className="row" style={{ gap: 6 }}>
+                          <button type="button" onClick={() => openEstimationFromQueue(row)}>
+                            {section === 'review' ? 'Revisar' : 'Abrir'}
+                          </button>
+                          {section === 'payable' && (
+                            <button type="button" className="secondary" onClick={() => markEstimationPaid(row)} disabled={saving}>
+                              Marcar pagada
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!queueRows.length && (
+                    <tr>
+                      <td colSpan={section === 'payable' ? 9 : 8} className="small" style={{ textAlign: 'center' }}>
+                        {section === 'review' && 'No hay estimaciones esperando autorización.'}
+                        {section === 'payable' && 'No hay estimaciones aprobadas pendientes de pago.'}
+                        {section === 'drafts' && 'No hay borradores ni estimaciones en revisión.'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : view === 'list' ? (
         <>
           <div className="kpi-grid">
             <div className="kpi-card">
@@ -877,13 +1170,15 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                 <div className="kpi-sub">en presupuestos por conceptos</div>
               </div>
             </div>
-            <div className="kpi-card">
-              <div>
-                <div className="kpi-label">Total pagado</div>
-                <div className="kpi-value">{formatCurrency(listTotals.paidAmount)}</div>
-                <div className="kpi-sub">egresos ligados a estos presupuestos</div>
+            {isReviewer && (
+              <div className="kpi-card">
+                <div>
+                  <div className="kpi-label">Total pagado</div>
+                  <div className="kpi-value">{formatCurrency(listTotals.paidAmount)}</div>
+                  <div className="kpi-sub">egresos ligados a estos presupuestos</div>
+                </div>
               </div>
-            </div>
+            )}
             <div className="kpi-card">
               <div>
                 <div className="kpi-label">Retenido a la fecha</div>
@@ -923,9 +1218,11 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                 Mostrar inactivos
               </label>
               <div style={{ flex: 1 }} />
-              <button type="button" onClick={showForm ? resetBudgetForm : startCreateBudget} style={{ fontSize: 13 }}>
-                {showForm ? '✕ Cancelar' : '+ Nuevo presupuesto'}
-              </button>
+              {isReviewer && (
+                <button type="button" onClick={showForm ? resetBudgetForm : startCreateBudget} style={{ fontSize: 13 }}>
+                  {showForm ? '✕ Cancelar' : '+ Nuevo presupuesto'}
+                </button>
+              )}
             </div>
 
             {loading ? (
@@ -938,7 +1235,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                       <th>Proveedor</th>
                       <th>Presupuesto</th>
                       <th>Total contratado</th>
-                      <th>Pagado</th>
+                      {isReviewer && <th>Pagado</th>}
                       <th>Anticipo</th>
                       <th>% Retención</th>
                       <th># Estimaciones</th>
@@ -952,7 +1249,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                         <td>{row.supplierNameSnapshot || row.supplierKey}</td>
                         <td>{row.name || '—'}</td>
                         <td>{formatCurrency(row.totalContractedAmount)}</td>
-                        <td>{formatCurrency(row.paidAmount)}</td>
+                        {isReviewer && <td>{formatCurrency(row.paidAmount)}</td>}
                         <td>{formatCurrency(row.advanceAmount)}</td>
                         <td>{formatPct(row.retentionPct)}</td>
                         <td>{row.estimationsCount}</td>
@@ -960,7 +1257,7 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                         <td>
                           <div className="row" style={{ gap: 6 }}>
                             <button type="button" className="secondary" onClick={() => openBudgetDetail(row)}>Ver</button>
-                            <button type="button" className="secondary" onClick={() => startEditBudget(row)}>Editar</button>
+                            {isReviewer && <button type="button" className="secondary" onClick={() => startEditBudget(row)}>Editar</button>}
                           </div>
                         </td>
                       </tr>
@@ -996,13 +1293,15 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                     <div className="kpi-sub">total contratado</div>
                   </div>
                 </div>
-                <div className="kpi-card">
-                  <div>
-                    <div className="kpi-label">Pagado</div>
-                    <div className="kpi-value">{formatCurrency(budgetDetail.paidAmount)}</div>
-                    <div className="kpi-sub">saldo: {formatCurrency(budgetDetail.remainingToPayAmount)}</div>
+                {isReviewer && (
+                  <div className="kpi-card">
+                    <div>
+                      <div className="kpi-label">Pagado</div>
+                      <div className="kpi-value">{formatCurrency(budgetDetail.paidAmount)}</div>
+                      <div className="kpi-sub">saldo: {formatCurrency(budgetDetail.remainingToPayAmount)}</div>
+                    </div>
                   </div>
-                </div>
+                )}
                 <div className="kpi-card">
                   <div>
                     <div className="kpi-label">Retenido a la fecha</div>
@@ -1032,10 +1331,19 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                 <div className="card-header">
                   <strong>{budgetDetail.supplierNameSnapshot}</strong>
                   <div style={{ flex: 1 }} />
-                  <button type="button" className="secondary" onClick={() => startEditBudget(budgetDetail)}>Editar presupuesto</button>
-                  <button type="button" className="secondary" onClick={() => startAssignPayments(budgetDetail)}>Asignar pagos</button>
+                  {isReviewer && (
+                    <>
+                      <button type="button" className="secondary" onClick={() => startEditBudget(budgetDetail)}>Editar presupuesto</button>
+                      <button type="button" className="secondary" onClick={() => startAssignPayments(budgetDetail)}>Asignar pagos</button>
+                    </>
+                  )}
                   {!showEstimationForm && (
-                    <button type="button" onClick={startCreateEstimation} disabled={budgetDetail.isActive === false}>
+                    <button
+                      type="button"
+                      onClick={startCreateEstimation}
+                      disabled={budgetDetail.isActive === false || hasOpenEstimation}
+                      title={hasOpenEstimation ? 'Hay una estimación abierta; ciérrala (aprobada) antes de crear otra' : undefined}
+                    >
                       + Nueva estimación
                     </button>
                   )}
@@ -1047,52 +1355,72 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                       <tr>
                         <th>Folio</th>
                         <th>Periodo</th>
+                        <th>Avance acum.</th>
                         <th>Subtotal</th>
                         <th>Retención</th>
                         <th>Amortización anticipo</th>
-                        <th>Total a pagar</th>
+                        <th>Total calculado</th>
+                        <th>Autorizado</th>
                         <th>Estatus</th>
                         <th>Acciones</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {estimationsList.map((estimation) => (
-                        <tr key={estimation.id}>
-                          <td>#{estimation.folio}</td>
-                          <td>{formatDate(estimation.periodStart)} – {formatDate(estimation.periodEnd)}</td>
-                          <td>{formatCurrency(estimation.periodSubtotal)}</td>
-                          <td>{formatCurrency(estimation.retentionAmount)}</td>
-                          <td>{formatCurrency(estimation.advanceAmortizationAmount)}</td>
-                          <td><strong>{formatCurrency(estimation.totalToPay)}</strong></td>
-                          <td>{estimation.status}</td>
-                          <td>
-                            <div className="row" style={{ gap: 6 }}>
-                              <button
-                                type="button"
-                                className="secondary"
-                                onClick={() => startEditEstimation(estimation)}
-                                disabled={!estimation.isLatest}
-                                title={!estimation.isLatest ? 'Solo la última estimación puede editarse' : undefined}
-                              >
-                                Editar
-                              </button>
-                              <button
-                                type="button"
-                                className="secondary"
-                                onClick={() => deleteEstimationRow(estimation)}
-                                disabled={!estimation.isLatest}
-                                title={!estimation.isLatest ? 'Solo la última estimación puede eliminarse' : undefined}
-                                style={{ color: estimation.isLatest ? '#b91c1c' : undefined }}
-                              >
-                                Eliminar
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
+                      {estimationsList.map((estimation) => {
+                        const workflow = estimation.workflowStatus || 'REGISTRADA';
+                        const canEdit = workflow === 'BORRADOR' || (workflow === 'REGISTRADA' && isReviewer && estimation.isLatest);
+                        const canDelete = (workflow === 'BORRADOR' || (workflow === 'REGISTRADA' && isReviewer)) && estimation.isLatest;
+                        return (
+                          <tr key={estimation.id}>
+                            <td>#{estimation.folio}</td>
+                            <td>{formatDate(estimation.periodStart)} – {formatDate(estimation.periodEnd)}</td>
+                            <td>{estimation.cumulativeProgressPct != null ? formatPct(estimation.cumulativeProgressPct) : '—'}</td>
+                            <td>{formatCurrency(estimation.periodSubtotal)}</td>
+                            <td>{formatCurrency(estimation.retentionAmount)}</td>
+                            <td>{formatCurrency(estimation.advanceAmortizationAmount)}</td>
+                            <td>{formatCurrency(estimation.totalToPay)}</td>
+                            <td>
+                              {workflow === 'APROBADA' ? <strong>{formatCurrency(estimation.authorizedAmount)}</strong> : '—'}
+                            </td>
+                            <td><StatusBadge estimation={estimation} /></td>
+                            <td>
+                              <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                                <button type="button" className="secondary" onClick={() => openEstimationView(estimation)}>
+                                  {workflow === 'ENVIADA' && isReviewer ? 'Revisar' : 'Ver'}
+                                </button>
+                                {canEdit && (
+                                  <button type="button" className="secondary" onClick={() => startEditEstimation(estimation)}>
+                                    Editar
+                                  </button>
+                                )}
+                                {workflow === 'BORRADOR' && (
+                                  <button type="button" onClick={() => sendDraftForReview(estimation)} disabled={saving}>
+                                    Enviar a revisión
+                                  </button>
+                                )}
+                                {canDelete && (
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() => deleteEstimationRow(estimation)}
+                                    style={{ color: '#b91c1c' }}
+                                  >
+                                    Eliminar
+                                  </button>
+                                )}
+                                {isReviewer && workflow === 'APROBADA' && estimation.paymentStatus === 'POR_PAGAR' && (
+                                  <button type="button" className="secondary" onClick={() => markEstimationPaid(estimation)} disabled={saving}>
+                                    Marcar pagada
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                       {!estimationsList.length && (
                         <tr>
-                          <td colSpan={8} className="small" style={{ textAlign: 'center' }}>
+                          <td colSpan={10} className="small" style={{ textAlign: 'center' }}>
                             Aún no hay estimaciones registradas para este presupuesto.
                           </td>
                         </tr>
@@ -1184,6 +1512,113 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                 </div>
               )}
 
+              {viewingEstimation && !showEstimationForm && (
+                <div className="card" style={{ display: 'grid', gap: 10, padding: 16 }}>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                    <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+                      <strong>Estimación #{viewingEstimation.folio}</strong>
+                      <StatusBadge estimation={viewingEstimation} />
+                      <span className="small">
+                        {formatDate(viewingEstimation.periodStart)} – {formatDate(viewingEstimation.periodEnd)}
+                      </span>
+                    </div>
+                    <button type="button" className="secondary" onClick={() => setViewingEstimation(null)}>✕ Cerrar</button>
+                  </div>
+
+                  {viewingEstimation.returnReason && viewingEstimation.workflowStatus === 'BORRADOR' && (
+                    <div className="small" style={{ color: '#92400e' }}>
+                      Devuelta por {viewingEstimation.returnedBy || 'un admin'}: {viewingEstimation.returnReason}
+                    </div>
+                  )}
+                  {viewingEstimation.notes && <div className="small">Notas: {viewingEstimation.notes}</div>}
+
+                  <div style={{ overflowX: 'auto' }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Concepto</th>
+                          <th>Unidad</th>
+                          <th>Avance previo</th>
+                          <th>Este periodo</th>
+                          <th>Avance acumulado</th>
+                          <th>Importe periodo</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(viewingEstimation.lineItems || []).map((li) => (
+                          <tr key={li.conceptoId}>
+                            <td>{li.description}</td>
+                            <td>{li.unit || '—'}</td>
+                            <td>{formatPct(li.previousProgressPct)}</td>
+                            <td>{li.periodQuantity} {li.unit}</td>
+                            <td>{formatPct(li.progressPct)}</td>
+                            <td>{formatCurrency(li.periodAmount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
+                    <div><strong>Avance acumulado del contrato:</strong> {formatPct(viewingEstimation.cumulativeProgressPct)}</div>
+                    <div><strong>Subtotal:</strong> {formatCurrency(viewingEstimation.periodSubtotal)}</div>
+                    <div><strong>Retención:</strong> {formatCurrency(viewingEstimation.retentionAmount)}</div>
+                    <div><strong>Amortización anticipo:</strong> {formatCurrency(viewingEstimation.advanceAmortizationAmount)}</div>
+                    <div><strong>Total calculado:</strong> {formatCurrency(viewingEstimation.totalToPay)}</div>
+                  </div>
+
+                  {viewingEstimation.workflowStatus === 'APROBADA' && (
+                    <div className="small" style={{ display: 'grid', gap: 2 }}>
+                      <div>
+                        <strong>Autorizado: {formatCurrency(viewingEstimation.authorizedAmount)}</strong>
+                        {Math.abs(Number(viewingEstimation.authorizedDifference) || 0) >= 0.01 && (
+                          <> ({Number(viewingEstimation.authorizedDifference) > 0 ? '+' : ''}{formatCurrency(viewingEstimation.authorizedDifference)} vs. calculado)</>
+                        )}
+                      </div>
+                      {viewingEstimation.authorizationNote && <div>Motivo: {viewingEstimation.authorizationNote}</div>}
+                      <div>Aprobada por {viewingEstimation.approvedBy} · {formatDate(viewingEstimation.approvedAt)}</div>
+                    </div>
+                  )}
+
+                  {isReviewer && viewingEstimation.workflowStatus === 'ENVIADA' && (
+                    <div style={{ display: 'grid', gap: 8, borderTop: '1px solid var(--border, #e5e7eb)', paddingTop: 10 }}>
+                      <strong>Autorización</strong>
+                      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                        <div>
+                          <label>Monto autorizado</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={authorizedAmount}
+                            onChange={(e) => setAuthorizedAmount(e.target.value)}
+                            style={{ width: 160 }}
+                          />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 220 }}>
+                          <label>
+                            Motivo{Math.abs((Number(authorizedAmount) || 0) - (Number(viewingEstimation.totalToPay) || 0)) >= 0.01 ? ' (obligatorio, el monto cambió)' : ' (opcional)'}
+                          </label>
+                          <input value={authorizationNote} onChange={(e) => setAuthorizationNote(e.target.value)} />
+                        </div>
+                      </div>
+                      <div className="small">
+                        Calculado: {formatCurrency(viewingEstimation.totalToPay)} · Diferencia:{' '}
+                        {formatCurrency((Number(authorizedAmount === '' ? viewingEstimation.totalToPay : authorizedAmount) || 0) - (Number(viewingEstimation.totalToPay) || 0))}
+                      </div>
+                      <div className="row" style={{ gap: 8 }}>
+                        <button type="button" onClick={approveViewingEstimation} disabled={saving}>
+                          {saving ? 'Procesando...' : 'Aprobar y pasar a pago'}
+                        </button>
+                        <button type="button" className="secondary" onClick={returnViewingEstimation} disabled={saving}>
+                          Devolver a captura
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {showEstimationForm && estimationForm && (
                 <form className="card" style={{ display: 'grid', gap: 10, padding: 16 }} onSubmit={submitEstimationForm}>
                   <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1210,15 +1645,6 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                         required
                       />
                     </div>
-                    <div>
-                      <label>Estatus</label>
-                      <input
-                        value={estimationForm.status}
-                        onChange={(e) => setEstimationForm((prev) => ({ ...prev, status: e.target.value }))}
-                        placeholder="Registrada"
-                        style={{ width: 140 }}
-                      />
-                    </div>
                     <div style={{ flex: 1, minWidth: 200 }}>
                       <label>Notas</label>
                       <input
@@ -1227,6 +1653,49 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                       />
                     </div>
                   </div>
+
+                  <div className="row" style={{ gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <strong style={{ fontSize: 13 }}>¿Cómo capturas el avance?</strong>
+                    {[
+                      ['global', 'Avance global (%)'],
+                      ['concept', 'Avance por concepto (%)'],
+                      ['quantity', 'Por cantidad'],
+                    ].map(([value, label]) => (
+                      <label key={value} className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                        <input
+                          type="radio"
+                          name="estimation-capture-mode"
+                          checked={estimationForm.captureMode === value}
+                          onChange={() => setEstimationForm((prev) => ({ ...prev, captureMode: value }))}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
+
+                  {estimationForm.captureMode === 'global' && (
+                    <div>
+                      <label>Avance acumulado del presupuesto (%)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        value={estimationForm.globalProgressPct}
+                        onChange={(e) => setEstimationForm((prev) => ({ ...prev, globalProgressPct: e.target.value }))}
+                        style={{ width: 140 }}
+                        required
+                      />
+                      <div className="small">
+                        Se aplica a todos los conceptos. Un concepto que ya va más adelante no baja. Es el avance total a la fecha, no solo el de esta semana.
+                      </div>
+                    </div>
+                  )}
+                  {estimationForm.captureMode === 'concept' && (
+                    <div className="small">
+                      Escribe el avance acumulado (%) de cada concepto que avanzó. Los que no cambies no avanzan en esta estimación.
+                    </div>
+                  )}
 
                   <div style={{ overflowX: 'auto' }}>
                     <table>
@@ -1243,28 +1712,52 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                       </thead>
                       <tbody>
                         {estimationForm.lineItems.map((li) => {
-                          const periodQuantity = Number(li.periodQuantity) || 0;
+                          const periodQuantity = computePeriodQuantity(estimationForm.captureMode, li, estimationForm.globalProgressPct);
                           const cumulativeQuantity = li.previousCumulativeQuantity + periodQuantity;
+                          const cumulativePct = pctOf(cumulativeQuantity, li.contractedQuantity);
                           const periodAmount = periodQuantity * (Number(li.unitPrice) || 0);
-                          const overContracted = cumulativeQuantity > li.contractedQuantity;
+                          const overContracted = cumulativeQuantity > li.contractedQuantity + 0.0001;
+                          const belowPrevious =
+                            estimationForm.captureMode === 'concept' &&
+                            (Number(li.progressPct) || 0) < (Number(li.previousProgressPct) || 0) - 0.005;
                           return (
                             <tr key={li.conceptoId}>
                               <td>{li.description}</td>
                               <td>{li.unit || '—'}</td>
                               <td>{li.contractedQuantity}</td>
-                              <td>{li.previousCumulativeQuantity}</td>
+                              <td>{li.previousCumulativeQuantity} ({formatPct(li.previousProgressPct)})</td>
                               <td>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  value={li.periodQuantity}
-                                  onChange={(e) => updateEstimationQuantity(li.conceptoId, e.target.value)}
-                                  style={{ width: 100 }}
-                                />
+                                {estimationForm.captureMode === 'quantity' && (
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={li.periodQuantity}
+                                    onChange={(e) => updateEstimationLine(li.conceptoId, 'periodQuantity', e.target.value)}
+                                    style={{ width: 100 }}
+                                  />
+                                )}
+                                {estimationForm.captureMode === 'concept' && (
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max="100"
+                                      step="0.01"
+                                      value={li.progressPct}
+                                      onChange={(e) => updateEstimationLine(li.conceptoId, 'progressPct', e.target.value)}
+                                      style={{ width: 90, borderColor: belowPrevious ? '#b91c1c' : undefined }}
+                                    />
+                                    %
+                                  </span>
+                                )}
+                                {estimationForm.captureMode === 'global' && <span>{Math.round(periodQuantity * 10000) / 10000}</span>}
+                                {estimationForm.captureMode !== 'quantity' && (
+                                  <div className="small">{Math.round(periodQuantity * 10000) / 10000} {li.unit}</div>
+                                )}
                               </td>
-                              <td style={{ color: overContracted ? 'var(--danger-text, #b91c1c)' : undefined }}>
-                                {cumulativeQuantity}
+                              <td style={{ color: overContracted || belowPrevious ? 'var(--danger-text, #b91c1c)' : undefined }}>
+                                {Math.round(cumulativeQuantity * 10000) / 10000} ({formatPct(cumulativePct)})
                               </td>
                               <td>{formatCurrency(periodAmount)}</td>
                             </tr>
@@ -1279,12 +1772,23 @@ export function EstimacionesSection({ projects, selectedProjectId }) {
                       <div><strong>Subtotal:</strong> {formatCurrency(estimationPreview.periodSubtotal)}</div>
                       <div><strong>Retención:</strong> {formatCurrency(estimationPreview.retentionAmount)}</div>
                       <div><strong>Amortización anticipo:</strong> {formatCurrency(estimationPreview.advanceAmortizationAmount)}</div>
-                      <div><strong>Total a pagar:</strong> {formatCurrency(estimationPreview.totalToPay)}</div>
+                      <div><strong>Total calculado:</strong> {formatCurrency(estimationPreview.totalToPay)}</div>
                     </div>
                   )}
 
                   <div className="row" style={{ gap: 8 }}>
-                    <button type="submit" disabled={saving}>{saving ? 'Guardando...' : 'Guardar estimación'}</button>
+                    {editingEstimation?.workflowStatus === 'REGISTRADA' ? (
+                      <button type="submit" disabled={saving}>{saving ? 'Guardando...' : 'Guardar estimación'}</button>
+                    ) : (
+                      <>
+                        <button type="submit" className="secondary" disabled={saving}>
+                          {saving ? 'Guardando...' : 'Guardar borrador'}
+                        </button>
+                        <button type="button" disabled={saving} onClick={(e) => submitEstimationForm(e, { sendForReview: true })}>
+                          Guardar y enviar a revisión
+                        </button>
+                      </>
+                    )}
                     <button type="button" className="secondary" onClick={resetEstimationForm}>Cancelar</button>
                   </div>
                 </form>

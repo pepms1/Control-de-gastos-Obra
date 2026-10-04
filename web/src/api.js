@@ -18,6 +18,7 @@ const DISPLAY_NAME_KEY = 'obra_display_name';
 const USER_ID_KEY = 'obra_user_id';
 const USER_EMAIL_KEY = 'obra_user_email';
 const USER_ACTIVE_KEY = 'obra_user_is_active';
+const USER_CAN_CAPTURE_KEY = 'auth_can_capture_estimations';
 const USER_UI_PREFS_KEY = 'obra_user_ui_prefs';
 export const SELECTED_PROJECT_KEY = 'selectedProjectId';
 
@@ -71,6 +72,7 @@ export function getSession() {
     id: localStorage.getItem(USER_ID_KEY) || '',
     email: localStorage.getItem(USER_EMAIL_KEY) || '',
     isActive: localStorage.getItem(USER_ACTIVE_KEY) !== 'false',
+    canCaptureEstimations: localStorage.getItem(USER_CAN_CAPTURE_KEY) === 'true',
     uiPrefs: (() => {
       try {
         const raw = localStorage.getItem(USER_UI_PREFS_KEY);
@@ -82,7 +84,7 @@ export function getSession() {
   };
 }
 
-export function saveSession({ access_token, token, role, username, displayName, id, email, isActive, name, uiPrefs }) {
+export function saveSession({ access_token, token, role, username, displayName, id, email, isActive, name, uiPrefs, canCaptureEstimations }) {
   localStorage.setItem(TOKEN_KEY, access_token || token || '');
   localStorage.setItem(ROLE_KEY, role || '');
   localStorage.setItem(USER_KEY, username || '');
@@ -90,6 +92,7 @@ export function saveSession({ access_token, token, role, username, displayName, 
   localStorage.setItem(USER_ID_KEY, id || '');
   localStorage.setItem(USER_EMAIL_KEY, email || '');
   localStorage.setItem(USER_ACTIVE_KEY, String(isActive !== false));
+  localStorage.setItem(USER_CAN_CAPTURE_KEY, String(Boolean(canCaptureEstimations)));
   localStorage.setItem(USER_UI_PREFS_KEY, JSON.stringify(uiPrefs && typeof uiPrefs === 'object' ? uiPrefs : { hiddenProjectIds: [], defaultProjectId: '' }));
 }
 
@@ -101,6 +104,7 @@ export function clearSession() {
   localStorage.removeItem(USER_ID_KEY);
   localStorage.removeItem(USER_EMAIL_KEY);
   localStorage.removeItem(USER_ACTIVE_KEY);
+  localStorage.removeItem(USER_CAN_CAPTURE_KEY);
   localStorage.removeItem(USER_UI_PREFS_KEY);
 }
 
@@ -439,6 +443,34 @@ export const api = {
     backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}`, {
       method: 'DELETE',
     }),
+
+  submitEstimation: (estimationBudgetId, estimationId) =>
+    backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}/submit`, {
+      method: 'POST',
+    }),
+
+  returnEstimation: (estimationBudgetId, estimationId, payload) =>
+    backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}/return`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  approveEstimation: (estimationBudgetId, estimationId, payload) =>
+    backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  markEstimationPaid: (estimationBudgetId, estimationId, payload = {}) =>
+    backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}/mark-paid`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  estimationsQueue: (params = {}) => {
+    const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString();
+    return backendReq(`/api/estimations/queue${qs ? `?${qs}` : ''}`);
+  },
 
   importSapPayments: (file, project, projectId, force = false) => {
     const formData = new FormData();
