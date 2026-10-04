@@ -10047,6 +10047,20 @@ def compute_remaining_advance_balance(estimation_budget: dict, exclude_estimatio
     return round(max(advance_amount - amortized, 0), 2)
 
 
+def compute_remaining_opening_paid_balance(estimation_budget: dict, exclude_estimation_id: str | None = None) -> float:
+    """Pagos previos (saldo inicial, sin anticipo) que aun no se han descontado
+    de una estimacion. Se consumen en orden hasta agotarse."""
+    opening = float(estimation_budget.get("openingPriorPaidAmount") or 0)
+    if opening <= 0:
+        return 0.0
+    estimation_budget_id = str(estimation_budget.get("_id") or "")
+    query: dict = {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
+    if exclude_estimation_id:
+        query["_id"] = {"$ne": oid(exclude_estimation_id)}
+    applied = sum(float(row.get("priorPaidApplied") or 0) for row in db.estimations.find(query, {"priorPaidApplied": 1}))
+    return round(max(opening - applied, 0), 2)
+
+
 def build_estimation_line_items(
     estimation_budget: dict,
     period_quantities_by_concepto_id: dict,
@@ -10104,12 +10118,19 @@ def compute_estimation_money_fields(estimation_budget: dict, line_items: list[di
         if advance_amortization_amount < 0:
             advance_amortization_amount = 0.0
 
-    total_to_pay = round(period_subtotal - retention_amount - advance_amortization_amount, 2)
+    net_before_prior_payments = round(period_subtotal - retention_amount - advance_amortization_amount, 2)
+    # Lo ya pagado antes de usar el sistema (pagos a cuenta) se descuenta de lo
+    # que se libera; si excede lo ganado, el sobrante se arrastra a la siguiente.
+    remaining_opening = compute_remaining_opening_paid_balance(estimation_budget, exclude_estimation_id=exclude_estimation_id)
+    prior_paid_applied = round(min(max(net_before_prior_payments, 0), remaining_opening), 2)
+    total_to_pay = round(net_before_prior_payments - prior_paid_applied, 2)
     return {
         "periodSubtotal": period_subtotal,
         "retentionPctSnapshot": retention_pct,
         "retentionAmount": retention_amount,
         "advanceAmortizationAmount": advance_amortization_amount,
+        "netBeforePriorPayments": net_before_prior_payments,
+        "priorPaidApplied": prior_paid_applied,
         "totalToPay": total_to_pay,
     }
 
@@ -10350,10 +10371,19 @@ def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dic
     rows = list(
         db.estimations.find(
             {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}},
-            {"retentionAmount": 1, "advanceAmortizationAmount": 1},
+            {"retentionAmount": 1, "advanceAmortizationAmount": 1, "priorPaidApplied": 1},
         )
     )
     payload["estimationsCount"] = len(rows)
+    opening_advance = float(payload.get("openingAdvanceAmount") or 0)
+    opening_prior = float(payload.get("openingPriorPaidAmount") or 0)
+    payload["openingAdvanceAmount"] = round(opening_advance, 2)
+    payload["openingPriorPaidAmount"] = round(opening_prior, 2)
+    payload["remainingOpeningPaidBalance"] = round(
+        max(opening_prior - sum(float(r.get("priorPaidApplied") or 0) for r in rows), 0), 2
+    )
+    total_contracted = float(payload.get("totalContractedAmount") or 0)
+    payload["openingPaidPct"] = round((opening_advance + opening_prior) / total_contracted * 100, 2) if total_contracted > 0 else 0.0
     payload["totalRetainedToDate"] = round(sum(float(r.get("retentionAmount") or 0) for r in rows), 2)
     amortized = round(sum(float(r.get("advanceAmortizationAmount") or 0) for r in rows), 2)
     payload["remainingAdvanceBalance"] = round(max(float(payload.get("advanceAmount") or 0) - amortized, 0), 2)
@@ -10543,7 +10573,11 @@ def list_estimation_budget_candidate_transactions(
         )
 
     rows.sort(key=lambda item: str(item.get("date") or ""), reverse=True)
-    return {"items": rows, "estimationBudgetId": estimation_budget_id}
+    return {
+        "items": rows,
+        "estimationBudgetId": estimation_budget_id,
+        "supplierHasMultipleActiveBudgets": _count_active_estimation_budgets_for_supplier(project_id, supplier_key) > 1,
+    }
 
 
 @app.put("/api/estimation-budgets/{estimation_budget_id}/transaction-links")
@@ -10627,6 +10661,80 @@ def replace_estimation_budget_transaction_links(
         "selectedTransactionIds": selected_transaction_ids,
         "assignedCount": len(selected_transaction_ids),
     }
+
+
+@app.put("/api/estimation-budgets/{estimation_budget_id}/opening-balance")
+def set_estimation_budget_opening_balance(
+    estimation_budget_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    """Saldo inicial para presupuestos que ya traen pagos al implementarse el
+    modulo: anticipo entregado (se amortiza solo en cada estimacion) y pagos a
+    cuenta (se descuentan de lo que se libera). Se arma de pagos reales
+    seleccionados y/o montos manuales. Solo antes de la primera estimacion."""
+    estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
+    if db.estimations.count_documents({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}) > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="El saldo inicial solo puede cambiarse antes de la primera estimación; elimina las estimaciones existentes para modificarlo",
+        )
+
+    payload = payload or {}
+    advance_ids = _normalize_transaction_id_values(payload.get("advanceTransactionIds") or [])
+    prior_ids = _normalize_transaction_id_values(payload.get("priorPaymentTransactionIds") or [])
+    overlap = set(advance_ids) & set(prior_ids)
+    if overlap:
+        raise HTTPException(status_code=400, detail="Un mismo pago no puede ser anticipo y pago a cuenta a la vez")
+    try:
+        manual_advance = validate_budget_amount(payload.get("manualAdvanceAmount") or 0)
+        manual_prior = validate_budget_amount(payload.get("manualPriorPaidAmount") or 0)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Los montos manuales no son válidos")
+
+    candidates = list_estimation_budget_candidate_transactions(estimation_budget_id, search=None, user=user)
+    by_id = {str(row.get("id") or ""): row for row in candidates.get("items") or []}
+    requires_assignment = bool(candidates.get("supplierHasMultipleActiveBudgets"))
+    invalid_ids = [tx_id for tx_id in advance_ids + prior_ids if tx_id not in by_id]
+    if invalid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Some transactions are not valid for this estimation budget", "transactionIds": invalid_ids},
+        )
+    for tx_id in advance_ids + prior_ids:
+        row = by_id[tx_id]
+        if row.get("isAssignedToOtherBudget"):
+            raise HTTPException(status_code=409, detail="Alguno de los pagos ya está asignado a otro presupuesto")
+        if requires_assignment and not row.get("isAssignedToCurrentBudget"):
+            raise HTTPException(
+                status_code=400,
+                detail="El proveedor tiene varios presupuestos activos: asigna primero los pagos a este presupuesto con «Asignar pagos»",
+            )
+
+    advance_total = round(sum(float(by_id[tx_id].get("amountWithTax") or 0) for tx_id in advance_ids) + manual_advance, 2)
+    prior_total = round(sum(float(by_id[tx_id].get("amountWithTax") or 0) for tx_id in prior_ids) + manual_prior, 2)
+
+    updates: dict = {
+        "openingAdvanceTransactionIds": advance_ids,
+        "openingPriorPaymentTransactionIds": prior_ids,
+        "openingManualAdvanceAmount": manual_advance,
+        "openingManualPriorPaidAmount": manual_prior,
+        "openingAdvanceAmount": advance_total,
+        "openingPriorPaidAmount": prior_total,
+        "openingNote": normalize_non_empty_string(payload.get("note")) or "",
+        "openingSetBy": normalize_non_empty_string(user.get("username")) or "system",
+        "openingSetAt": datetime.now(timezone.utc).isoformat(),
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    if advance_total > 0:
+        # El anticipo entregado es el que se amortiza en cada estimacion.
+        totals = compute_estimation_budget_totals(estimation_budget.get("lineItems") or [], advance_total)
+        updates["advanceAmount"] = advance_total
+        updates["advancePct"] = totals["advancePct"]
+        updates["advanceAmortizationEnabled"] = True
+    db.estimationBudgets.update_one({"_id": oid(estimation_budget_id)}, {"$set": updates})
+    saved = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    return serialize_estimation_budget(saved, include_payments=True)
 
 
 @app.patch("/api/estimation-budgets/{estimation_budget_id}")
