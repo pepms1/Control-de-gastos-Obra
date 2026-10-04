@@ -19,6 +19,7 @@ import re
 import csv
 import openpyxl
 import pdfplumber
+from docx import Document as DocxDocument
 import os
 import logging
 import unicodedata
@@ -11167,6 +11168,46 @@ def extract_concepto_rows_from_pdf_bytes(file_bytes: bytes):
     return items, warnings
 
 
+def extract_concepto_rows_from_docx_bytes(file_bytes: bytes):
+    """Lee las tablas de un .docx. Usa solo las que traen encabezados
+    reconocibles (Concepto/Cantidad/Precio unitario); si ninguna los trae,
+    recurre a la tabla más grande con el orden fijo y lo advierte."""
+    document = DocxDocument(BytesIO(file_bytes))
+    tables_rows: list[list[list[str]]] = []
+    for table in document.tables:
+        rows = []
+        for row in table.rows:
+            cells = []
+            previous_tc = None
+            for cell in row.cells:
+                # Las celdas combinadas se repiten en row.cells: se cuentan una vez.
+                if cell._tc is previous_tc:
+                    continue
+                previous_tc = cell._tc
+                cells.append(cell.text.strip())
+            rows.append(cells)
+        if rows:
+            tables_rows.append(rows)
+
+    items: list[dict] = []
+    warnings: list[str] = []
+    recognized = [rows for rows in tables_rows if detect_concepto_header_row(rows)[0] is not None]
+    if recognized:
+        for rows in recognized:
+            table_items, table_warnings = parse_concepto_rows_from_table(rows)
+            items.extend(table_items)
+            warnings.extend(table_warnings)
+        skipped_tables = len(tables_rows) - len(recognized)
+        if skipped_tables:
+            warnings.append(f"Se ignoraron {skipped_tables} tabla(s) del documento sin columnas de concepto/cantidad/precio.")
+    elif tables_rows:
+        largest = max(tables_rows, key=len)
+        items, warnings = parse_concepto_rows_from_table(largest)
+        if len(tables_rows) > 1:
+            warnings.append("El documento tiene varias tablas; se leyó solo la más grande. Revisa que sea el presupuesto.")
+    return items, warnings
+
+
 @app.post("/api/estimation-budgets/import-conceptos")
 async def import_estimation_conceptos(
     file: UploadFile = File(...),
@@ -11197,15 +11238,23 @@ async def import_estimation_conceptos(
             items, warnings = extract_concepto_rows_from_pdf_bytes(file_bytes)
         except Exception:
             raise HTTPException(status_code=400, detail="No se pudo leer el archivo PDF")
+    elif file_name.endswith(".docx"):
+        source_type = "docx"
+        try:
+            items, warnings = extract_concepto_rows_from_docx_bytes(file_bytes)
+        except Exception:
+            raise HTTPException(status_code=400, detail="No se pudo leer el archivo de Word (.docx)")
+    elif file_name.endswith(".doc"):
+        raise HTTPException(status_code=400, detail="El formato .doc (Word antiguo) no es compatible. Guárdalo como .docx y vuelve a subirlo")
     else:
-        raise HTTPException(status_code=400, detail="Formato no soportado. Usa .xlsx, .csv o .pdf")
+        raise HTTPException(status_code=400, detail="Formato no soportado. Usa .xlsx, .csv, .pdf o .docx")
 
     if not items:
         raise HTTPException(
             status_code=422,
             detail=(
                 "No se pudo extraer ningún concepto del archivo. Si es un PDF escaneado, prueba con Excel/CSV "
-                "o captura los conceptos manualmente."
+                "o captura los conceptos manualmente. En Word, los conceptos deben estar en una tabla."
             ),
         )
 

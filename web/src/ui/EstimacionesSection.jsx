@@ -956,7 +956,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 <input
                   ref={importFileInputRef}
                   type="file"
-                  accept=".xlsx,.csv,.pdf"
+                  accept=".xlsx,.csv,.pdf,.docx"
                   onChange={handleImportConceptosFile}
                   style={{ display: 'none' }}
                 />
@@ -966,7 +966,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                   onClick={() => importFileInputRef.current?.click()}
                   disabled={importingConceptos}
                 >
-                  {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF'}
+                  {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
                 </button>
                 <button type="button" className="secondary" onClick={addConceptoRow}>+ Agregar concepto</button>
               </div>
