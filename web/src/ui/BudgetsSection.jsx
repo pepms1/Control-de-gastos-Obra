@@ -4,6 +4,7 @@ import { ExtrasPanel } from './ExtrasPanel.jsx';
 import {
   buildCanonicalSupplierKey,
   computeBudgetFormTotals,
+  normalizeTextForSupplierKey,
   computeLineItemAmount,
   groupLabel,
   listFormGroups,
@@ -52,6 +53,11 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   const [importingConceptos, setImportingConceptos] = useState(false);
   const [importWarnings, setImportWarnings] = useState([]);
   const importFileInputRef = useRef(null);
+  const groupFileInputRef = useRef(null);
+  const [selectedConceptoIds, setSelectedConceptoIds] = useState(new Set());
+  const [bulkGroupName, setBulkGroupName] = useState('');
+  const [groupingFromFile, setGroupingFromFile] = useState(false);
+  const [groupingMessage, setGroupingMessage] = useState('');
 
   const [assigningBudget, setAssigningBudget] = useState(null);
   const [candidateTransactions, setCandidateTransactions] = useState([]);
@@ -208,7 +214,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   }, [selectedProjectId]);
 
   // ---- formulario de presupuesto ----
+  function resetGroupingTools() {
+    setSelectedConceptoIds(new Set());
+    setBulkGroupName('');
+    setGroupingMessage('');
+  }
+
   function resetBudgetForm() {
+    resetGroupingTools();
     setEditingBudgetRow(null);
     setShowForm(false);
     setForm(emptyBudgetForm(selectedProjectId));
@@ -216,6 +229,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   }
 
   function startCreateBudget(prefillSupplierRow) {
+    resetGroupingTools();
     setEditingBudgetRow(null);
     const base = emptyBudgetForm(selectedProjectId);
     setForm(
@@ -235,6 +249,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   }
 
   function startEditBudget(row) {
+    resetGroupingTools();
     setEditingBudgetRow(row);
     setForm({
       projectId: row.projectId || selectedProjectId || '',
@@ -280,6 +295,76 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
 
   function removeConceptoRow(index) {
     setForm((prev) => ({ ...prev, lineItems: prev.lineItems.filter((_, i) => i !== index) }));
+  }
+
+  // ---- agrupar conceptos ya capturados ----
+  function toggleSelectConcepto(id) {
+    setSelectedConceptoIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function applyBulkGroup() {
+    const name = bulkGroupName.trim();
+    if (!selectedConceptoIds.size) {
+      setGroupingMessage('Marca primero los conceptos que quieres agrupar.');
+      return;
+    }
+    setForm((prev) => ({
+      ...prev,
+      lineItems: prev.lineItems.map((row) => (selectedConceptoIds.has(row.id) ? { ...row, group: name } : row)),
+    }));
+    setGroupingMessage(`${selectedConceptoIds.size} concepto(s) ${name ? `agrupados en «${name}»` : 'sin grupo'}.`);
+    setSelectedConceptoIds(new Set());
+  }
+
+  // Lee un Excel/Word/PDF con los grupos y se los pone a los conceptos que YA existen
+  // (por descripción); no agrega ni quita conceptos, así no se pierde historial.
+  async function handleGroupFromFile(event) {
+    const file = event.target.files?.[0];
+    if (event.target) event.target.value = '';
+    if (!file) return;
+    setGroupingFromFile(true);
+    setGroupingMessage('');
+    setError('');
+    try {
+      const result = await api.importEstimationConceptos(file);
+      const items = Array.isArray(result?.items) ? result.items : [];
+      if (!items.some((item) => item.group)) {
+        setGroupingMessage('El archivo no trae grupos (títulos de sección o columna «Grupo»), no se cambió nada.');
+        return;
+      }
+      const keyOf = (text) => normalizeTextForSupplierKey(text).replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+      const queues = new Map();
+      form.lineItems.forEach((row) => {
+        const key = keyOf(row.description);
+        if (!queues.has(key)) queues.set(key, []);
+        queues.get(key).push(row.id);
+      });
+      const groupById = new Map();
+      let unmatched = 0;
+      items.forEach((item) => {
+        const queue = queues.get(keyOf(item.description));
+        if (queue && queue.length) groupById.set(queue.shift(), item.group || '');
+        else unmatched += 1;
+      });
+      setForm((prev) => ({
+        ...prev,
+        lineItems: prev.lineItems.map((row) => (groupById.has(row.id) ? { ...row, group: groupById.get(row.id) } : row)),
+      }));
+      setGroupingMessage(
+        `${groupById.size} concepto(s) agrupados desde el archivo` +
+        (unmatched ? `; ${unmatched} del archivo no coinciden con ningún concepto del presupuesto (no se agregaron)` : '') +
+        `. Revisa y guarda el presupuesto.`,
+      );
+    } catch (e) {
+      setError(e.message || 'No se pudo leer el archivo');
+    } finally {
+      setGroupingFromFile(false);
+    }
   }
 
   async function handleImportConceptosFile(event) {
@@ -795,10 +880,48 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                 ))}
               </div>
             )}
+            <div
+              className="row"
+              style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-100)', borderRadius: 6, padding: 8, marginBottom: 6 }}
+            >
+              <div>
+                <label>Agrupar los conceptos marcados en</label>
+                <input
+                  list="budget-group-options"
+                  value={bulkGroupName}
+                  onChange={(e) => setBulkGroupName(e.target.value)}
+                  placeholder="Ej. BAJADAS"
+                  style={{ width: 200 }}
+                />
+              </div>
+              <button type="button" className="secondary" onClick={applyBulkGroup}>Asignar grupo</button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setSelectedConceptoIds(
+                  selectedConceptoIds.size === form.lineItems.length ? new Set() : new Set(form.lineItems.map((row) => row.id)),
+                )}
+              >
+                {selectedConceptoIds.size === form.lineItems.length ? 'Quitar marcas' : 'Marcar todos'}
+              </button>
+              <div style={{ flex: 1 }} />
+              <input ref={groupFileInputRef} type="file" accept=".xlsx,.csv,.pdf,.docx" onChange={handleGroupFromFile} style={{ display: 'none' }} />
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => groupFileInputRef.current?.click()}
+                disabled={groupingFromFile}
+                title="Lee un Excel/Word con los grupos y se los pone a los conceptos que ya existen, sin agregar ni quitar conceptos"
+              >
+                {groupingFromFile ? 'Leyendo...' : '⭱ Agrupar desde archivo'}
+              </button>
+            </div>
+            {groupingMessage && <div className="small" style={{ marginBottom: 6 }}>{groupingMessage}</div>}
             <div style={{ overflowX: 'auto' }}>
               <table>
                 <thead>
                   <tr>
+                    <th></th>
                     <th>Grupo</th>
                     <th>Descripción</th>
                     <th>Unidad</th>
@@ -813,6 +936,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                     const hasHistory = conceptoIdsWithHistory.has(row.id);
                     return (
                       <tr key={row.id}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selectedConceptoIds.has(row.id)}
+                            onChange={() => toggleSelectConcepto(row.id)}
+                            aria-label="Marcar concepto"
+                          />
+                        </td>
                         <td>
                           <input
                             list="budget-group-options"
