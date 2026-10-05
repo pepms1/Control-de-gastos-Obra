@@ -485,6 +485,12 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  setEstimationFolio: (estimationBudgetId, estimationId, folio) =>
+    backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}/folio`, {
+      method: 'POST',
+      body: JSON.stringify({ folio }),
+    }),
+
   markEstimationPaid: (estimationBudgetId, estimationId, payload = {}) =>
     backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}/mark-paid`, {
       method: 'POST',
