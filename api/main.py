@@ -9941,6 +9941,21 @@ def delete_budget(budget_id: str, user: dict = Depends(require_admin_or_superadm
 # as percentage points (e.g. 5 for 5%), not fractions.
 
 
+def normalize_group_name(value) -> str:
+    return (normalize_non_empty_string(value) or "")[:120]
+
+
+def parse_precise_decimal(value) -> float:
+    """Como parse_decimal pero SIN redondear a 2 decimales: las cantidades de
+    avance (p. ej. 0.3869 de un concepto global de 1 pza) necesitan precision."""
+    if isinstance(value, (int, float, Decimal)):
+        return float(value)
+    text = str(value if value is not None else "").strip().replace(",", "")
+    if not text:
+        raise ValueError("Amount is required")
+    return float(text)
+
+
 def validate_concepto_row(raw: dict) -> dict:
     if not isinstance(raw, dict):
         raise HTTPException(status_code=400, detail="Invalid concepto row")
@@ -9961,14 +9976,22 @@ def validate_concepto_row(raw: dict) -> dict:
     if unit_price < 0:
         raise HTTPException(status_code=400, detail="concepto.unitPrice must be greater than or equal to 0")
     concepto_id = normalize_non_empty_string(raw.get("id")) or str(uuid.uuid4())
-    return {
+    row = {
         "id": concepto_id,
         "description": description,
         "unit": unit,
         "quantity": quantity,
         "unitPrice": unit_price,
         "amount": round(quantity * unit_price, 2),
+        "group": normalize_group_name(raw.get("group")),
     }
+    if raw.get("isExtra"):
+        row["isExtra"] = True
+        row["extraKind"] = "adicional" if raw.get("extraKind") == "adicional" else "extra"
+        for key in ("extraNote", "addedAt", "addedBy"):
+            if raw.get(key):
+                row[key] = str(raw.get(key))
+    return row
 
 
 def validate_concepto_rows(raw_rows) -> list[dict]:
@@ -9993,6 +10016,43 @@ def resolve_retention_pct(value) -> float:
     if pct < 0 or pct > 100:
         raise HTTPException(status_code=400, detail="retentionPct must be between 0 and 100")
     return pct
+
+
+def normalize_group_advance_pcts(raw) -> dict[str, float]:
+    """{grupo: % de anticipo}. Solo se guardan los mayores a 0."""
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, float] = {}
+    for name, value in raw.items():
+        if value in (None, ""):
+            continue
+        try:
+            pct = parse_precise_decimal(value)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"El anticipo del grupo '{name}' no es válido")
+        if pct < 0 or pct > 100:
+            raise HTTPException(status_code=400, detail=f"El anticipo del grupo '{name}' debe estar entre 0 y 100")
+        if pct > 0:
+            result[normalize_group_name(name)] = round(pct, 4)
+    return result
+
+
+def list_budget_groups(line_items: list[dict]) -> list[str]:
+    """Grupos en el orden en que aparecen sus conceptos ("" = sin grupo)."""
+    seen: list[str] = []
+    for item in line_items or []:
+        name = normalize_group_name(item.get("group"))
+        if name not in seen:
+            seen.append(name)
+    return seen
+
+
+def compute_group_advance_total(line_items: list[dict], group_pcts: dict[str, float]) -> float:
+    total = 0.0
+    for name in list_budget_groups(line_items):
+        amount = sum(float(i.get("amount") or 0) for i in line_items if normalize_group_name(i.get("group")) == name)
+        total += round(amount * float(group_pcts.get(name) or 0) / 100, 2)
+    return round(total, 2)
 
 
 def compute_estimation_budget_totals(line_items: list[dict], advance_amount: float) -> dict:
@@ -10031,7 +10091,7 @@ def compute_previous_cumulative_quantities(estimation_budget_id: str, exclude_es
             concepto_id = str(item.get("conceptoId") or "")
             if not concepto_id:
                 continue
-            totals[concepto_id] = round(float(totals.get(concepto_id) or 0) + float(item.get("periodQuantity") or 0), 4)
+            totals[concepto_id] = round(float(totals.get(concepto_id) or 0) + float(item.get("periodQuantity") or 0), 8)
     return totals
 
 
@@ -10105,7 +10165,8 @@ def refresh_open_estimation_money(estimation: dict, estimation_budget: dict | No
         return estimation
     money = compute_estimation_money_fields(budget, estimation["lineItems"], exclude_estimation_id=str(estimation.get("_id")))
     keys = ("periodSubtotal", "retentionAmount", "advanceAmortizationAmount", "priorPaidApplied", "totalToPay")
-    if all(abs(float(estimation.get(k) or 0) - float(money[k])) < 0.005 for k in keys):
+    same_groups = len(estimation.get("groupBreakdown") or []) == len(money["groupBreakdown"])
+    if same_groups and all(abs(float(estimation.get(k) or 0) - float(money[k])) < 0.005 for k in keys):
         return estimation
     updates = {**money, "updatedAt": datetime.now(timezone.utc).isoformat()}
     db.estimations.update_one({"_id": estimation["_id"]}, {"$set": updates})
@@ -10140,13 +10201,13 @@ def build_estimation_line_items(
         if not concepto:
             raise HTTPException(status_code=400, detail=f"Unknown conceptoId: {concepto_id}")
         try:
-            period_quantity = parse_decimal(raw_period_quantity)
+            period_quantity = round(parse_precise_decimal(raw_period_quantity), 8)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid periodQuantity for concepto {concepto_id}")
         if period_quantity < 0:
             raise HTTPException(status_code=400, detail="periodQuantity must be greater than or equal to 0")
         previous_cumulative_quantity = float(previous_cumulative_by_concepto_id.get(str(concepto_id)) or 0)
-        cumulative_quantity = round(previous_cumulative_quantity + period_quantity, 4)
+        cumulative_quantity = round(previous_cumulative_quantity + period_quantity, 8)
         unit_price = float(concepto.get("unitPrice") or 0)
         contracted_quantity = float(concepto.get("quantity") or 0)
         period_amount = round(period_quantity * unit_price, 2)
@@ -10155,9 +10216,10 @@ def build_estimation_line_items(
                 "conceptoId": str(concepto_id),
                 "description": concepto.get("description") or "",
                 "unit": concepto.get("unit") or "",
+                "group": normalize_group_name(concepto.get("group")),
                 "unitPrice": unit_price,
                 "contractedQuantity": contracted_quantity,
-                "previousCumulativeQuantity": round(previous_cumulative_quantity, 4),
+                "previousCumulativeQuantity": round(previous_cumulative_quantity, 8),
                 "periodQuantity": period_quantity,
                 "previousProgressPct": round(previous_cumulative_quantity / contracted_quantity * 100, 2) if contracted_quantity else 0.0,
                 "progressPct": round(cumulative_quantity / contracted_quantity * 100, 2) if contracted_quantity else 0.0,
@@ -10172,6 +10234,74 @@ def build_estimation_line_items(
     return line_items
 
 
+def _group_advance_rate(estimation_budget: dict, group_name: str) -> float:
+    """% de anticipo que se amortiza del avance de un grupo."""
+    group_pcts = normalize_group_advance_pcts(estimation_budget.get("groupAdvancePcts"))
+    if group_pcts:
+        return float(group_pcts.get(group_name) or 0)
+    if bool(estimation_budget.get("advanceAmortizationEnabled")):
+        return float(estimation_budget.get("advancePct") or 0)
+    return 0.0
+
+
+def compute_group_breakdown(
+    estimation_budget: dict,
+    line_items: list[dict],
+    amortization_applied: float,
+    exclude_estimation_id: str | None = None,
+) -> list[dict]:
+    """Hoja de estimacion por grupo (como la que arma la arquitecta): presupuesto,
+    anticipo, avance acumulado, amortizacion acumulada y saldo."""
+    concepto_list = estimation_budget.get("lineItems") or []
+    estimation_budget_id = str(estimation_budget.get("_id") or "")
+    previous_qty = compute_previous_cumulative_quantities(estimation_budget_id, exclude_estimation_id=exclude_estimation_id)
+    group_of = {str(c.get("id") or ""): normalize_group_name(c.get("group")) for c in concepto_list}
+    period_by_group: dict[str, float] = {}
+    for li in line_items:
+        name = group_of.get(str(li.get("conceptoId") or ""), normalize_group_name(li.get("group")))
+        period_by_group[name] = period_by_group.get(name, 0.0) + float(li.get("periodAmount") or 0)
+
+    previous_amort_by_group: dict[str, float] = {}
+    query: dict = {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
+    if exclude_estimation_id:
+        query["_id"] = {"$ne": oid(exclude_estimation_id)}
+    for row in db.estimations.find(query, {"groupBreakdown": 1}):
+        for entry in row.get("groupBreakdown") or []:
+            key = normalize_group_name(entry.get("group"))
+            previous_amort_by_group[key] = previous_amort_by_group.get(key, 0.0) + float(entry.get("amortizationAmount") or 0)
+
+    raw_total = sum(period_by_group.get(name, 0.0) * _group_advance_rate(estimation_budget, name) / 100 for name in period_by_group)
+    scale = (amortization_applied / raw_total) if raw_total > 0 else 0.0
+
+    breakdown = []
+    for name in list_budget_groups(concepto_list):
+        members = [c for c in concepto_list if normalize_group_name(c.get("group")) == name]
+        budget_amount = round(sum(float(c.get("amount") or 0) for c in members), 2)
+        previous_amount = round(sum(float(previous_qty.get(str(c.get("id") or "")) or 0) * float(c.get("unitPrice") or 0) for c in members), 2)
+        period_amount = round(period_by_group.get(name, 0.0), 2)
+        rate = _group_advance_rate(estimation_budget, name)
+        amortization = round(period_amount * rate / 100 * scale, 2)
+        cumulative_amount = round(previous_amount + period_amount, 2)
+        cumulative_amortization = round(previous_amort_by_group.get(name, 0.0) + amortization, 2)
+        breakdown.append(
+            {
+                "group": name,
+                "budgetAmount": budget_amount,
+                "advancePct": rate,
+                "advanceAmount": round(budget_amount * rate / 100, 2),
+                "previousAmount": previous_amount,
+                "periodAmount": period_amount,
+                "cumulativeAmount": cumulative_amount,
+                "cumulativePct": round(cumulative_amount / budget_amount * 100, 2) if budget_amount else 0.0,
+                "amortizationAmount": amortization,
+                "cumulativeAmortization": cumulative_amortization,
+                "netAmount": round(cumulative_amount - cumulative_amortization, 2),
+                "isExtra": bool(members) and all(bool(c.get("isExtra")) for c in members),
+            }
+        )
+    return breakdown
+
+
 def compute_estimation_money_fields(estimation_budget: dict, line_items: list[dict], exclude_estimation_id: str | None = None) -> dict:
     period_subtotal = round(sum(float(item.get("periodAmount") or 0) for item in line_items), 2)
     retention_pct = float(estimation_budget.get("retentionPct") or 0)
@@ -10179,9 +10309,16 @@ def compute_estimation_money_fields(estimation_budget: dict, line_items: list[di
 
     advance_amortization_amount = 0.0
     if bool(estimation_budget.get("advanceAmortizationEnabled")):
-        advance_pct = float(estimation_budget.get("advancePct") or 0)
         remaining_balance = compute_remaining_advance_balance(estimation_budget, exclude_estimation_id=exclude_estimation_id)
-        advance_amortization_amount = round(min(period_subtotal * advance_pct / 100, remaining_balance), 2)
+        group_of = {str(c.get("id") or ""): normalize_group_name(c.get("group")) for c in estimation_budget.get("lineItems") or []}
+        # Cada grupo amortiza su propio % de anticipo (o el % general si no hay grupos con anticipo).
+        raw_amortization = sum(
+            float(item.get("periodAmount") or 0)
+            * _group_advance_rate(estimation_budget, group_of.get(str(item.get("conceptoId") or ""), normalize_group_name(item.get("group"))))
+            / 100
+            for item in line_items
+        )
+        advance_amortization_amount = round(min(raw_amortization, remaining_balance), 2)
         if advance_amortization_amount < 0:
             advance_amortization_amount = 0.0
 
@@ -10199,6 +10336,9 @@ def compute_estimation_money_fields(estimation_budget: dict, line_items: list[di
         "netBeforePriorPayments": net_before_prior_payments,
         "priorPaidApplied": prior_paid_applied,
         "totalToPay": total_to_pay,
+        "groupBreakdown": compute_group_breakdown(
+            estimation_budget, line_items, advance_amortization_amount, exclude_estimation_id=exclude_estimation_id
+        ),
     }
 
 
@@ -10342,7 +10482,7 @@ ESTIMATION_STATUS_LEGACY = "REGISTRADA"
 ESTIMATION_OPEN_STATUSES = (ESTIMATION_STATUS_DRAFT, ESTIMATION_STATUS_SUBMITTED)
 ESTIMATION_PAYMENT_PENDING = "POR_PAGAR"
 ESTIMATION_PAYMENT_PAID = "PAGADA"
-ESTIMATION_CAPTURE_MODES = ("quantity", "global", "concept")
+ESTIMATION_CAPTURE_MODES = ("quantity", "global", "concept", "group")
 
 
 def estimation_workflow_status(doc: dict) -> str:
@@ -10371,11 +10511,16 @@ def resolve_period_quantities(estimation_budget: dict, payload: dict, previous_c
                 todos los conceptos (si un concepto ya va por encima, no baja).
     - concept:  `progressPct` ACUMULADO por concepto en `lineItems`; los
                 conceptos omitidos no avanzan este periodo.
+    - group:    avance ACUMULADO por grupo en `groupProgress`
+                [{group, progressPct | progressAmount}]: aplica el mismo % a
+                todos los conceptos del grupo (progressAmount = $ acumulados
+                del grupo, como en la hoja de estimacion). Un concepto que ya
+                va por encima no baja; los grupos omitidos no avanzan.
     Returns (period quantities by concepto id, capture metadata to persist).
     """
     mode = (normalize_non_empty_string((payload or {}).get("captureMode")) or "quantity").lower()
     if mode not in ESTIMATION_CAPTURE_MODES:
-        raise HTTPException(status_code=400, detail="captureMode must be quantity, global or concept")
+        raise HTTPException(status_code=400, detail="captureMode must be quantity, global, concept or group")
 
     conceptos = estimation_budget.get("lineItems") or []
     raw_line_items = (payload or {}).get("lineItems")
@@ -10397,8 +10542,46 @@ def resolve_period_quantities(estimation_budget: dict, payload: dict, previous_c
             concepto_id = str(concepto.get("id") or "")
             target = float(concepto.get("quantity") or 0) * pct / 100
             previous = float(previous_cumulative.get(concepto_id) or 0)
-            quantities[concepto_id] = round(max(target - previous, 0), 4)
+            quantities[concepto_id] = round(max(target - previous, 0), 8)
         return quantities, {"captureMode": mode, "globalProgressPct": pct}
+
+    if mode == "group":
+        raw_groups = (payload or {}).get("groupProgress")
+        if not isinstance(raw_groups, list) or not raw_groups:
+            raise HTTPException(status_code=400, detail="groupProgress with progressPct or progressAmount per group is required")
+        group_totals: dict[str, float] = {}
+        for concepto in conceptos:
+            name = normalize_group_name(concepto.get("group"))
+            group_totals[name] = group_totals.get(name, 0.0) + float(concepto.get("amount") or 0)
+        pct_by_group: dict[str, float] = {}
+        for row in raw_groups:
+            name = normalize_group_name((row or {}).get("group"))
+            if name not in group_totals:
+                raise HTTPException(status_code=400, detail=f"Unknown group: {name or '(sin grupo)'}")
+            raw_amount = (row or {}).get("progressAmount")
+            if raw_amount not in (None, ""):
+                try:
+                    amount = parse_precise_decimal(raw_amount)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"progressAmount of group '{name}' is invalid")
+                total = group_totals[name]
+                if total <= 0 or amount < 0 or amount > total + 0.01:
+                    raise HTTPException(status_code=400, detail=f"progressAmount of group '{name}' must be between 0 and the group budget")
+                pct = min(amount / total * 100, 100.0)
+            else:
+                pct = parse_progress_pct((row or {}).get("progressPct"), f"progressPct of group '{name}'")
+            pct_by_group[name] = pct
+        for concepto in conceptos:
+            concepto_id = str(concepto.get("id") or "")
+            pct = pct_by_group.get(normalize_group_name(concepto.get("group")))
+            previous = float(previous_cumulative.get(concepto_id) or 0)
+            if pct is None:
+                quantities[concepto_id] = 0
+                continue
+            target = float(concepto.get("quantity") or 0) * pct / 100
+            quantities[concepto_id] = round(max(target - previous, 0), 8)
+        meta_groups = [{"group": name, "progressPct": round(pct, 6)} for name, pct in pct_by_group.items()]
+        return quantities, {"captureMode": mode, "groupProgress": meta_groups}
 
     if not isinstance(raw_line_items, list) or not raw_line_items:
         raise HTTPException(status_code=400, detail="lineItems with progressPct per concepto are required")
@@ -10425,7 +10608,7 @@ def resolve_period_quantities(estimation_budget: dict, payload: dict, previous_c
                 status_code=400,
                 detail=f"progressPct for '{concepto.get('description')}' is lower than the progress already estimated",
             )
-        quantities[concepto_id] = round(max(target - previous, 0), 4)
+        quantities[concepto_id] = round(max(target - previous, 0), 8)
     return quantities, {"captureMode": mode}
 
 
@@ -10492,6 +10675,21 @@ def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dic
         2,
     )
     contracted_for_progress = float(payload.get("totalContractedAmount") or 0)
+    group_pcts = normalize_group_advance_pcts(payload.get("groupAdvancePcts"))
+    payload["groupAdvancePcts"] = group_pcts
+    payload["groups"] = [
+        {
+            "name": name,
+            "budgetAmount": round(sum(float(i.get("amount") or 0) for i in members), 2),
+            "advancePct": float(group_pcts.get(name) or 0),
+            "advanceAmount": round(sum(float(i.get("amount") or 0) for i in members) * float(group_pcts.get(name) or 0) / 100, 2),
+            "conceptCount": len(members),
+            "isExtra": all(bool(i.get("isExtra")) for i in members),
+        }
+        for name in list_budget_groups(payload.get("lineItems") or [])
+        for members in [[i for i in (payload.get("lineItems") or []) if normalize_group_name(i.get("group")) == name]]
+    ]
+    payload["extraAmount"] = round(sum(float(i.get("amount") or 0) for i in (payload.get("lineItems") or []) if i.get("isExtra")), 2)
     payload["approvedProgressAmount"] = progress_amount
     payload["approvedProgressPct"] = round(progress_amount / contracted_for_progress * 100, 2) if contracted_for_progress > 0 else 0.0
     opening_advance = float(payload.get("openingAdvanceAmount") or 0)
@@ -10593,6 +10791,11 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
     advance_amortization_enabled = bool((payload or {}).get("advanceAmortizationEnabled"))
     advance_amount = validate_budget_amount((payload or {}).get("advanceAmount") or 0)
     line_items = validate_concepto_rows((payload or {}).get("lineItems"))
+    group_advance_pcts = normalize_group_advance_pcts((payload or {}).get("groupAdvancePcts"))
+    if group_advance_pcts:
+        # El anticipo previsto sale de los grupos; ya no se captura un monto aparte.
+        advance_amount = compute_group_advance_total(line_items, group_advance_pcts)
+        advance_amortization_enabled = True
     totals = compute_estimation_budget_totals(line_items, advance_amount)
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -10610,6 +10813,7 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
         "retentionPct": retention_pct,
         "advanceAmortizationEnabled": advance_amortization_enabled,
         "advanceAmount": advance_amount,
+        "groupAdvancePcts": group_advance_pcts,
         "lineItems": line_items,
         "totalContractedAmount": totals["totalContractedAmount"],
         "advancePct": totals["advancePct"],
@@ -10907,6 +11111,67 @@ def set_estimation_budget_opening_balance(
     return serialize_estimation_budget(saved, include_payments=True)
 
 
+@app.post("/api/estimation-budgets/{estimation_budget_id}/extras", status_code=201)
+def add_estimation_budget_extras(
+    estimation_budget_id: str,
+    payload: dict,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    """Agrega conceptos que no estaban en el presupuesto original, sin tocar los
+    existentes ni su historial: `kind` "extra" (concepto no contemplado) o
+    "adicional" (presupuesto adicional). Quedan en un grupo propio ("Extras" o
+    "Adicional N"), con su propio avance y sin anticipo salvo que se le asigne."""
+    estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
+    payload = payload or {}
+    kind = "adicional" if payload.get("kind") == "adicional" else "extra"
+    new_rows = validate_concepto_rows(payload.get("conceptos") if payload.get("conceptos") is not None else payload.get("lineItems"))
+
+    existing_items = list(estimation_budget.get("lineItems") or [])
+    existing_groups = list_budget_groups(existing_items)
+    group_name = normalize_group_name(payload.get("groupName"))
+    if not group_name:
+        if kind == "extra":
+            group_name = "Extras"
+        else:
+            numbered = sum(1 for name in existing_groups if name.lower().startswith("adicional"))
+            group_name = f"Adicional {numbered + 1}"
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    username = normalize_non_empty_string(user.get("username")) or "system"
+    note = normalize_non_empty_string(payload.get("note")) or ""
+    taken_ids = {str(i.get("id") or "") for i in existing_items}
+    for row in new_rows:
+        if row["id"] in taken_ids:
+            row["id"] = str(uuid.uuid4())
+        taken_ids.add(row["id"])
+        row["group"] = group_name
+        row["isExtra"] = True
+        row["extraKind"] = kind
+        row["addedAt"] = now_iso
+        row["addedBy"] = username
+        if note:
+            row["extraNote"] = note
+
+    line_items = existing_items + new_rows
+    group_pcts = normalize_group_advance_pcts(estimation_budget.get("groupAdvancePcts"))
+    advance_amount = float(estimation_budget.get("advanceAmount") or 0)
+    totals = compute_estimation_budget_totals(line_items, advance_amount)
+    added_amount = round(sum(float(r.get("amount") or 0) for r in new_rows), 2)
+    updates: dict = {
+        "lineItems": line_items,
+        "totalContractedAmount": totals["totalContractedAmount"],
+        "updatedAt": now_iso,
+    }
+    if group_pcts:
+        updates["advancePct"] = totals["advancePct"]  # solo informativo: el anticipo se amortiza por grupo
+    log = list(estimation_budget.get("extrasLog") or [])
+    log.append({"kind": kind, "groupName": group_name, "note": note, "count": len(new_rows), "amount": added_amount, "addedAt": now_iso, "addedBy": username})
+    updates["extrasLog"] = log
+    db.estimationBudgets.update_one({"_id": oid(estimation_budget_id)}, {"$set": updates})
+    saved = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    return serialize_estimation_budget(saved, include_payments=True)
+
+
 @app.patch("/api/estimation-budgets/{estimation_budget_id}")
 def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
     existing = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
@@ -10939,10 +11204,29 @@ def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dic
     if "lineItems" in payload:
         new_line_items = validate_concepto_rows(payload.get("lineItems"))
         validate_concepto_shrink_allowed(line_items, new_line_items, estimation_budget_id)
+        # Los conceptos extra conservan su marca aunque el cliente no la reenvie.
+        existing_by_id = {str(item.get("id") or ""): item for item in line_items}
+        for row in new_line_items:
+            previous = existing_by_id.get(row["id"])
+            if previous and previous.get("isExtra") and not row.get("isExtra"):
+                for key in ("isExtra", "extraKind", "extraNote", "addedAt", "addedBy"):
+                    if previous.get(key) is not None:
+                        row[key] = previous[key]
         line_items = new_line_items
         updates["lineItems"] = line_items
 
-    if "lineItems" in payload or "advanceAmount" in payload:
+    group_advance_pcts = normalize_group_advance_pcts(existing.get("groupAdvancePcts"))
+    if "groupAdvancePcts" in payload:
+        group_advance_pcts = normalize_group_advance_pcts(payload.get("groupAdvancePcts"))
+        updates["groupAdvancePcts"] = group_advance_pcts
+    if group_advance_pcts and ("groupAdvancePcts" in payload or "lineItems" in payload):
+        updates["advanceAmortizationEnabled"] = True
+        # El anticipo entregado (saldo inicial) manda; si no hay, el previsto sale de los grupos.
+        if not existing.get("openingSetAt"):
+            advance_amount = compute_group_advance_total(line_items, group_advance_pcts)
+            updates["advanceAmount"] = advance_amount
+
+    if "lineItems" in payload or "advanceAmount" in payload or "groupAdvancePcts" in payload:
         totals = compute_estimation_budget_totals(line_items, advance_amount)
         updates["totalContractedAmount"] = totals["totalContractedAmount"]
         updates["advancePct"] = totals["advancePct"]
@@ -11329,6 +11613,11 @@ CONCEPTO_HEADER_ALIASES = {
     "costounitario": "preciounitario",
     "preciou": "preciounitario",
     "precio": "preciounitario",
+    "grupo": "grupo",
+    "seccion": "grupo",
+    "capitulo": "grupo",
+    "categoria": "grupo",
+    "rubro": "grupo",
     "importe": "importe",
     "importetotal": "importe",
     "monto": "importe",
@@ -11422,6 +11711,8 @@ def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False, 
     skipped = 0
     importe_mismatches: list[str] = []
     document_total = None
+    current_group = ""
+    concepto_idx = header_index.get("concepto")
     for row in data_rows:
         description = normalize_non_empty_string(cell_value(row, "concepto"))
         unit = normalize_non_empty_string(cell_value(row, "unidad")) or ""
@@ -11433,12 +11724,23 @@ def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False, 
                 document_total = number_or_none(cell_value(row, "importe"))
                 if document_total is None:
                     document_total = _last_number_in_row(row)
+            elif (
+                description
+                and not low_confidence
+                and all(not str(cell or "").strip() for idx, cell in enumerate(row) if idx != concepto_idx)
+            ):
+                # Renglón con solo un título ("BAJADAS"): abre un grupo para los siguientes conceptos.
+                current_group = normalize_group_name(description)
             else:
                 skipped += 1
             continue
 
         unit_price = max(unit_price, 0.0)
-        items.append({"description": description, "unit": unit, "quantity": quantity, "unitPrice": unit_price})
+        item = {"description": description, "unit": unit, "quantity": quantity, "unitPrice": unit_price}
+        group_value = normalize_group_name(cell_value(row, "grupo")) or current_group
+        if group_value:
+            item["group"] = group_value
+        items.append(item)
 
         stated_amount = number_or_none(cell_value(row, "importe"))
         calculated_amount = round(quantity * unit_price, 2)
@@ -11525,8 +11827,8 @@ def extract_concepto_rows_from_docx_bytes(file_bytes: bytes):
     - Tablas con otra forma (resumen de totales) se ignoran, pero su TOTAL se
       compara contra la suma de los conceptos leidos.
     - Si ninguna trae encabezados, se usa la tabla mas grande con orden fijo.
-    - Si un mismo concepto se repite en secciones distintas, se le agrega el
-      titulo de la seccion (el parrafo previo a la tabla) para distinguirlo.
+    - Con varias tablas, el titulo de cada una (el parrafo previo) pasa a ser el
+      grupo de sus conceptos.
     """
     document = DocxDocument(BytesIO(file_bytes))
 
@@ -11603,15 +11905,12 @@ def extract_concepto_rows_from_docx_bytes(file_bytes: bytes):
                 if warning not in warnings:
                     warnings.append(warning)
 
-    counts: dict[str, int] = {}
-    for _, table_items in section_items:
-        for item in table_items:
-            key = item["description"].strip().lower()
-            counts[key] = counts.get(key, 0) + 1
+    # Cada tabla bajo su propio título es un grupo del presupuesto (con 2 o más tablas).
+    use_headings = len([1 for _, table_items in section_items if table_items]) > 1
     for heading, table_items in section_items:
         for item in table_items:
-            if heading and counts[item["description"].strip().lower()] > 1:
-                item = {**item, "description": f"{item['description']} ({heading})"}
+            if use_headings and heading and not item.get("group"):
+                item = {**item, "group": normalize_group_name(heading)}
             items.append(item)
 
     if ignored_count:

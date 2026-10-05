@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
-import { formatCurrency, formatDate, formatPct } from './estimationShared.js';
+import { ExtrasPanel } from './ExtrasPanel.jsx';
+import { formatCurrency, formatDate, formatPct, groupLabel } from './estimationShared.js';
 
 const WORKFLOW_LABELS = {
   BORRADOR: 'Borrador',
@@ -38,9 +39,12 @@ function StatusBadge({ estimation }) {
 }
 
 // Same math as the backend's resolve_period_quantities, for live preview only.
-function computePeriodQuantity(mode, li, globalPct) {
+function computePeriodQuantity(mode, li, globalPct, groupPcts) {
   if (mode === 'quantity') return Number(li.periodQuantity) || 0;
-  const pctRaw = mode === 'global' ? globalPct : li.progressPct;
+  let pctRaw;
+  if (mode === 'global') pctRaw = globalPct;
+  else if (mode === 'group') pctRaw = (groupPcts || {})[li.group || ''];
+  else pctRaw = li.progressPct;
   if (pctRaw === '' || pctRaw === null || pctRaw === undefined) return 0;
   const pct = Number(pctRaw) || 0;
   const target = ((Number(li.contractedQuantity) || 0) * pct) / 100;
@@ -56,19 +60,24 @@ function todayIsoDate() {
 // Mirrors the backend's compute_estimation_money_fields — used only for
 // live preview while typing; the authoritative values come back from the
 // server response on save.
-function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalanceOverride, mode = 'quantity', globalPct = '', remainingOpeningOverride) {
-  const periodSubtotal = (lineItemInputs || []).reduce(
-    (sum, li) => sum + computePeriodQuantity(mode, li, globalPct) * (Number(li.unitPrice) || 0),
-    0,
-  );
+function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalanceOverride, mode = 'quantity', globalPct = '', remainingOpeningOverride, groupPcts) {
+  const periodAmountOf = (li) => computePeriodQuantity(mode, li, globalPct, groupPcts) * (Number(li.unitPrice) || 0);
+  const periodSubtotal = (lineItemInputs || []).reduce((sum, li) => sum + periodAmountOf(li), 0);
   const retentionPct = Number(budgetDetail?.retentionPct) || 0;
   const retentionAmount = (periodSubtotal * retentionPct) / 100;
 
   let advanceAmortizationAmount = 0;
   if (budgetDetail?.advanceAmortizationEnabled) {
-    const advancePct = Number(budgetDetail?.advancePct) || 0;
+    // Cada grupo amortiza su propio % de anticipo; sin anticipo por grupo, el % general.
+    const groupRates = Object.fromEntries((budgetDetail?.groups || []).map((g) => [g.name, Number(g.advancePct) || 0]));
+    const hasGroupRates = Object.values(groupRates).some((rate) => rate > 0);
+    const uniformRate = Number(budgetDetail?.advancePct) || 0;
+    const rawAmortization = (lineItemInputs || []).reduce(
+      (sum, li) => sum + (periodAmountOf(li) * (hasGroupRates ? groupRates[li.group || ''] || 0 : uniformRate)) / 100,
+      0,
+    );
     const remainingBalance = Number(remainingBalanceOverride ?? budgetDetail?.remainingAdvanceBalance) || 0;
-    advanceAmortizationAmount = Math.max(0, Math.min((periodSubtotal * advancePct) / 100, remainingBalance));
+    advanceAmortizationAmount = Math.max(0, Math.min(rawAmortization, remainingBalance));
   }
 
   const netBeforePriorPayments = periodSubtotal - retentionAmount - advanceAmortizationAmount;
@@ -82,6 +91,7 @@ function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalance
 export function EstimacionesSection({ projects, selectedProjectId, isReviewer = false, initialBudgetId = null, onInitialBudgetConsumed, onOpenBudgets }) {
   const [view, setView] = useState('list');
   const [section, setSection] = useState('budgets');
+  const [extrasOpen, setExtrasOpen] = useState(false);
   const [queueRows, setQueueRows] = useState([]);
   const [queueLoading, setQueueLoading] = useState(false);
   const [viewingEstimation, setViewingEstimation] = useState(null);
@@ -199,6 +209,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   }
 
   function backToList() {
+    setExtrasOpen(false);
     setView('list');
     setSelectedBudgetId(null);
     setBudgetDetail(null);
@@ -212,14 +223,68 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     return base > 0 ? Math.round(((Number(quantity) || 0) / base) * 10000) / 100 : 0;
   }
 
+  const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
+
+  // Un renglón por grupo del presupuesto, con lo que ya llevaba de avance.
+  function buildGroupForm(previousQtyByConceptoId, overlayProgress, previousAmountByGroup) {
+    const concepts = budgetDetail?.lineItems || [];
+    const groupNames = (budgetDetail?.groups || []).map((g) => g.name);
+    const names = groupNames.length ? groupNames : Array.from(new Set(concepts.map((c) => c.group || '')));
+    return names.map((name) => {
+      const members = concepts.filter((c) => (c.group || '') === name);
+      const meta = (budgetDetail?.groups || []).find((g) => g.name === name) || {};
+      const budgetAmount = meta.budgetAmount ?? round2(members.reduce((sum, c) => sum + (Number(c.amount) || 0), 0));
+      const previousAmount = previousAmountByGroup?.[name] ?? round2(
+        members.reduce((sum, c) => sum + (Number(previousQtyByConceptoId?.[c.id]) || 0) * (Number(c.unitPrice) || 0), 0),
+      );
+      const previousPct = budgetAmount > 0 ? (previousAmount / budgetAmount) * 100 : 0;
+      const overlay = (overlayProgress || []).find((entry) => (entry.group || '') === name);
+      const pctExact = overlay ? Number(overlay.progressPct) || 0 : previousPct;
+      return {
+        name,
+        budgetAmount,
+        advancePct: Number(meta.advancePct) || 0,
+        isExtra: Boolean(meta.isExtra),
+        previousAmount,
+        previousPct,
+        pctExact,
+        pct: String(Math.round(pctExact * 10000) / 10000),
+        amount: ((budgetAmount * pctExact) / 100).toFixed(2),
+        source: 'pct',
+        touched: Boolean(overlay),
+      };
+    });
+  }
+
+  function updateEstimationGroup(name, field, value) {
+    setEstimationForm((prev) => ({
+      ...prev,
+      groups: (prev.groups || []).map((group) => {
+        if (group.name !== name) return group;
+        const budget = Number(group.budgetAmount) || 0;
+        if (field === 'pct') {
+          const pct = Number(value);
+          const exact = Number.isFinite(pct) ? pct : 0;
+          return { ...group, pct: value, pctExact: exact, amount: value === '' ? '' : ((budget * exact) / 100).toFixed(2), source: 'pct', touched: true };
+        }
+        const amount = Number(value);
+        const exact = budget > 0 && Number.isFinite(amount) ? (amount / budget) * 100 : 0;
+        return { ...group, amount: value, pctExact: exact, pct: value === '' ? '' : String(Math.round(exact * 10000) / 10000), source: 'amount', touched: true };
+      }),
+    }));
+  }
+
+  const hasNamedGroups = (budgetDetail?.groups || []).some((g) => g.name);
+
   function buildEstimationFormFromBudget(previousCumulativeByConceptoId) {
     const today = todayIsoDate();
     return {
       periodStart: today,
       periodEnd: today,
       notes: '',
-      captureMode: 'global',
+      captureMode: hasNamedGroups ? 'group' : 'global',
       globalProgressPct: '',
+      groups: buildGroupForm(previousCumulativeByConceptoId, null, null),
       lineItems: (budgetDetail?.lineItems || []).map((item) => {
         const previous = Number(previousCumulativeByConceptoId?.[item.id]) || 0;
         const previousPct = String(pctOf(previous, item.quantity));
@@ -227,6 +292,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
           conceptoId: item.id,
           description: item.description,
           unit: item.unit,
+          group: item.group || '',
           unitPrice: item.unitPrice,
           contractedQuantity: item.quantity,
           previousCumulativeQuantity: previous,
@@ -253,7 +319,11 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   }
 
   function startEditEstimation(estimation) {
-    const mode = ['global', 'concept', 'quantity'].includes(estimation.captureMode) ? estimation.captureMode : 'quantity';
+    const mode = ['global', 'concept', 'quantity', 'group'].includes(estimation.captureMode) ? estimation.captureMode : 'quantity';
+    const previousQty = {};
+    (estimation.lineItems || []).forEach((li) => { previousQty[li.conceptoId] = li.previousCumulativeQuantity; });
+    const previousAmountByGroup = {};
+    (estimation.groupBreakdown || []).forEach((entry) => { previousAmountByGroup[entry.group || ''] = entry.previousAmount; });
     setViewingEstimation(null);
     setEditingEstimation(estimation);
     setEstimationForm({
@@ -262,10 +332,12 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       notes: estimation.notes || '',
       captureMode: mode,
       globalProgressPct: estimation.globalProgressPct != null ? String(estimation.globalProgressPct) : '',
+      groups: buildGroupForm(previousQty, estimation.groupProgress, Object.keys(previousAmountByGroup).length ? previousAmountByGroup : null),
       lineItems: (estimation.lineItems || []).map((li) => ({
         conceptoId: li.conceptoId,
         description: li.description,
         unit: li.unit,
+        group: li.group || '',
         unitPrice: li.unitPrice,
         contractedQuantity: li.contractedQuantity,
         previousCumulativeQuantity: li.previousCumulativeQuantity,
@@ -298,6 +370,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     const remainingOpeningOverride = editingEstimation
       ? (Number(budgetDetail.remainingOpeningPaidBalance) || 0) + (Number(editingEstimation.priorPaidApplied) || 0)
       : undefined;
+    const groupPcts = Object.fromEntries((estimationForm.groups || []).map((group) => [group.name, group.pctExact]));
     return computeEstimationPreview(
       budgetDetail,
       estimationForm.lineItems,
@@ -305,6 +378,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       estimationForm.captureMode,
       estimationForm.globalProgressPct,
       remainingOpeningOverride,
+      groupPcts,
     );
   }, [estimationForm, budgetDetail, editingEstimation]);
 
@@ -317,6 +391,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     };
     if (estimationForm.captureMode === 'global') {
       payload.globalProgressPct = Number(estimationForm.globalProgressPct) || 0;
+    } else if (estimationForm.captureMode === 'group') {
+      // Solo los grupos que el usuario movió; en $ si capturó el monto, en % si capturó el porcentaje.
+      payload.groupProgress = (estimationForm.groups || [])
+        .filter((group) => group.touched)
+        .map((group) => (group.source === 'amount'
+          ? { group: group.name, progressAmount: Number(group.amount) || 0 }
+          : { group: group.name, progressPct: Number(group.pct) || 0 }));
     } else if (estimationForm.captureMode === 'concept') {
       // Solo se mandan los conceptos que el usuario movio; el resto no avanza.
       payload.lineItems = estimationForm.lineItems
@@ -336,6 +417,10 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     if (!selectedBudgetId || !estimationForm) return;
     if (estimationForm.captureMode === 'concept' && !buildEstimationPayload().lineItems.length) {
       setError('Captura el avance de al menos un concepto.');
+      return;
+    }
+    if (estimationForm.captureMode === 'group' && !buildEstimationPayload().groupProgress.length) {
+      setError('Captura el avance de al menos un grupo.');
       return;
     }
     setSaving(true);
@@ -767,10 +852,27 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 </div>
               </div>
 
+              {extrasOpen && isReviewer && (
+                <ExtrasPanel
+                  budget={budgetDetail}
+                  onClose={() => setExtrasOpen(false)}
+                  onSaved={async () => {
+                    setExtrasOpen(false);
+                    await loadBudgetDetail(budgetDetail.id);
+                    await loadEstimationBudgets();
+                  }}
+                />
+              )}
+
               <div className="card" style={{ overflow: 'hidden' }}>
                 <div className="card-header">
                   <strong>{budgetDetail.supplierNameSnapshot}</strong>
                   <div style={{ flex: 1 }} />
+                  {isReviewer && (
+                    <button type="button" className="secondary" onClick={() => setExtrasOpen((open) => !open)} title="Agregar conceptos extra o un presupuesto adicional">
+                      + Extras
+                    </button>
+                  )}
                   {isReviewer && onOpenBudgets && (
                     <button type="button" className="secondary" onClick={onOpenBudgets} title="Editar el presupuesto, asignar pagos o registrar el saldo inicial">
                       Administrar en Presupuestos
@@ -916,6 +1018,75 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     </table>
                   </div>
 
+                  {(() => {
+                    const sheet = viewingEstimation.groupBreakdown || [];
+                    if (!sheet.some((row) => row.group)) return null;
+                    const sum = (key) => sheet.reduce((total, row) => total + (Number(row[key]) || 0), 0);
+                    const totalBudget = sum('budgetAmount');
+                    const advanceGiven = budgetDetail?.advanceAmortizationEnabled ? Number(budgetDetail?.advanceAmount) || 0 : 0;
+                    const showPaidLines = Number(viewingEstimation.priorPaidApplied) > 0;
+                    const paidToDate = (Number(viewingEstimation.priorPaidApplied) || 0) + advanceGiven;
+                    return (
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        <strong style={{ fontSize: 13 }}>Hoja de estimación por grupo (acumulado a la fecha)</strong>
+                        <div style={{ overflowX: 'auto' }}>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Grupo</th>
+                                <th>Presupuesto</th>
+                                <th>Anticipo</th>
+                                <th>%</th>
+                                <th>Avance $</th>
+                                <th>Avance %</th>
+                                <th>Amortización</th>
+                                <th>Saldo</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {sheet.map((row) => (
+                                <tr key={row.group || '__general__'}>
+                                  <td>
+                                    {groupLabel(row.group)}
+                                    {row.isExtra && <span className="small" style={{ marginLeft: 6, color: '#92400e' }}>extra</span>}
+                                  </td>
+                                  <td>{formatCurrency(row.budgetAmount)}</td>
+                                  <td>{Number(row.advanceAmount) > 0 ? formatCurrency(row.advanceAmount) : '—'}</td>
+                                  <td>{Number(row.advancePct) > 0 ? formatPct(row.advancePct) : '—'}</td>
+                                  <td>{formatCurrency(row.cumulativeAmount)}</td>
+                                  <td>{formatPct(row.cumulativePct)}</td>
+                                  <td>{Number(row.cumulativeAmortization) > 0 ? formatCurrency(row.cumulativeAmortization) : '—'}</td>
+                                  <td>{formatCurrency(row.netAmount)}</td>
+                                </tr>
+                              ))}
+                              <tr style={{ fontWeight: 600 }}>
+                                <td>Total</td>
+                                <td>{formatCurrency(totalBudget)}</td>
+                                <td>{formatCurrency(sum('advanceAmount'))}</td>
+                                <td></td>
+                                <td>{formatCurrency(sum('cumulativeAmount'))}</td>
+                                <td>{formatPct(totalBudget > 0 ? (sum('cumulativeAmount') / totalBudget) * 100 : 0)}</td>
+                                <td>{formatCurrency(sum('cumulativeAmortization'))}</td>
+                                <td>{formatCurrency(sum('netAmount'))}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="small" style={{ display: 'grid', gap: 2, justifyContent: 'end', textAlign: 'right' }}>
+                          <div>avance acumulado + <strong>{formatCurrency(sum('cumulativeAmount'))}</strong></div>
+                          <div>amortización de anticipos − <strong>{formatCurrency(sum('cumulativeAmortization'))}</strong></div>
+                          <div>saldo acumulado <strong>{formatCurrency(sum('netAmount'))}</strong></div>
+                          {Number(viewingEstimation.retentionAmount) > 0 && (
+                            <div>retención − <strong>{formatCurrency(viewingEstimation.retentionAmount)}</strong></div>
+                          )}
+                          {showPaidLines && advanceGiven > 0 && <div>anticipo + <strong>{formatCurrency(advanceGiven)}</strong></div>}
+                          {showPaidLines && <div>pagado a la fecha − <strong>{formatCurrency(paidToDate)}</strong></div>}
+                          <div style={{ fontSize: 13 }}>saldo total (a liberar) <strong>{formatCurrency(viewingEstimation.totalToPay)}</strong></div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
                     <div><strong>Avance acumulado del contrato:</strong> {formatPct(viewingEstimation.cumulativeProgressPct)}</div>
                     <div><strong>Subtotal:</strong> {formatCurrency(viewingEstimation.periodSubtotal)}</div>
@@ -1043,6 +1214,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                   <div className="row" style={{ gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
                     <strong style={{ fontSize: 13 }}>¿Cómo capturas el avance?</strong>
                     {[
+                      ...(hasNamedGroups ? [['group', 'Avance por grupo']] : []),
                       ['global', 'Avance global (%)'],
                       ['concept', 'Avance por concepto (%)'],
                       ['quantity', 'Por cantidad'],
@@ -1083,6 +1255,102 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     </div>
                   )}
 
+                  {estimationForm.captureMode === 'group' && (() => {
+                    const groups = estimationForm.groups || [];
+                    const rows = groups.map((group) => {
+                      const target = (group.budgetAmount * group.pctExact) / 100;
+                      const period = Math.max(target - group.previousAmount, 0);
+                      return { group, period, rawAmortization: (period * group.advancePct) / 100 };
+                    });
+                    const rawTotal = rows.reduce((sum, row) => sum + row.rawAmortization, 0);
+                    const cappedTotal = estimationPreview?.advanceAmortizationAmount ?? rawTotal;
+                    const scale = rawTotal > 0 ? Math.min(cappedTotal / rawTotal, 1) : 0;
+                    const totals = rows.reduce(
+                      (acc, row) => ({
+                        budget: acc.budget + row.group.budgetAmount,
+                        previous: acc.previous + row.group.previousAmount,
+                        period: acc.period + row.period,
+                        amortization: acc.amortization + row.rawAmortization * scale,
+                      }),
+                      { budget: 0, previous: 0, period: 0, amortization: 0 },
+                    );
+                    return (
+                      <>
+                        <div className="small">
+                          Escribe el avance <strong>acumulado</strong> de cada grupo, en % o en $ (como en la hoja de estimación). Se aplica a todos los conceptos del grupo;
+                          los grupos que no muevas no avanzan en esta estimación.
+                        </div>
+                        <div style={{ overflowX: 'auto' }}>
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Grupo</th>
+                                <th>Presupuesto</th>
+                                <th>Anticipo</th>
+                                <th>Avance previo</th>
+                                <th>Avance acumulado %</th>
+                                <th>Avance acumulado $</th>
+                                <th>Este periodo</th>
+                                <th>Amortización</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rows.map(({ group, period, rawAmortization }) => {
+                                const below = group.touched && group.pctExact < group.previousPct - 0.005;
+                                const over = group.pctExact > 100.0001;
+                                return (
+                                  <tr key={group.name || '__general__'}>
+                                    <td>
+                                      {groupLabel(group.name)}
+                                      {group.isExtra && <span className="small" style={{ marginLeft: 6, color: '#92400e' }}>extra</span>}
+                                    </td>
+                                    <td>{formatCurrency(group.budgetAmount)}</td>
+                                    <td>{group.advancePct > 0 ? formatPct(group.advancePct) : '—'}</td>
+                                    <td>{formatCurrency(group.previousAmount)} ({formatPct(group.previousPct)})</td>
+                                    <td>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        step="0.01"
+                                        value={group.pct}
+                                        onChange={(e) => updateEstimationGroup(group.name, 'pct', e.target.value)}
+                                        style={{ width: 90, borderColor: below || over ? '#b91c1c' : undefined }}
+                                      />
+                                    </td>
+                                    <td>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="0.01"
+                                        value={group.amount}
+                                        onChange={(e) => updateEstimationGroup(group.name, 'amount', e.target.value)}
+                                        style={{ width: 130, borderColor: below || over ? '#b91c1c' : undefined }}
+                                      />
+                                    </td>
+                                    <td>{formatCurrency(period)}</td>
+                                    <td>{formatCurrency(rawAmortization * scale)}</td>
+                                  </tr>
+                                );
+                              })}
+                              <tr style={{ fontWeight: 600 }}>
+                                <td>Total</td>
+                                <td>{formatCurrency(totals.budget)}</td>
+                                <td></td>
+                                <td>{formatCurrency(totals.previous)}</td>
+                                <td></td>
+                                <td></td>
+                                <td>{formatCurrency(totals.period)}</td>
+                                <td>{formatCurrency(totals.amortization)}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    );
+                  })()}
+
+                  {estimationForm.captureMode !== 'group' && (
                   <div style={{ overflowX: 'auto' }}>
                     <table>
                       <thead>
@@ -1097,8 +1365,9 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         </tr>
                       </thead>
                       <tbody>
-                        {estimationForm.lineItems.map((li) => {
+                        {estimationForm.lineItems.map((li, liIndex) => {
                           const periodQuantity = computePeriodQuantity(estimationForm.captureMode, li, estimationForm.globalProgressPct);
+                          const showGroupHeader = hasNamedGroups && (liIndex === 0 || (estimationForm.lineItems[liIndex - 1].group || '') !== (li.group || ''));
                           const cumulativeQuantity = li.previousCumulativeQuantity + periodQuantity;
                           const cumulativePct = pctOf(cumulativeQuantity, li.contractedQuantity);
                           const periodAmount = periodQuantity * (Number(li.unitPrice) || 0);
@@ -1107,7 +1376,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                             estimationForm.captureMode === 'concept' &&
                             (Number(li.progressPct) || 0) < (Number(li.previousProgressPct) || 0) - 0.005;
                           return (
-                            <tr key={li.conceptoId}>
+                            <React.Fragment key={li.conceptoId}>
+                            {showGroupHeader && (
+                              <tr>
+                                <td colSpan={7} style={{ fontWeight: 600, background: 'var(--gray-100)' }}>{groupLabel(li.group)}</td>
+                              </tr>
+                            )}
+                            <tr>
                               <td>{li.description}</td>
                               <td>{li.unit || '—'}</td>
                               <td>{li.contractedQuantity}</td>
@@ -1147,11 +1422,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                               </td>
                               <td>{formatCurrency(periodAmount)}</td>
                             </tr>
+                            </React.Fragment>
                           );
                         })}
                       </tbody>
                     </table>
                   </div>
+                  )}
 
                   {estimationPreview && (
                     <div className="kpi-grid">

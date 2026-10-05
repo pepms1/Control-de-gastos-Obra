@@ -271,11 +271,36 @@ class ContractorBudgetFormatTests(unittest.TestCase):
         self.assertEqual(by_name['B.A.N.']['unitPrice'], 7700.0)
         self.assertEqual(by_name['B.A.N.']['unit'], 'PZZAS')
 
-    def test_repeated_concept_names_get_their_section_title(self):
+    def test_each_titled_table_becomes_a_group(self):
         items, _ = main.extract_concepto_rows_from_docx_bytes(self._doc())
-        descriptions = [item['description'] for item in items]
-        self.assertIn('W.C. (INSTALACION DE TUBERIA PARA MUEBLES)', descriptions)
-        self.assertIn('W.C. (COLOCACION DE MUEBLES)', descriptions)
+        groups = {item['description'] + '|' + item.get('group', ''): item for item in items}
+        self.assertIn('W.C.|INSTALACION DE TUBERIA PARA MUEBLES', groups)
+        self.assertIn('W.C.|COLOCACION DE MUEBLES', groups)
+        self.assertEqual(groups['B.A.N.|INSTALACION DE BAJADAS']['group'], 'INSTALACION DE BAJADAS')
+        # el nombre del concepto ya no se modifica
+        self.assertTrue(all('(' not in item['description'] for item in items))
+
+    def test_title_only_rows_in_a_spreadsheet_open_groups(self):
+        rows = [
+            ['Concepto', 'Unidad', 'Cantidad', 'Precio Unitario'],
+            ['BAJADAS', '', '', ''],
+            ['B.A.N.', 'pza', 5, 7700],
+            ['CUARTO DE BOMBAS', '', '', ''],
+            ['Conexión de bomba', 'pza', 1, 4400],
+            ['TOTAL', '', '', ''],
+        ]
+        items, warnings = main.parse_concepto_rows_from_table(rows)
+        self.assertEqual([i.get('group') for i in items], ['BAJADAS', 'CUARTO DE BOMBAS'])
+        self.assertFalse(any('omitieron' in w for w in warnings))
+
+    def test_group_column_is_read_when_present(self):
+        rows = [
+            ['Grupo', 'Concepto', 'Unidad', 'Cantidad', 'P.U.'],
+            ['Drenaje', 'Registro', 'pza', 2, 900],
+            ['Hidráulica', 'Toma', 'pza', 3, 300],
+        ]
+        items, _ = main.parse_concepto_rows_from_table(rows)
+        self.assertEqual([i['group'] for i in items], ['Drenaje', 'Hidráulica'])
 
     def test_summary_table_is_ignored_but_its_total_is_checked(self):
         _, warnings = main.extract_concepto_rows_from_docx_bytes(self._doc())
