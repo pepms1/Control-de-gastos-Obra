@@ -249,6 +249,25 @@ class EstimationsWorkflowTests(phase1.EstimationsPhase1Tests):
         created = self._capture({'captureMode': 'global', 'globalProgressPct': 20, 'submit': True})
         self.assertEqual(created['workflowStatus'], 'ENVIADA')
 
+    # ---- avance de obra para los KPI de la lista ----
+
+    def test_approved_progress_counts_only_approved_estimations(self):
+        created = self._capture({'captureMode': 'global', 'globalProgressPct': 40})
+        draft_view = self._call(main.get_estimation_budget, self.budget['id'], user=ADMIN)
+        self.assertEqual(draft_view['approvedProgressAmount'], 0)
+        self.assertEqual(draft_view['approvedProgressPct'], 0)
+
+        self._call(main.submit_estimation, self.budget['id'], created['id'], user=self.capturist)
+        self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=ADMIN)
+        approved_view = self._call(main.get_estimation_budget, self.budget['id'], user=ADMIN)
+        self.assertEqual(approved_view['approvedProgressAmount'], 4000)  # 40% de 10,000
+        self.assertEqual(approved_view['approvedProgressPct'], 40)
+
+        second = self._capture({'captureMode': 'global', 'globalProgressPct': 70})
+        still_view = self._call(main.get_estimation_budget, self.budget['id'], user=ADMIN)
+        self.assertEqual(still_view['approvedProgressPct'], 40)  # el borrador de 70% aun no cuenta
+        self.assertEqual(second['cumulativeProgressPct'], 70)
+
     # ---- legacy estimations (created before the workflow existed) ----
 
     def test_legacy_estimation_is_admin_only(self):

@@ -316,12 +316,21 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
           acc.totalRetainedToDate += Number(row.totalRetainedToDate) || 0;
           acc.remainingAdvanceBalance += Number(row.remainingAdvanceBalance) || 0;
           acc.paidAmount += Number(row.paidAmount) || 0;
+          acc.approvedProgressAmount += Number(row.approvedProgressAmount) || 0;
           return acc;
         },
-        { totalContractedAmount: 0, totalRetainedToDate: 0, remainingAdvanceBalance: 0, paidAmount: 0 },
+        { totalContractedAmount: 0, totalRetainedToDate: 0, remainingAdvanceBalance: 0, paidAmount: 0, approvedProgressAmount: 0 },
       ),
     [rows],
   );
+
+  const listProgressPct = listTotals.totalContractedAmount > 0
+    ? (listTotals.approvedProgressAmount / listTotals.totalContractedAmount) * 100
+    : 0;
+  const listPaidPct = listTotals.totalContractedAmount > 0
+    ? (listTotals.paidAmount / listTotals.totalContractedAmount) * 100
+    : 0;
+  const activeBudgetsCount = rows.filter((row) => row.isActive !== false).length;
 
   const conceptoIdsWithHistory = useMemo(
     () => new Set(editingBudgetRow?.conceptoIdsWithHistory || []),
@@ -1271,10 +1280,26 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 <div>
                   <div className="kpi-label">Total pagado</div>
                   <div className="kpi-value">{formatCurrency(listTotals.paidAmount)}</div>
-                  <div className="kpi-sub">egresos ligados a estos presupuestos</div>
+                  <div className="kpi-sub">{formatPct(listPaidPct)} del contratado</div>
                 </div>
               </div>
             )}
+            {isReviewer && (
+              <div className="kpi-card">
+                <div>
+                  <div className="kpi-label">Saldo por pagar</div>
+                  <div className="kpi-value">{formatCurrency(listTotals.totalContractedAmount - listTotals.paidAmount)}</div>
+                  <div className="kpi-sub">contratado − pagado</div>
+                </div>
+              </div>
+            )}
+            <div className="kpi-card">
+              <div>
+                <div className="kpi-label">Avance de obra</div>
+                <div className="kpi-value">{formatPct(listProgressPct)}</div>
+                <div className="kpi-sub">{formatCurrency(listTotals.approvedProgressAmount)} en estimaciones aprobadas</div>
+              </div>
+            </div>
             <div className="kpi-card">
               <div>
                 <div className="kpi-label">Retenido a la fecha</div>
@@ -1291,9 +1316,9 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
             </div>
             <div className="kpi-card">
               <div>
-                <div className="kpi-label">Presupuestos</div>
+                <div className="kpi-label">Número de presupuestos</div>
                 <div className="kpi-value">{rows.length}</div>
-                <div className="kpi-sub">{includeInactive ? 'incluyendo inactivos' : 'activos'}</div>
+                <div className="kpi-sub">{includeInactive ? `${activeBudgetsCount} activos · ${rows.length - activeBudgetsCount} inactivos` : 'activos'}</div>
               </div>
             </div>
           </div>
