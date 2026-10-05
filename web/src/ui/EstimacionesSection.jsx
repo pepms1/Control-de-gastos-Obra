@@ -608,7 +608,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
         const list = await api.estimations(estimation.estimationBudgetId);
         full = (Array.isArray(list) ? list : list?.items || []).find((e) => e.id === estimation.id) || estimation;
       }
-      if (!openAuthorizedSheet({ ...estimation, ...full }, budget, (projects || []).find((p) => String(p._id) === String(selectedProjectId))?.name || '')) {
+      if (!openAuthorizedSheet({ ...estimation, ...full }, budget, (() => { const proj = (projects || []).find((p) => String(p._id) === String(selectedProjectId)); return proj?.displayName || proj?.name || ''; })())) {
         setError('El navegador bloqueó la ventana. Permite ventanas emergentes para generar el PDF.');
       }
     } catch (err) {
