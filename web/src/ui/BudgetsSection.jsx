@@ -1,9 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
+import { ExtrasPanel } from './ExtrasPanel.jsx';
 import {
   buildCanonicalSupplierKey,
   computeBudgetFormTotals,
   computeLineItemAmount,
+  groupLabel,
+  listFormGroups,
   emptyBudgetForm,
   emptyConceptoRow,
   formatCurrency,
@@ -56,6 +59,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   const [transactionSearch, setTransactionSearch] = useState('');
   const [loadingTransactions, setLoadingTransactions] = useState(false);
 
+  const [extrasBudget, setExtrasBudget] = useState(null);
   const [openingBudget, setOpeningBudget] = useState(null);
   const [openingLoading, setOpeningLoading] = useState(false);
   const [openingTransactions, setOpeningTransactions] = useState([]);
@@ -93,8 +97,8 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   );
 
   const formTotals = useMemo(
-    () => computeBudgetFormTotals(form.lineItems, form.advanceAmount),
-    [form.lineItems, form.advanceAmount],
+    () => computeBudgetFormTotals(form.lineItems, form.advanceAmount, form.groupAdvancePcts),
+    [form.lineItems, form.advanceAmount, form.groupAdvancePcts],
   );
 
   function toggleSupplierExpand(groupKey) {
@@ -137,6 +141,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
     setEditingBudgetRow(null);
     setAssigningBudget(null);
     setOpeningBudget(null);
+    setExtrasBudget(null);
     setExpandedSuppliers(new Set());
   }, [selectedProjectId]);
 
@@ -244,6 +249,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
       retentionPct: String(row.retentionPct ?? 0),
       advanceAmortizationEnabled: Boolean(row.advanceAmortizationEnabled),
       advanceAmount: String(row.advanceAmount ?? 0),
+      groupAdvancePcts: Object.fromEntries(Object.entries(row.groupAdvancePcts || {}).map(([name, pct]) => [name, String(pct)])),
       isActive: row.isActive !== false,
       lineItems: (row.lineItems && row.lineItems.length ? row.lineItems : [emptyConceptoRow()]).map((item) => ({
         id: item.id,
@@ -251,6 +257,10 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
         unit: item.unit || '',
         quantity: String(item.quantity ?? ''),
         unitPrice: String(item.unitPrice ?? ''),
+        group: item.group || '',
+        ...(item.isExtra
+          ? { isExtra: true, extraKind: item.extraKind, extraNote: item.extraNote, addedAt: item.addedAt, addedBy: item.addedBy }
+          : {}),
       })),
     });
     setImportWarnings([]);
@@ -288,6 +298,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
         unit: item.unit || '',
         quantity: String(item.quantity ?? ''),
         unitPrice: String(item.unitPrice ?? ''),
+        group: item.group || '',
       }));
       if (!importedRows.length) {
         setError('El archivo no arrojó conceptos importables.');
@@ -321,7 +332,18 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
           unit: row.unit,
           quantity: Number(String(row.quantity).replace(/,/g, '').trim()),
           unitPrice: Number(String(row.unitPrice).replace(/,/g, '').trim()),
+          group: String(row.group || '').trim(),
+          ...(row.isExtra
+            ? { isExtra: true, extraKind: row.extraKind, extraNote: row.extraNote, addedAt: row.addedAt, addedBy: row.addedBy }
+            : {}),
         }));
+      // % de anticipo por grupo (solo grupos que existen y tienen anticipo).
+      const groupNames = new Set(lineItemsPayload.map((row) => row.group));
+      const groupAdvancePcts = Object.fromEntries(
+        Object.entries(form.groupAdvancePcts || {})
+          .filter(([name, pct]) => groupNames.has(name) && Number(pct) > 0)
+          .map(([name, pct]) => [name, Number(pct)]),
+      );
       const advanceAmount = Number(String(form.advanceAmount).replace(/,/g, '').trim()) || 0;
 
       if (editingBudgetRow) {
@@ -333,6 +355,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
           retentionPct: Number(form.retentionPct) || 0,
           advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
           advanceAmount,
+          groupAdvancePcts,
           lineItems: lineItemsPayload,
         });
       } else {
@@ -349,6 +372,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
           retentionPct: Number(form.retentionPct) || 0,
           advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
           advanceAmount,
+          groupAdvancePcts,
           lineItems: lineItemsPayload,
         });
         // el proveedor del presupuesto nuevo queda a la vista
@@ -718,10 +742,12 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
             <div>
               <label>Monto de anticipo</label>
               <input
-                value={form.advanceAmount}
+                value={formTotals.usesGroupAdvance ? formTotals.advanceAmount.toFixed(2) : form.advanceAmount}
                 onChange={(e) => setForm((prev) => ({ ...prev, advanceAmount: e.target.value }))}
                 placeholder="0.00"
                 style={{ width: 120 }}
+                disabled={formTotals.usesGroupAdvance}
+                title={formTotals.usesGroupAdvance ? 'Sale de los % de anticipo por grupo' : undefined}
               />
             </div>
             <div>
@@ -773,6 +799,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
               <table>
                 <thead>
                   <tr>
+                    <th>Grupo</th>
                     <th>Descripción</th>
                     <th>Unidad</th>
                     <th>Cantidad</th>
@@ -788,10 +815,24 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                       <tr key={row.id}>
                         <td>
                           <input
+                            list="budget-group-options"
+                            value={row.group || ''}
+                            onChange={(e) => updateConceptoRow(index, { group: e.target.value })}
+                            placeholder="Sin grupo"
+                            style={{ width: 150 }}
+                          />
+                        </td>
+                        <td>
+                          <input
                             value={row.description}
                             onChange={(e) => updateConceptoRow(index, { description: e.target.value })}
                             required
                           />
+                          {row.isExtra && (
+                            <span className="small" style={{ marginLeft: 6, color: '#92400e' }} title={row.extraNote || undefined}>
+                              {row.extraKind === 'adicional' ? 'adicional' : 'extra'}
+                            </span>
+                          )}
                         </td>
                         <td>
                           <input
@@ -841,10 +882,66 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                 </tbody>
               </table>
             </div>
+            <datalist id="budget-group-options">
+              {listFormGroups(form.lineItems).filter((g) => g.name).map((g) => (
+                <option key={g.name} value={g.name} />
+              ))}
+            </datalist>
+            {listFormGroups(form.lineItems).some((g) => g.name) && (
+              <div style={{ marginTop: 10 }}>
+                <label>Anticipo por grupo</label>
+                <div className="small" style={{ marginBottom: 4 }}>
+                  Cada grupo amortiza su propio % de anticipo al estimar. Si lo dejas en 0 el grupo no amortiza (por ejemplo, los extras).
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Grupo</th>
+                        <th>Conceptos</th>
+                        <th>Presupuesto</th>
+                        <th>% anticipo</th>
+                        <th>Anticipo</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {listFormGroups(form.lineItems).map((group) => {
+                        const pct = Number((form.groupAdvancePcts || {})[group.name]) || 0;
+                        return (
+                          <tr key={group.name || '__general__'}>
+                            <td>{groupLabel(group.name)}</td>
+                            <td>{group.count}</td>
+                            <td>{formatCurrency(group.amount)}</td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.01"
+                                value={(form.groupAdvancePcts || {})[group.name] ?? ''}
+                                onChange={(e) => setForm((prev) => ({
+                                  ...prev,
+                                  groupAdvancePcts: { ...(prev.groupAdvancePcts || {}), [group.name]: e.target.value },
+                                }))}
+                                style={{ width: 90 }}
+                              />
+                            </td>
+                            <td>{formatCurrency((group.amount * pct) / 100)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
             <div className="row" style={{ gap: 16, fontSize: 13, marginTop: 4 }}>
               <div><strong>Total contratado:</strong> {formatCurrency(formTotals.totalContractedAmount)}</div>
-              {Boolean(form.advanceAmortizationEnabled) && (
+              {(Boolean(form.advanceAmortizationEnabled) || formTotals.usesGroupAdvance) && (
                 <div><strong>% Anticipo (calculado):</strong> {formatPct(formTotals.advancePct)}</div>
+              )}
+              {formTotals.usesGroupAdvance && (
+                <div><strong>Anticipo previsto:</strong> {formatCurrency(formTotals.advanceAmount)}</div>
               )}
             </div>
           </div>
@@ -984,7 +1081,12 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                                         <td>{project?.displayName || project?.name || row.projectId}</td>
                                         <td>{row.name || '—'}</td>
                                         <td>{(row.lineItems || []).length}</td>
-                                        <td>{formatCurrency(row.totalContractedAmount)}</td>
+                                        <td>
+                                          {formatCurrency(row.totalContractedAmount)}
+                                          {Number(row.extraAmount) > 0 && (
+                                            <div className="small" style={{ color: '#92400e' }}>incluye {formatCurrency(row.extraAmount)} en extras</div>
+                                          )}
+                                        </td>
                                         <td>{formatCurrency(row.paidAmount)}</td>
                                         <td style={{ color: rowTotals.balance < 0 ? '#b91c1c' : undefined }}>{formatCurrency(rowTotals.balance)}</td>
                                         <td><span className={`budget-badge budget-progress ${childStatus.className}`}>{formatPct(rowTotals.paidPct)}</span></td>
@@ -995,6 +1097,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                                           <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
                                             <button type="button" className="secondary" onClick={() => startEditBudget(row)}>Editar</button>
                                             <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar pagos</button>
+                                            <button
+                                              type="button"
+                                              className="secondary"
+                                              onClick={() => { closeAssignPayments(); setOpeningBudget(null); setExtrasBudget(row); }}
+                                              title="Agregar conceptos extra o un presupuesto adicional"
+                                            >
+                                              + Extras
+                                            </button>
                                             <button
                                               type="button"
                                               className="secondary"
@@ -1139,6 +1249,19 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                   )}
                 </div>
               )}
+
+        {extrasBudget && (
+          <div style={{ padding: 12 }}>
+            <ExtrasPanel
+              budget={extrasBudget}
+              onClose={() => setExtrasBudget(null)}
+              onSaved={async () => {
+                setExtrasBudget(null);
+                await loadBudgets();
+              }}
+            />
+          </div>
+        )}
 
         {openingBudget && (
           <div className="grid budgets-assignment-panel" style={{ gap: 10, borderRadius: 10, padding: 12 }}>

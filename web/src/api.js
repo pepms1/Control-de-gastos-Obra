@@ -413,6 +413,12 @@ export const api = {
     return backendReq(`/api/estimation-budgets/${id}/transactions${qs ? `?${qs}` : ''}`);
   },
 
+  addEstimationExtras: (id, payload) =>
+    backendReq(`/api/estimation-budgets/${id}/extras`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
   saveEstimationOpeningBalance: (id, payload) =>
     backendReq(`/api/estimation-budgets/${id}/opening-balance`, {
       method: 'PUT',
