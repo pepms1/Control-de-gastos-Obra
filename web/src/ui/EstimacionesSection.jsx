@@ -260,20 +260,16 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     });
   }
 
-  function updateEstimationGroup(name, field, value) {
+  // El avance por grupo se captura solo en %; el monto es una consecuencia que se muestra.
+  function updateEstimationGroup(name, value) {
     setEstimationForm((prev) => ({
       ...prev,
       groups: (prev.groups || []).map((group) => {
         if (group.name !== name) return group;
         const budget = Number(group.budgetAmount) || 0;
-        if (field === 'pct') {
-          const pct = Number(value);
-          const exact = Number.isFinite(pct) ? pct : 0;
-          return { ...group, pct: value, pctExact: exact, amount: value === '' ? '' : ((budget * exact) / 100).toFixed(2), source: 'pct', touched: true };
-        }
-        const amount = Number(value);
-        const exact = budget > 0 && Number.isFinite(amount) ? (amount / budget) * 100 : 0;
-        return { ...group, amount: value, pctExact: exact, pct: value === '' ? '' : String(Math.round(exact * 10000) / 10000), source: 'amount', touched: true };
+        const pct = Number(value);
+        const exact = Number.isFinite(pct) ? pct : 0;
+        return { ...group, pct: value, pctExact: exact, amount: value === '' ? '' : ((budget * exact) / 100).toFixed(2), source: 'pct', touched: true };
       }),
     }));
   }
@@ -429,12 +425,10 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     if (estimationForm.captureMode === 'global') {
       payload.globalProgressPct = Number(estimationForm.globalProgressPct) || 0;
     } else if (estimationForm.captureMode === 'group') {
-      // Solo los grupos que el usuario movió; en $ si capturó el monto, en % si capturó el porcentaje.
+      // Solo los grupos que el usuario movió, siempre en % (no se captura por monto).
       payload.groupProgress = (estimationForm.groups || [])
         .filter((group) => group.touched)
-        .map((group) => (group.source === 'amount'
-          ? { group: group.name, progressAmount: Number(group.amount) || 0 }
-          : { group: group.name, progressPct: Number(group.pct) || 0 }));
+        .map((group) => ({ group: group.name, progressPct: Number(group.pct) || 0 }));
     } else if (estimationForm.captureMode === 'concept') {
       // Solo se mandan los conceptos que el usuario movio; el resto no avanza.
       payload.lineItems = estimationForm.lineItems
@@ -1412,7 +1406,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       ...(hasNamedGroups ? [['group', 'Avance por grupo']] : []),
                       ['global', 'Avance global (%)'],
                       ['concept', 'Avance por concepto (%)'],
-                      ['quantity', 'Por cantidad'],
+                      ['quantity', 'Por unidad (m², pzas…)'],
                     ].map(([value, label]) => (
                       <label key={value} className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                         <input
@@ -1444,6 +1438,12 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       </div>
                     </div>
                   )}
+                  {estimationForm.captureMode === 'quantity' && (
+                    <div className="small">
+                      Escribe las unidades que avanzaron <strong>en este periodo</strong> (por ejemplo, los m² de mármol colocados). Se multiplican por el precio unitario y se
+                      muestra el avance acumulado en % de cada concepto.
+                    </div>
+                  )}
                   {estimationForm.captureMode === 'concept' && (
                     <div className="small">
                       Escribe el avance acumulado (%) de cada concepto que avanzó. Los que no cambies no avanzan en esta estimación.
@@ -1472,8 +1472,8 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     return (
                       <>
                         <div className="small">
-                          Escribe el avance <strong>acumulado</strong> de cada grupo, en % o en $ (como en la hoja de estimación). Se aplica a todos los conceptos del grupo;
-                          los grupos que no muevas no avanzan en esta estimación.
+                          Escribe el avance <strong>acumulado</strong> de cada grupo en %. Se aplica a todos los conceptos del grupo; los grupos que no muevas no avanzan en esta
+                          estimación. Si avanzaron unidades (m², piezas…), usa «Por unidad».
                         </div>
                         <div style={{ overflowX: 'auto' }}>
                           <table>
@@ -1509,20 +1509,11 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                                         max="100"
                                         step="0.01"
                                         value={group.pct}
-                                        onChange={(e) => updateEstimationGroup(group.name, 'pct', e.target.value)}
+                                        onChange={(e) => updateEstimationGroup(group.name, e.target.value)}
                                         style={{ width: 90, borderColor: below || over ? '#b91c1c' : undefined }}
                                       />
                                     </td>
-                                    <td>
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        step="0.01"
-                                        value={group.amount}
-                                        onChange={(e) => updateEstimationGroup(group.name, 'amount', e.target.value)}
-                                        style={{ width: 130, borderColor: below || over ? '#b91c1c' : undefined }}
-                                      />
-                                    </td>
+                                    <td>{formatCurrency(group.amount === '' ? 0 : group.amount)}</td>
                                     <td>{formatCurrency(period)}</td>
                                     <td>{formatCurrency(rawAmortization * scale)}</td>
                                   </tr>
@@ -1554,7 +1545,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                           <th>Unidad</th>
                           <th>Cant. contratada</th>
                           <th>Avance previo</th>
-                          <th>Avance este periodo</th>
+                          <th>{estimationForm.captureMode === 'quantity' ? 'Cantidad de este periodo' : 'Avance este periodo'}</th>
                           <th>Avance acumulado</th>
                           <th>Importe periodo</th>
                         </tr>
@@ -1584,14 +1575,17 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                               <td>{li.previousCumulativeQuantity} ({formatPct(li.previousProgressPct)})</td>
                               <td>
                                 {estimationForm.captureMode === 'quantity' && (
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    step="0.01"
-                                    value={li.periodQuantity}
-                                    onChange={(e) => updateEstimationLine(li.conceptoId, 'periodQuantity', e.target.value)}
-                                    style={{ width: 100 }}
-                                  />
+                                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      value={li.periodQuantity}
+                                      onChange={(e) => updateEstimationLine(li.conceptoId, 'periodQuantity', e.target.value)}
+                                      style={{ width: 100 }}
+                                    />
+                                    {li.unit}
+                                  </span>
                                 )}
                                 {estimationForm.captureMode === 'concept' && (
                                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
