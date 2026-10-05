@@ -10048,10 +10048,42 @@ def compute_remaining_advance_balance(estimation_budget: dict, exclude_estimatio
     return round(max(advance_amount - amortized, 0), 2)
 
 
+def get_effective_opening_prior_paid(estimation_budget: dict, exclude_estimation_id: str | None = None) -> tuple[float, str]:
+    """Pagos previos que se descuentan de lo que se libera, y de donde salen:
+
+    - "explicit": el admin los registro en "saldo inicial" (openingSetAt).
+    - "auto-frozen": se tomaron solos al aprobar la primera estimacion.
+    - "auto": primera estimacion aun abierta/por crear: se toman todos los
+      pagos atribuidos al presupuesto (menos el anticipo, que ya se amortiza).
+    - "none": presupuesto con estimaciones previas y sin saldo inicial.
+    """
+    if estimation_budget.get("openingSetAt"):
+        return round(float(estimation_budget.get("openingPriorPaidAmount") or 0), 2), "explicit"
+    if estimation_budget.get("openingFrozen"):
+        return round(float(estimation_budget.get("openingPriorPaidAmount") or 0), 2), "auto-frozen"
+
+    estimation_budget_id = str(estimation_budget.get("_id") or "")
+    query: dict = {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
+    if exclude_estimation_id:
+        query["_id"] = {"$ne": oid(exclude_estimation_id)}
+    if db.estimations.count_documents(query) > 0:
+        return 0.0, "none"
+
+    paid_amount = compute_estimation_budget_paid_amount(
+        str(estimation_budget.get("projectId") or ""),
+        str(estimation_budget.get("supplierKey") or ""),
+        estimation_budget_id,
+        estimation_budget_is_active=bool(estimation_budget.get("isActive", True)),
+        excluded_transaction_ids=estimation_budget.get("excludedTransactionIds"),
+    )
+    advance = float(estimation_budget.get("advanceAmount") or 0) if estimation_budget.get("advanceAmortizationEnabled") else 0.0
+    return round(max(paid_amount - advance, 0), 2), "auto"
+
+
 def compute_remaining_opening_paid_balance(estimation_budget: dict, exclude_estimation_id: str | None = None) -> float:
     """Pagos previos (saldo inicial, sin anticipo) que aun no se han descontado
     de una estimacion. Se consumen en orden hasta agotarse."""
-    opening = float(estimation_budget.get("openingPriorPaidAmount") or 0)
+    opening, _mode = get_effective_opening_prior_paid(estimation_budget, exclude_estimation_id=exclude_estimation_id)
     if opening <= 0:
         return 0.0
     estimation_budget_id = str(estimation_budget.get("_id") or "")
@@ -10060,6 +10092,40 @@ def compute_remaining_opening_paid_balance(estimation_budget: dict, exclude_esti
         query["_id"] = {"$ne": oid(exclude_estimation_id)}
     applied = sum(float(row.get("priorPaidApplied") or 0) for row in db.estimations.find(query, {"priorPaidApplied": 1}))
     return round(max(opening - applied, 0), 2)
+
+
+def refresh_open_estimation_money(estimation: dict, estimation_budget: dict | None = None) -> dict:
+    """Mientras una estimacion esta en borrador o por autorizar, sus montos se
+    recalculan con los pagos asignados HOY al presupuesto (asignar/quitar un
+    pago cambia lo que se libera). Las aprobadas quedan congeladas."""
+    if estimation_workflow_status(estimation) not in ESTIMATION_OPEN_STATUSES:
+        return estimation
+    budget = estimation_budget or db.estimationBudgets.find_one({"_id": oid(str(estimation.get("estimationBudgetId") or ""))})
+    if not budget or not estimation.get("lineItems"):
+        return estimation
+    money = compute_estimation_money_fields(budget, estimation["lineItems"], exclude_estimation_id=str(estimation.get("_id")))
+    keys = ("periodSubtotal", "retentionAmount", "advanceAmortizationAmount", "priorPaidApplied", "totalToPay")
+    if all(abs(float(estimation.get(k) or 0) - float(money[k])) < 0.005 for k in keys):
+        return estimation
+    updates = {**money, "updatedAt": datetime.now(timezone.utc).isoformat()}
+    db.estimations.update_one({"_id": estimation["_id"]}, {"$set": updates})
+    return {**estimation, **updates}
+
+
+def freeze_auto_opening_if_needed(estimation_budget: dict, estimation: dict) -> None:
+    """Al aprobar la PRIMERA estimacion, los pagos previos tomados solos se
+    guardan en el presupuesto: los pagos posteriores (los de esta misma
+    estimacion) ya no cambian lo descontado."""
+    if estimation_budget.get("openingSetAt") or estimation_budget.get("openingFrozen"):
+        return
+    estimation_id = str(estimation.get("_id"))
+    amount, mode = get_effective_opening_prior_paid(estimation_budget, exclude_estimation_id=estimation_id)
+    if mode != "auto":
+        return
+    db.estimationBudgets.update_one(
+        {"_id": estimation_budget["_id"]},
+        {"$set": {"openingPriorPaidAmount": amount, "openingFrozen": True, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+    )
 
 
 def build_estimation_line_items(
@@ -10167,11 +10233,47 @@ def _count_active_estimation_budgets_for_supplier(project_id: str, supplier_key:
 # transaction bucketed to that supplier (avoids double counting once a
 # supplier has more than one active estimation budget and needs manual
 # assignment). Always tax-inclusive — this reflects real money paid out.
+def compute_supplier_expenses_excluding(project_id: str, supplier_key: str, excluded_transaction_ids: set[str]) -> float:
+    """Total de egresos del proveedor (con IVA) sin los pagos que el usuario
+    descarto de un presupuesto unico (son de otro presupuesto o fuera de el)."""
+    tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
+    movements = list(
+        db.transactions.find(
+            tx_query,
+            {
+                "_id": 1,
+                "amount": 1,
+                "tax": 1,
+                "supplierId": 1,
+                "supplier_id": 1,
+                "vendor_id": 1,
+                "supplierName": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "proveedorNombre": 1,
+                "beneficiario": 1,
+                "sap.cardCode": 1,
+                "sap.businessPartner": 1,
+            },
+        )
+    )
+    trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
+    total = 0.0
+    for tx in movements:
+        if str(tx.get("_id")) in excluded_transaction_ids:
+            continue
+        if _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key) != supplier_key:
+            continue
+        total += float(tx.get("amount") or 0)
+    return round(total, 2)
+
+
 def compute_estimation_budget_paid_amount(
     project_id: str,
     supplier_key: str,
     estimation_budget_id: str,
     estimation_budget_is_active: bool = True,
+    excluded_transaction_ids=None,
 ) -> float:
     link_rows = list(db.estimationPaymentLinks.find({"estimationBudgetId": estimation_budget_id}, {"transactionId": 1}))
     linked_transaction_ids = _normalize_transaction_id_values([row.get("transactionId") for row in link_rows])
@@ -10213,6 +10315,9 @@ def compute_estimation_budget_paid_amount(
         return round(paid_amount, 2)
 
     if estimation_budget_is_active and _count_active_estimation_budgets_for_supplier(project_id, supplier_key) == 1:
+        excluded = set(_normalize_transaction_id_values(excluded_transaction_ids or []))
+        if excluded:
+            return compute_supplier_expenses_excluding(project_id, supplier_key, excluded)
         totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=True)
         return round(float(totals_by_bucket.get(supplier_key) or 0), 2)
 
@@ -10372,19 +10477,33 @@ def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dic
     rows = list(
         db.estimations.find(
             {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}},
-            {"retentionAmount": 1, "advanceAmortizationAmount": 1, "priorPaidApplied": 1},
+            {"retentionAmount": 1, "advanceAmortizationAmount": 1, "priorPaidApplied": 1, "workflowStatus": 1},
         )
     )
     payload["estimationsCount"] = len(rows)
     opening_advance = float(payload.get("openingAdvanceAmount") or 0)
-    opening_prior = float(payload.get("openingPriorPaidAmount") or 0)
     payload["openingAdvanceAmount"] = round(opening_advance, 2)
-    payload["openingPriorPaidAmount"] = round(opening_prior, 2)
+    # Si la unica estimacion sigue abierta, los pagos previos se calculan como
+    # si no existiera (se recalculan con los pagos de hoy); el saldo restante
+    # descuenta lo que esa estimacion ya aplico.
+    sole_open_id = None
+    if len(rows) == 1 and estimation_workflow_status(rows[0]) in ESTIMATION_OPEN_STATUSES:
+        sole_open_id = str(rows[0].get("_id"))
+    effective_prior, opening_mode = get_effective_opening_prior_paid(doc, exclude_estimation_id=sole_open_id)
+    payload["openingPriorPaidAmount"] = effective_prior if opening_mode != "none" else round(float(payload.get("openingPriorPaidAmount") or 0), 2)
+    payload["openingMode"] = opening_mode
     payload["remainingOpeningPaidBalance"] = round(
-        max(opening_prior - sum(float(r.get("priorPaidApplied") or 0) for r in rows), 0), 2
+        max(effective_prior - sum(float(r.get("priorPaidApplied") or 0) for r in rows), 0), 2
     )
     total_contracted = float(payload.get("totalContractedAmount") or 0)
-    payload["openingPaidPct"] = round((opening_advance + opening_prior) / total_contracted * 100, 2) if total_contracted > 0 else 0.0
+    advance_recognized = opening_advance if opening_mode in ("explicit", "auto-frozen") else 0.0
+    if opening_mode == "auto":
+        recognized_paid = round(effective_prior + (float(payload.get("advanceAmount") or 0) if payload.get("advanceAmortizationEnabled") else 0.0), 2)
+    else:
+        recognized_paid = round(advance_recognized + effective_prior, 2)
+    payload["recognizedPaidAmount"] = recognized_paid
+    payload["recognizedPaidPct"] = round(recognized_paid / total_contracted * 100, 2) if total_contracted > 0 else 0.0
+    payload["openingPaidPct"] = payload["recognizedPaidPct"]
     payload["totalRetainedToDate"] = round(sum(float(r.get("retentionAmount") or 0) for r in rows), 2)
     amortized = round(sum(float(r.get("advanceAmortizationAmount") or 0) for r in rows), 2)
     payload["remainingAdvanceBalance"] = round(max(float(payload.get("advanceAmount") or 0) - amortized, 0), 2)
@@ -10396,6 +10515,7 @@ def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dic
             supplier_key,
             estimation_budget_id,
             estimation_budget_is_active=bool(payload.get("isActive", True)),
+            excluded_transaction_ids=payload.get("excludedTransactionIds"),
         )
         payload["remainingToPayAmount"] = round(float(payload.get("totalContractedAmount") or 0) - payload["paidAmount"], 2)
     return payload
@@ -10550,6 +10670,16 @@ def list_estimation_budget_candidate_transactions(
     )
     assignment_by_tx = {str(row.get("transactionId") or ""): str(row.get("estimationBudgetId") or "") for row in links}
 
+    # Presupuesto unico del proveedor y sin asignaciones manuales: todos sus
+    # pagos cuentan solos (modo automatico) salvo los que el usuario descarto.
+    has_own_links = any(str(row.get("estimationBudgetId") or "") == estimation_budget_id for row in links)
+    auto_assign_mode = (
+        bool(estimation_budget.get("isActive", True))
+        and not has_own_links
+        and _count_active_estimation_budgets_for_supplier(project_id, supplier_key) == 1
+    )
+    excluded_ids = set(_normalize_transaction_id_values(estimation_budget.get("excludedTransactionIds") or []))
+
     rows = []
     for tx in movements:
         if _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key) != supplier_key:
@@ -10559,6 +10689,8 @@ def list_estimation_budget_candidate_transactions(
             continue
         transaction_id = str(tx.get("_id") or "")
         assigned_id = assignment_by_tx.get(transaction_id)
+        if auto_assign_mode and not assigned_id and transaction_id not in excluded_ids:
+            assigned_id = estimation_budget_id
         rows.append(
             {
                 "id": transaction_id,
@@ -10578,6 +10710,7 @@ def list_estimation_budget_candidate_transactions(
         "items": rows,
         "estimationBudgetId": estimation_budget_id,
         "supplierHasMultipleActiveBudgets": _count_active_estimation_budgets_for_supplier(project_id, supplier_key) > 1,
+        "autoAssignMode": auto_assign_mode,
     }
 
 
@@ -10627,6 +10760,29 @@ def replace_estimation_budget_transaction_links(
     current_rows = list(db.estimationPaymentLinks.find({"estimationBudgetId": estimation_budget_id}, {"transactionId": 1}))
     current_ids = {str(row.get("transactionId") or "") for row in current_rows}
     selected_set = set(selected_transaction_ids)
+
+    # Modo automatico (presupuesto unico y sin asignaciones manuales): lo
+    # seleccionado cuenta y lo no seleccionado se guarda como descartado; no se
+    # crean asignaciones, asi los pagos nuevos del proveedor siguen contando.
+    all_candidates = list_estimation_budget_candidate_transactions(estimation_budget_id, search=None, user=user)
+    if all_candidates.get("autoAssignMode") and not current_ids:
+        excluded = [
+            str(row.get("id") or "")
+            for row in all_candidates.get("items") or []
+            if not row.get("isAssignedToOtherBudget") and str(row.get("id") or "") not in selected_set
+        ]
+        db.estimationBudgets.update_one(
+            {"_id": oid(estimation_budget_id)},
+            {"$set": {"excludedTransactionIds": excluded, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+        )
+        return {
+            "ok": True,
+            "estimationBudgetId": estimation_budget_id,
+            "selectedTransactionIds": selected_transaction_ids,
+            "assignedCount": len(selected_transaction_ids),
+            "excludedCount": len(excluded),
+            "mode": "auto",
+        }
 
     to_delete = list(current_ids - selected_set)
     if to_delete:
@@ -10837,10 +10993,11 @@ def _require_positive_progress(estimation: dict) -> None:
 @app.get("/api/estimation-budgets/{estimation_budget_id}/estimations")
 def list_estimations(estimation_budget_id: str, user: dict = Depends(require_estimation_capture)):
     _get_estimation_budget_or_404(estimation_budget_id, user)
+    estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
     rows = list(
         db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}).sort("folio", 1)
     )
-    return [serialize_estimation(row) for row in rows]
+    return [serialize_estimation(refresh_open_estimation_money(row, estimation_budget)) for row in rows]
 
 
 @app.post("/api/estimation-budgets/{estimation_budget_id}/estimations", status_code=201)
@@ -10895,8 +11052,10 @@ def create_estimation(estimation_budget_id: str, payload: dict, user: dict = Dep
 
 @app.get("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}")
 def get_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_estimation_capture)):
-    _get_estimation_budget_or_404(estimation_budget_id, user)
-    return serialize_estimation(_get_estimation_or_404(estimation_budget_id, estimation_id))
+    estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
+    return serialize_estimation(
+        refresh_open_estimation_money(_get_estimation_or_404(estimation_budget_id, estimation_id), estimation_budget)
+    )
 
 
 @app.patch("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}")
@@ -10960,9 +11119,10 @@ def delete_estimation(estimation_budget_id: str, estimation_id: str, user: dict 
 
 @app.post("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}/submit")
 def submit_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_estimation_capture)):
-    _get_estimation_budget_or_404(estimation_budget_id, user)
+    estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
     _require_estimation_status(existing, (ESTIMATION_STATUS_DRAFT,), "submit")
+    existing = refresh_open_estimation_money(existing, estimation_budget)
     _require_positive_progress(existing)
     now_iso = datetime.now(timezone.utc).isoformat()
     db.estimations.update_one(
@@ -11009,9 +11169,11 @@ def return_estimation_to_draft(
 def approve_estimation(
     estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)
 ):
-    _get_estimation_budget_or_404(estimation_budget_id, user)
+    estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
     _require_estimation_status(existing, (ESTIMATION_STATUS_SUBMITTED,), "approve")
+    existing = refresh_open_estimation_money(existing, estimation_budget)
+    freeze_auto_opening_if_needed(estimation_budget, existing)
 
     calculated = round(float(existing.get("totalToPay") or 0), 2)
     raw_authorized = (payload or {}).get("authorizedAmount")
@@ -11107,7 +11269,7 @@ def list_estimations_queue(
         if budget_id not in budget_cache:
             budget_cache[budget_id] = db.estimationBudgets.find_one({"_id": oid(budget_id)})
         budget = budget_cache[budget_id] or {}
-        payload = serialize_estimation(row)
+        payload = serialize_estimation(refresh_open_estimation_money(row, budget_cache[budget_id]))
         payload["budgetName"] = budget.get("name") or ""
         payload["supplierName"] = budget.get("supplierNameSnapshot") or budget.get("supplierKey") or ""
         payload["currency"] = budget.get("currency") or "MXN"

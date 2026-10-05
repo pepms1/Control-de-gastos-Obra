@@ -95,6 +95,12 @@ function computePeriodQuantity(mode, li, globalPct) {
   return Math.max(target - (Number(li.previousCumulativeQuantity) || 0), 0);
 }
 
+function todayIsoDate() {
+  const now = new Date();
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 10);
+}
+
 function emptyConceptoRow() {
   return { id: generateId(), description: '', unit: '', quantity: '', unitPrice: '' };
 }
@@ -556,6 +562,19 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     loadBudgetPaymentTransactions(row.id);
   }
 
+  // Seleccionar/quitar todos los pagos visibles (los de otro presupuesto no se tocan).
+  function setAllTransactionsSelected(selected) {
+    setSelectedTransactionIds((prev) => {
+      const next = new Set(prev);
+      candidateTransactions.forEach((tx) => {
+        if (tx.isAssignedToOtherBudget) return;
+        if (selected) next.add(tx.id);
+        else next.delete(tx.id);
+      });
+      return next;
+    });
+  }
+
   function closeAssignPayments() {
     setAssigningBudget(null);
     setCandidateTransactions([]);
@@ -587,9 +606,10 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   }
 
   function buildEstimationFormFromBudget(previousCumulativeByConceptoId) {
+    const today = todayIsoDate();
     return {
-      periodStart: '',
-      periodEnd: '',
+      periodStart: today,
+      periodEnd: today,
       notes: '',
       captureMode: 'global',
       globalProgressPct: '',
@@ -1403,7 +1423,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 </div>
               </div>
 
-              {isReviewer && (budgetDetail.estimationsCount === 0 || budgetDetail.openingAdvanceAmount > 0 || budgetDetail.openingPriorPaidAmount > 0) && (
+              {isReviewer && (budgetDetail.estimationsCount === 0 || budgetDetail.openingAdvanceAmount > 0 || (budgetDetail.openingMode !== 'auto' && budgetDetail.openingPriorPaidAmount > 0)) && (
                 <div className="card" style={{ display: 'grid', gap: 10, padding: 16 }}>
                   <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                     <div>
@@ -1419,11 +1439,18 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     )}
                   </div>
 
-                  {!openingOpen && (budgetDetail.openingAdvanceAmount > 0 || budgetDetail.openingPriorPaidAmount > 0) && (
+                  {!openingOpen && budgetDetail.openingMode === 'auto' && budgetDetail.recognizedPaidAmount > 0 && (
+                    <div className="small">
+                      Se reconocen automáticamente <strong>{formatCurrency(budgetDetail.recognizedPaidAmount)}</strong> ({formatPct(budgetDetail.recognizedPaidPct)} del presupuesto):
+                      todos los pagos asignados a este presupuesto. Se descuentan de lo que se libera en la primera estimación. Si necesitas separar el anticipo
+                      o corregir montos, usa «Registrar pagos previos / anticipo».
+                    </div>
+                  )}
+                  {!openingOpen && budgetDetail.openingMode !== 'auto' && (budgetDetail.openingAdvanceAmount > 0 || budgetDetail.openingPriorPaidAmount > 0) && (
                     <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
                       <div><strong>Anticipo entregado:</strong> {formatCurrency(budgetDetail.openingAdvanceAmount)}</div>
                       <div><strong>Pagos a cuenta previos:</strong> {formatCurrency(budgetDetail.openingPriorPaidAmount)}</div>
-                      <div><strong>Pagado a la fecha:</strong> {formatCurrency(budgetDetail.openingAdvanceAmount + budgetDetail.openingPriorPaidAmount)} ({formatPct(budgetDetail.openingPaidPct)} del presupuesto)</div>
+                      <div><strong>Pagado a la fecha:</strong> {formatCurrency(budgetDetail.recognizedPaidAmount)} ({formatPct(budgetDetail.recognizedPaidPct)} del presupuesto)</div>
                       <div><strong>Pagos previos por descontar:</strong> {formatCurrency(budgetDetail.remainingOpeningPaidBalance)}</div>
                     </div>
                   )}
@@ -1623,8 +1650,9 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     <button type="button" className="secondary" onClick={closeAssignPayments}>Cerrar</button>
                   </div>
                   <div className="small">
-                    Por defecto, si este es el único presupuesto activo del proveedor, se le atribuyen automáticamente todos sus
-                    egresos. En cuanto exista más de un presupuesto activo para el mismo proveedor, asigna aquí manualmente qué
+                    Si este es el único presupuesto activo del proveedor, todos sus pagos cuentan automáticamente: quita aquí solo los que
+                    sean de otro presupuesto o estén fuera de este (los pagos nuevos seguirán contando). Lo que dejes marcado se descuenta
+                    de lo que se libera en la estimación. Con más de un presupuesto activo del mismo proveedor, marca manualmente qué
                     pagos corresponden a cada uno.
                   </div>
                   <div className="row" style={{ gap: 8 }}>
@@ -1642,10 +1670,26 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     >
                       Filtrar
                     </button>
+                    <button type="button" className="secondary" onClick={() => setAllTransactionsSelected(true)} disabled={loadingTransactions || !candidateTransactions.length}>
+                      Seleccionar todos
+                    </button>
+                    <button type="button" className="secondary" onClick={() => setAllTransactionsSelected(false)} disabled={loadingTransactions || !candidateTransactions.length}>
+                      Quitar todos
+                    </button>
                     <button type="button" onClick={saveAssignedPayments} disabled={saving || loadingTransactions}>
                       {saving ? 'Guardando...' : 'Guardar asignación'}
                     </button>
                   </div>
+                  {!loadingTransactions && candidateTransactions.length > 0 && (
+                    <div className="small">
+                      {selectedTransactionIds.size} de {candidateTransactions.filter((tx) => !tx.isAssignedToOtherBudget).length} pagos asignados a este presupuesto ·{' '}
+                      {formatCurrency(
+                        candidateTransactions
+                          .filter((tx) => selectedTransactionIds.has(tx.id))
+                          .reduce((sum, tx) => sum + (Number(tx.amountWithTax) || 0), 0),
+                      )}
+                    </div>
+                  )}
                   {loadingTransactions ? (
                     <div className="small">Cargando transacciones...</div>
                   ) : (
@@ -1653,7 +1697,17 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       <table>
                         <thead>
                           <tr>
-                            <th></th>
+                            <th>
+                              <input
+                                type="checkbox"
+                                title="Seleccionar / quitar todos"
+                                checked={
+                                  candidateTransactions.some((tx) => !tx.isAssignedToOtherBudget) &&
+                                  candidateTransactions.filter((tx) => !tx.isAssignedToOtherBudget).every((tx) => selectedTransactionIds.has(tx.id))
+                                }
+                                onChange={(e) => setAllTransactionsSelected(e.target.checked)}
+                              />
+                            </th>
                             <th>Fecha</th>
                             <th>Descripción</th>
                             <th>Monto</th>
@@ -1843,25 +1897,29 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     </div>
                   </div>
 
-                  {!editingEstimation && (Number(budgetDetail.openingAdvanceAmount) > 0 || Number(budgetDetail.openingPriorPaidAmount) > 0) && (
+                  {Number(budgetDetail.recognizedPaidAmount) > 0 && (
                     <div className="small" style={{ background: 'var(--gray-100)', borderRadius: 6, padding: 8, display: 'grid', gap: 4 }}>
                       <div>
-                        Pagado a la fecha (anticipo + pagos previos): <strong>{formatCurrency((Number(budgetDetail.openingAdvanceAmount) || 0) + (Number(budgetDetail.openingPriorPaidAmount) || 0))}</strong>
-                        {' '}= {formatPct(budgetDetail.openingPaidPct)} del presupuesto. Lo ya pagado se descuenta de lo que se libera en esta estimación.
+                        Pagado a la fecha al contratista: <strong>{formatCurrency(budgetDetail.recognizedPaidAmount)}</strong>
+                        {' '}= {formatPct(budgetDetail.recognizedPaidPct)} del presupuesto.
+                        {budgetDetail.openingMode === 'auto' && ' Se toman todos los pagos asignados a este presupuesto (puedes quitar los que no correspondan en «Asignar pagos»).'}
+                        {' '}Lo ya pagado se descuenta de lo que se libera en esta estimación.
                       </div>
-                      <div>
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={() => setEstimationForm((prev) => ({
-                            ...prev,
-                            captureMode: 'global',
-                            globalProgressPct: String(Math.min(100, Number(budgetDetail.openingPaidPct) || 0)),
-                          }))}
-                        >
-                          Usar el % pagado como avance global
-                        </button>
-                      </div>
+                      {!editingEstimation && (
+                        <div>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => setEstimationForm((prev) => ({
+                              ...prev,
+                              captureMode: 'global',
+                              globalProgressPct: String(Math.min(100, Number(budgetDetail.recognizedPaidPct) || 0)),
+                            }))}
+                          >
+                            Usar el % pagado como avance global
+                          </button>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1979,14 +2037,39 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                   </div>
 
                   {estimationPreview && (
-                    <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
-                      <div><strong>Subtotal:</strong> {formatCurrency(estimationPreview.periodSubtotal)}</div>
-                      <div><strong>Retención:</strong> {formatCurrency(estimationPreview.retentionAmount)}</div>
-                      <div><strong>Amortización anticipo:</strong> {formatCurrency(estimationPreview.advanceAmortizationAmount)}</div>
-                      {estimationPreview.priorPaidApplied > 0 && (
-                        <div><strong>Pagos previos reconocidos:</strong> −{formatCurrency(estimationPreview.priorPaidApplied)}</div>
-                      )}
-                      <div><strong>Total calculado (a liberar):</strong> {formatCurrency(estimationPreview.totalToPay)}</div>
+                    <div className="kpi-grid">
+                      <div className="kpi-card">
+                        <div>
+                          <div className="kpi-label">Subtotal del periodo</div>
+                          <div className="kpi-value">{formatCurrency(estimationPreview.periodSubtotal)}</div>
+                        </div>
+                      </div>
+                      <div className="kpi-card">
+                        <div>
+                          <div className="kpi-label">Retención</div>
+                          <div className="kpi-value">−{formatCurrency(estimationPreview.retentionAmount)}</div>
+                        </div>
+                      </div>
+                      <div className="kpi-card">
+                        <div>
+                          <div className="kpi-label">Amortización anticipo</div>
+                          <div className="kpi-value">−{formatCurrency(estimationPreview.advanceAmortizationAmount)}</div>
+                        </div>
+                      </div>
+                      <div className="kpi-card">
+                        <div>
+                          <div className="kpi-label">Pagos previos reconocidos</div>
+                          <div className="kpi-value">−{formatCurrency(estimationPreview.priorPaidApplied)}</div>
+                          <div className="kpi-sub">ya pagado al contratista</div>
+                        </div>
+                      </div>
+                      <div className="kpi-card">
+                        <div>
+                          <div className="kpi-label">A liberar (monto a autorizar)</div>
+                          <div className="kpi-value">{formatCurrency(estimationPreview.totalToPay)}</div>
+                          <div className="kpi-sub">total calculado de esta estimación</div>
+                        </div>
+                      </div>
                     </div>
                   )}
 

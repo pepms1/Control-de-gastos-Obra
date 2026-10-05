@@ -386,9 +386,12 @@ class EstimationsPhase1Tests(unittest.TestCase):
             main, 'with_legacy_project_filter', side_effect=lambda q, _p: q
         ), patch.object(main, 'build_transactions_query', return_value={}):
             budget = self._create_budget(fake_db)
+            # con un segundo presupuesto activo las asignaciones son manuales (se guardan como links)
+            self._create_budget(fake_db, name='Segundo contrato mismo proveedor')
             main.replace_estimation_budget_transaction_links(
                 budget['id'], {'selectedTransactionIds': [tx_a['_id']]}, user=SUPERADMIN
             )
+            self.assertEqual(len(fake_db.estimationPaymentLinks.find({'estimationBudgetId': budget['id']})), 1)
             main.delete_estimation_budget(budget['id'], user=SUPERADMIN)
 
         self.assertEqual(fake_db.estimationPaymentLinks.find({'estimationBudgetId': budget['id']}), [])
