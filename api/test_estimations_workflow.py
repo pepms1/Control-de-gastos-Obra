@@ -594,3 +594,31 @@ class EstimationFolioTests(EstimationsWorkflowTests):
         with self.assertRaises(HTTPException) as ctx:
             main.require_admin_or_superadmin(user=CAPTURIST)
         self.assertEqual(ctx.exception.status_code, 403)
+
+
+class CapturistBudgetsAccessTests(EstimationsWorkflowTests):
+    """MPS (VIEWER con bandera de captura) puede ver, crear y editar presupuestos, sin ver pagos."""
+
+    def _dep(self, fn):
+        import inspect
+        return inspect.signature(fn).parameters['user'].default.dependency
+
+    def test_budget_endpoints_open_to_capture_flag_users(self):
+        for fn in (main.list_estimation_budgets, main.create_estimation_budget, main.update_estimation_budget,
+                   main.import_estimation_conceptos):
+            self.assertIs(self._dep(fn), main.require_estimation_capture, fn.__name__)
+
+    def test_payments_delete_extras_and_opening_stay_admin_only(self):
+        for fn in (main.delete_estimation_budget, main.add_estimation_budget_extras,
+                   main.set_estimation_budget_opening_balance, main.replace_estimation_budget_transaction_links):
+            self.assertIs(self._dep(fn), main.require_admin_or_superadmin, fn.__name__)
+
+    def test_capturist_creates_budget_and_does_not_see_payments(self):
+        payload = self._base_budget_payload()
+        with patch.object(main, 'db', self.fake_db):
+            created = main.create_estimation_budget(payload, None, user=self.capturist)
+            listed = main.list_estimation_budgets(projectId=self.project_id, user=self.capturist)
+        self.assertTrue(created['id'])
+        self.assertNotIn('paidAmount', created)
+        self.assertTrue(listed)
+        self.assertTrue(all('paidAmount' not in row for row in listed))

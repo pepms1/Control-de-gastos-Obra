@@ -10794,7 +10794,7 @@ def list_estimation_budgets(
     supplier: str | None = None,
     includeInactive: bool = False,
     request: FastAPIRequest = None,
-    user: dict = Depends(require_admin_or_superadmin),
+    user: dict = Depends(require_estimation_capture),
 ):
     project_id = resolve_project_id(projectId or get_active_project_id(request))
     if not can_access_project(user, project_id):
@@ -10821,7 +10821,7 @@ def list_estimation_budgets(
 
 
 @app.post("/api/estimation-budgets", status_code=201)
-def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict = Depends(require_admin_or_superadmin)):
+def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict = Depends(require_estimation_capture)):
     project_id = resolve_project_id((payload or {}).get("projectId") or get_active_project_id(request))
     if not can_access_project(user, project_id):
         raise HTTPException(status_code=403, detail="Project access denied")
@@ -10872,7 +10872,7 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
     }
     inserted_id = db.estimationBudgets.insert_one(doc).inserted_id
     saved = db.estimationBudgets.find_one({"_id": inserted_id})
-    return serialize_estimation_budget(saved) if saved else {"ok": True, "id": str(inserted_id)}
+    return serialize_estimation_budget(saved, include_payments=is_admin_or_superadmin_user(user)) if saved else {"ok": True, "id": str(inserted_id)}
 
 
 @app.get("/api/estimation-budgets/{estimation_budget_id}")
@@ -11222,7 +11222,7 @@ def add_estimation_budget_extras(
 
 
 @app.patch("/api/estimation-budgets/{estimation_budget_id}")
-def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dict = Depends(require_estimation_capture)):
     existing = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
     if not existing:
         raise HTTPException(status_code=404, detail="Estimation budget not found")
@@ -11281,12 +11281,12 @@ def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dic
         updates["advancePct"] = totals["advancePct"]
 
     if not updates:
-        return serialize_estimation_budget(existing)
+        return serialize_estimation_budget(existing, include_payments=is_admin_or_superadmin_user(user))
 
     updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
     db.estimationBudgets.update_one({"_id": oid(estimation_budget_id)}, {"$set": updates})
     saved = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
-    return serialize_estimation_budget(saved) if saved else {"ok": True}
+    return serialize_estimation_budget(saved, include_payments=is_admin_or_superadmin_user(user)) if saved else {"ok": True}
 
 
 @app.delete("/api/estimation-budgets/{estimation_budget_id}")
@@ -12141,7 +12141,7 @@ def extract_concepto_rows_from_docx_bytes(file_bytes: bytes):
 @app.post("/api/estimation-budgets/import-conceptos")
 async def import_estimation_conceptos(
     file: UploadFile = File(...),
-    user: dict = Depends(require_admin_or_superadmin),
+    user: dict = Depends(require_estimation_capture),
 ):
     file_name = (file.filename or "").lower()
     file_bytes = await file.read()

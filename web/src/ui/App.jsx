@@ -368,7 +368,7 @@ function Nav({
   const items = [
     ['dashboard', 'Dashboard', true],
     ['search', 'Buscar', true],
-    ['budgets', 'Presupuestos', canSeeBudgets],
+    ['budgets', 'Presupuestos', canSeeBudgets || Boolean(canCaptureEstimations)],
     ['estimaciones', 'Estimaciones', canSeeBudgets || Boolean(canCaptureEstimations)],
     ['settings', 'Ajustes', canSeeSettings],
   ];
@@ -707,7 +707,7 @@ export default function App() {
     // Hasta confirmar el usuario con /me no se saca a nadie de su módulo (al recargar, los
     // permisos guardados pueden estar desactualizados).
     if (!sessionVerified) return;
-    if (!(isSuperAdminUser || isAdminUser) && tab === 'budgets') {
+    if (!(isSuperAdminUser || isAdminUser || canCaptureEstimations) && tab === 'budgets') {
       setTab('dashboard');
     }
     if (!canCaptureEstimations && tab === 'estimaciones') {
@@ -809,8 +809,9 @@ export default function App() {
           />
         )}
 
-        {tab === 'budgets' && (isSuperAdminUser || isAdminUser) && (
+        {tab === 'budgets' && (isSuperAdminUser || isAdminUser || canCaptureEstimations) && (
           <BudgetsSection
+            isReviewer={isSuperAdminUser || isAdminUser}
             projects={personalizedProjects}
             selectedProjectId={selectedProjectId}
             onOpenEstimations={(budgetId) => {
