@@ -540,6 +540,7 @@ export default function App() {
   const isAdminUser = isAdminRole(userRole);
   const canUseAdminPreferences = isAdminUser || isSuperAdminUser;
   const isAdmin = isSuperAdminUser;
+  const [estimationsTargetBudgetId, setEstimationsTargetBudgetId] = useState(null);
   const canCaptureEstimations = isSuperAdminUser || isAdminUser || Boolean(session.canCaptureEstimations);
   const isDarkMode = themePreference === 'dark';
 
@@ -725,6 +726,10 @@ export default function App() {
           <BudgetsSection
             projects={personalizedProjects}
             selectedProjectId={selectedProjectId}
+            onOpenEstimations={(budgetId) => {
+              setEstimationsTargetBudgetId(budgetId);
+              setTab('estimaciones');
+            }}
           />
         )}
 
@@ -733,6 +738,9 @@ export default function App() {
             projects={personalizedProjects}
             selectedProjectId={selectedProjectId}
             isReviewer={isSuperAdminUser || isAdminUser}
+            initialBudgetId={estimationsTargetBudgetId}
+            onInitialBudgetConsumed={() => setEstimationsTargetBudgetId(null)}
+            onOpenBudgets={() => setTab('budgets')}
           />
         )}
 
