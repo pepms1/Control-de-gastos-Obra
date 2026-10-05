@@ -115,7 +115,7 @@ function computeBudgetFormTotals(lineItems, advanceAmount) {
 // Mirrors the backend's compute_estimation_money_fields — used only for
 // live preview while typing; the authoritative values come back from the
 // server response on save.
-function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalanceOverride, mode = 'quantity', globalPct = '') {
+function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalanceOverride, mode = 'quantity', globalPct = '', remainingOpeningOverride) {
   const periodSubtotal = (lineItemInputs || []).reduce(
     (sum, li) => sum + computePeriodQuantity(mode, li, globalPct) * (Number(li.unitPrice) || 0),
     0,
@@ -130,8 +130,12 @@ function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalance
     advanceAmortizationAmount = Math.max(0, Math.min((periodSubtotal * advancePct) / 100, remainingBalance));
   }
 
-  const totalToPay = periodSubtotal - retentionAmount - advanceAmortizationAmount;
-  return { periodSubtotal, retentionAmount, advanceAmortizationAmount, totalToPay };
+  const netBeforePriorPayments = periodSubtotal - retentionAmount - advanceAmortizationAmount;
+  // Pagos previos (saldo inicial) ya entregados: se descuentan de lo que se libera.
+  const remainingOpening = Number(remainingOpeningOverride ?? budgetDetail?.remainingOpeningPaidBalance) || 0;
+  const priorPaidApplied = Math.min(Math.max(netBeforePriorPayments, 0), Math.max(remainingOpening, 0));
+  const totalToPay = netBeforePriorPayments - priorPaidApplied;
+  return { periodSubtotal, retentionAmount, advanceAmortizationAmount, priorPaidApplied, totalToPay };
 }
 
 function emptyBudgetForm(projectId) {
@@ -510,6 +514,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   }
 
   async function openBudgetDetail(row) {
+    setOpeningOpen(false);
     setSelectedBudgetId(row.id);
     setView('detail');
     setShowEstimationForm(false);
@@ -663,12 +668,16 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     const remainingOverride = editingEstimation
       ? (Number(budgetDetail.remainingAdvanceBalance) || 0) + (Number(editingEstimation.advanceAmortizationAmount) || 0)
       : undefined;
+    const remainingOpeningOverride = editingEstimation
+      ? (Number(budgetDetail.remainingOpeningPaidBalance) || 0) + (Number(editingEstimation.priorPaidApplied) || 0)
+      : undefined;
     return computeEstimationPreview(
       budgetDetail,
       estimationForm.lineItems,
       remainingOverride,
       estimationForm.captureMode,
       estimationForm.globalProgressPct,
+      remainingOpeningOverride,
     );
   }, [estimationForm, budgetDetail, editingEstimation]);
 
@@ -819,6 +828,73 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       .catch(() => setPendingReviewCount(0));
   }, [isReviewer, selectedProjectId, estimationsList, section]);
 
+  // ---- Saldo inicial: pagos previos y anticipo ya entregado ----
+  const [openingOpen, setOpeningOpen] = useState(false);
+  const [openingLoading, setOpeningLoading] = useState(false);
+  const [openingTransactions, setOpeningTransactions] = useState([]);
+  const [openingRequiresAssignment, setOpeningRequiresAssignment] = useState(false);
+  const [openingAssignments, setOpeningAssignments] = useState({});
+  const [openingManualAdvance, setOpeningManualAdvance] = useState('');
+  const [openingManualPrior, setOpeningManualPrior] = useState('');
+  const [openingNote, setOpeningNote] = useState('');
+
+  async function openOpeningPanel() {
+    if (!budgetDetail) return;
+    setOpeningOpen(true);
+    setOpeningLoading(true);
+    setError('');
+    try {
+      const payload = await api.estimationBudgetTransactions(budgetDetail.id);
+      setOpeningTransactions(Array.isArray(payload?.items) ? payload.items : []);
+      setOpeningRequiresAssignment(Boolean(payload?.supplierHasMultipleActiveBudgets));
+      const assignments = {};
+      (budgetDetail.openingAdvanceTransactionIds || []).forEach((id) => { assignments[id] = 'advance'; });
+      (budgetDetail.openingPriorPaymentTransactionIds || []).forEach((id) => { assignments[id] = 'prior'; });
+      setOpeningAssignments(assignments);
+      setOpeningManualAdvance(budgetDetail.openingManualAdvanceAmount ? String(budgetDetail.openingManualAdvanceAmount) : '');
+      setOpeningManualPrior(budgetDetail.openingManualPriorPaidAmount ? String(budgetDetail.openingManualPriorPaidAmount) : '');
+      setOpeningNote(budgetDetail.openingNote || '');
+    } catch (e) {
+      setError(e.message || 'No se pudieron cargar los pagos del proveedor');
+    } finally {
+      setOpeningLoading(false);
+    }
+  }
+
+  const openingTotals = useMemo(() => {
+    let advance = Number(openingManualAdvance) || 0;
+    let prior = Number(openingManualPrior) || 0;
+    openingTransactions.forEach((tx) => {
+      if (openingAssignments[tx.id] === 'advance') advance += Number(tx.amountWithTax) || 0;
+      if (openingAssignments[tx.id] === 'prior') prior += Number(tx.amountWithTax) || 0;
+    });
+    const total = Number(budgetDetail?.totalContractedAmount) || 0;
+    return { advance, prior, paid: advance + prior, paidPct: total > 0 ? ((advance + prior) / total) * 100 : 0 };
+  }, [openingTransactions, openingAssignments, openingManualAdvance, openingManualPrior, budgetDetail]);
+
+  async function saveOpeningBalance() {
+    if (!budgetDetail) return;
+    setSaving(true);
+    setError('');
+    try {
+      const ids = (kind) => Object.entries(openingAssignments).filter(([, value]) => value === kind).map(([id]) => id);
+      await api.saveEstimationOpeningBalance(budgetDetail.id, {
+        advanceTransactionIds: ids('advance'),
+        priorPaymentTransactionIds: ids('prior'),
+        manualAdvanceAmount: Number(openingManualAdvance) || 0,
+        manualPriorPaidAmount: Number(openingManualPrior) || 0,
+        note: openingNote,
+      });
+      setOpeningOpen(false);
+      await loadBudgetDetail(budgetDetail.id);
+      await loadEstimationBudgets();
+    } catch (e) {
+      setError(e.message || 'No se pudo guardar el saldo inicial');
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function openEstimationFromQueue(row) {
     setSection('budgets');
     setSelectedBudgetId(row.estimationBudgetId);
@@ -956,7 +1032,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 <input
                   ref={importFileInputRef}
                   type="file"
-                  accept=".xlsx,.csv,.pdf"
+                  accept=".xlsx,.csv,.pdf,.docx"
                   onChange={handleImportConceptosFile}
                   style={{ display: 'none' }}
                 />
@@ -966,7 +1042,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                   onClick={() => importFileInputRef.current?.click()}
                   disabled={importingConceptos}
                 >
-                  {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF'}
+                  {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
                 </button>
                 <button type="button" className="secondary" onClick={addConceptoRow}>+ Agregar concepto</button>
               </div>
@@ -1327,6 +1403,116 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 </div>
               </div>
 
+              {isReviewer && (budgetDetail.estimationsCount === 0 || budgetDetail.openingAdvanceAmount > 0 || budgetDetail.openingPriorPaidAmount > 0) && (
+                <div className="card" style={{ display: 'grid', gap: 10, padding: 16 }}>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                    <div>
+                      <strong>Saldo inicial · pagos previos y anticipo</strong>
+                      <div className="small">
+                        Para presupuestos que ya traen pagos al empezar a usar el módulo. El anticipo se amortiza solo en cada estimación y los pagos a cuenta se descuentan de lo que se libera.
+                      </div>
+                    </div>
+                    {budgetDetail.estimationsCount === 0 && !openingOpen && (
+                      <button type="button" className="secondary" onClick={openOpeningPanel}>
+                        {budgetDetail.openingAdvanceAmount > 0 || budgetDetail.openingPriorPaidAmount > 0 ? 'Editar saldo inicial' : 'Registrar pagos previos / anticipo'}
+                      </button>
+                    )}
+                  </div>
+
+                  {!openingOpen && (budgetDetail.openingAdvanceAmount > 0 || budgetDetail.openingPriorPaidAmount > 0) && (
+                    <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
+                      <div><strong>Anticipo entregado:</strong> {formatCurrency(budgetDetail.openingAdvanceAmount)}</div>
+                      <div><strong>Pagos a cuenta previos:</strong> {formatCurrency(budgetDetail.openingPriorPaidAmount)}</div>
+                      <div><strong>Pagado a la fecha:</strong> {formatCurrency(budgetDetail.openingAdvanceAmount + budgetDetail.openingPriorPaidAmount)} ({formatPct(budgetDetail.openingPaidPct)} del presupuesto)</div>
+                      <div><strong>Pagos previos por descontar:</strong> {formatCurrency(budgetDetail.remainingOpeningPaidBalance)}</div>
+                    </div>
+                  )}
+
+                  {openingOpen && (
+                    <div style={{ display: 'grid', gap: 10 }}>
+                      {openingLoading ? (
+                        <div className="small">Cargando pagos del proveedor...</div>
+                      ) : (
+                        <>
+                          {openingRequiresAssignment && (
+                            <div className="small" style={{ color: '#92400e' }}>
+                              Este proveedor tiene varios presupuestos activos: solo puedes elegir pagos ya asignados a este presupuesto (usa «Asignar pagos»). Los montos manuales sí funcionan.
+                            </div>
+                          )}
+                          <div style={{ overflowX: 'auto', maxHeight: 260, overflowY: 'auto' }}>
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>Fecha</th>
+                                  <th>Descripción</th>
+                                  <th>Monto</th>
+                                  <th>Cómo se considera</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {openingTransactions.map((tx) => {
+                                  const blocked = tx.isAssignedToOtherBudget || (openingRequiresAssignment && !tx.isAssignedToCurrentBudget);
+                                  return (
+                                    <tr key={tx.id} style={blocked ? { opacity: 0.5 } : undefined}>
+                                      <td>{formatDate(tx.date)}</td>
+                                      <td>{tx.description || '—'}</td>
+                                      <td>{formatCurrency(tx.amountWithTax)}</td>
+                                      <td>
+                                        <select
+                                          value={openingAssignments[tx.id] || ''}
+                                          disabled={blocked}
+                                          onChange={(e) => setOpeningAssignments((prev) => {
+                                            const next = { ...prev };
+                                            if (e.target.value) next[tx.id] = e.target.value;
+                                            else delete next[tx.id];
+                                            return next;
+                                          })}
+                                        >
+                                          <option value="">No incluir</option>
+                                          <option value="advance">Anticipo</option>
+                                          <option value="prior">Pago a cuenta</option>
+                                        </select>
+                                        {tx.isAssignedToOtherBudget && <span className="small"> asignado a otro presupuesto</span>}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                                {!openingTransactions.length && (
+                                  <tr><td colSpan={4} className="small" style={{ textAlign: 'center' }}>Este proveedor no tiene pagos registrados.</td></tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                            <div>
+                              <label>Anticipo manual (opcional)</label>
+                              <input type="number" min="0" step="0.01" value={openingManualAdvance} onChange={(e) => setOpeningManualAdvance(e.target.value)} style={{ width: 170 }} />
+                            </div>
+                            <div>
+                              <label>Otros pagos a cuenta manuales (opcional)</label>
+                              <input type="number" min="0" step="0.01" value={openingManualPrior} onChange={(e) => setOpeningManualPrior(e.target.value)} style={{ width: 170 }} />
+                            </div>
+                            <div style={{ flex: 1, minWidth: 200 }}>
+                              <label>Nota</label>
+                              <input value={openingNote} onChange={(e) => setOpeningNote(e.target.value)} />
+                            </div>
+                          </div>
+                          <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
+                            <div><strong>Anticipo:</strong> {formatCurrency(openingTotals.advance)}</div>
+                            <div><strong>Pagos a cuenta:</strong> {formatCurrency(openingTotals.prior)}</div>
+                            <div><strong>Pagado a la fecha:</strong> {formatCurrency(openingTotals.paid)} ({formatPct(openingTotals.paidPct)} del presupuesto)</div>
+                          </div>
+                          <div className="row" style={{ gap: 8 }}>
+                            <button type="button" onClick={saveOpeningBalance} disabled={saving}>{saving ? 'Guardando...' : 'Guardar saldo inicial'}</button>
+                            <button type="button" className="secondary" onClick={() => setOpeningOpen(false)} disabled={saving}>Cancelar</button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="card" style={{ overflow: 'hidden' }}>
                 <div className="card-header">
                   <strong>{budgetDetail.supplierNameSnapshot}</strong>
@@ -1564,7 +1750,10 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     <div><strong>Subtotal:</strong> {formatCurrency(viewingEstimation.periodSubtotal)}</div>
                     <div><strong>Retención:</strong> {formatCurrency(viewingEstimation.retentionAmount)}</div>
                     <div><strong>Amortización anticipo:</strong> {formatCurrency(viewingEstimation.advanceAmortizationAmount)}</div>
-                    <div><strong>Total calculado:</strong> {formatCurrency(viewingEstimation.totalToPay)}</div>
+                    {Number(viewingEstimation.priorPaidApplied) > 0 && (
+                      <div><strong>Pagos previos reconocidos:</strong> −{formatCurrency(viewingEstimation.priorPaidApplied)}</div>
+                    )}
+                    <div><strong>Total calculado (a liberar):</strong> {formatCurrency(viewingEstimation.totalToPay)}</div>
                   </div>
 
                   {viewingEstimation.workflowStatus === 'APROBADA' && (
@@ -1653,6 +1842,28 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       />
                     </div>
                   </div>
+
+                  {!editingEstimation && (Number(budgetDetail.openingAdvanceAmount) > 0 || Number(budgetDetail.openingPriorPaidAmount) > 0) && (
+                    <div className="small" style={{ background: 'var(--gray-100)', borderRadius: 6, padding: 8, display: 'grid', gap: 4 }}>
+                      <div>
+                        Pagado a la fecha (anticipo + pagos previos): <strong>{formatCurrency((Number(budgetDetail.openingAdvanceAmount) || 0) + (Number(budgetDetail.openingPriorPaidAmount) || 0))}</strong>
+                        {' '}= {formatPct(budgetDetail.openingPaidPct)} del presupuesto. Lo ya pagado se descuenta de lo que se libera en esta estimación.
+                      </div>
+                      <div>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => setEstimationForm((prev) => ({
+                            ...prev,
+                            captureMode: 'global',
+                            globalProgressPct: String(Math.min(100, Number(budgetDetail.openingPaidPct) || 0)),
+                          }))}
+                        >
+                          Usar el % pagado como avance global
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="row" style={{ gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
                     <strong style={{ fontSize: 13 }}>¿Cómo capturas el avance?</strong>
@@ -1772,7 +1983,10 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       <div><strong>Subtotal:</strong> {formatCurrency(estimationPreview.periodSubtotal)}</div>
                       <div><strong>Retención:</strong> {formatCurrency(estimationPreview.retentionAmount)}</div>
                       <div><strong>Amortización anticipo:</strong> {formatCurrency(estimationPreview.advanceAmortizationAmount)}</div>
-                      <div><strong>Total calculado:</strong> {formatCurrency(estimationPreview.totalToPay)}</div>
+                      {estimationPreview.priorPaidApplied > 0 && (
+                        <div><strong>Pagos previos reconocidos:</strong> −{formatCurrency(estimationPreview.priorPaidApplied)}</div>
+                      )}
+                      <div><strong>Total calculado (a liberar):</strong> {formatCurrency(estimationPreview.totalToPay)}</div>
                     </div>
                   )}
 
