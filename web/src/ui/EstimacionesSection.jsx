@@ -282,6 +282,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       periodStart: today,
       periodEnd: today,
       notes: '',
+      requestedAmount: '',
       captureMode: hasNamedGroups ? 'group' : 'global',
       globalProgressPct: '',
       groups: buildGroupForm(previousCumulativeByConceptoId, null, null),
@@ -330,6 +331,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       periodStart: estimation.periodStart || '',
       periodEnd: estimation.periodEnd || '',
       notes: estimation.notes || '',
+      requestedAmount: estimation.requestedAmount != null ? String(estimation.requestedAmount) : '',
       captureMode: mode,
       globalProgressPct: estimation.globalProgressPct != null ? String(estimation.globalProgressPct) : '',
       groups: buildGroupForm(previousQty, estimation.groupProgress, Object.keys(previousAmountByGroup).length ? previousAmountByGroup : null),
@@ -417,6 +419,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       periodStart: estimationForm.periodStart,
       periodEnd: estimationForm.periodEnd,
       notes: estimationForm.notes,
+      requestedAmount: estimationForm.requestedAmount === '' ? null : Number(estimationForm.requestedAmount),
       captureMode: estimationForm.captureMode,
     };
     if (estimationForm.captureMode === 'global') {
@@ -501,13 +504,23 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     const estimation = viewingEstimation;
     if (!estimation) return;
     const calculated = Number(estimation.totalToPay) || 0;
-    const amount = authorizedAmount === '' ? calculated : Number(authorizedAmount);
+    const requested = estimation.requestedAmount != null ? Number(estimation.requestedAmount) : null;
+    const baseline = requested ?? calculated;
+    const amount = authorizedAmount === '' ? baseline : Number(authorizedAmount);
     if (!Number.isFinite(amount) || amount < 0) {
       setError('El monto autorizado no es válido.');
       return;
     }
-    if (Math.abs(amount - calculated) >= 0.01 && !authorizationNote.trim()) {
-      setError('Indica el motivo cuando el monto autorizado es distinto al calculado.');
+    if (requested !== null && amount > requested + 0.004) {
+      setError('El monto autorizado no puede exceder lo solicitado por el contratista.');
+      return;
+    }
+    if ((Math.abs(amount - baseline) >= 0.01 || amount - calculated >= 0.01) && !authorizationNote.trim()) {
+      setError(
+        amount < baseline
+          ? 'Indica el motivo por el que se autoriza menos de lo solicitado.'
+          : 'Indica el motivo por el que se autoriza más de lo que marca el avance.',
+      );
       return;
     }
     runEstimationAction(api.approveEstimation, estimation, {
@@ -533,7 +546,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     setShowEstimationForm(false);
     setEditingEstimation(null);
     setViewingEstimation(estimation);
-    setAuthorizedAmount(String(estimation.authorizedAmount ?? estimation.totalToPay ?? ''));
+    setAuthorizedAmount(String(estimation.authorizedAmount ?? estimation.requestedAmount ?? estimation.totalToPay ?? ''));
     setAuthorizationNote(estimation.authorizationNote || '');
   }
 
@@ -649,6 +662,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     <th>Periodo</th>
                     <th>Avance acum.</th>
                     <th>Total calculado</th>
+                    <th>Solicitado</th>
                     {section === 'payable' && <th>Autorizado</th>}
                     <th>Estatus</th>
                     <th>Acciones</th>
@@ -663,6 +677,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       <td>{formatDate(row.periodStart)} – {formatDate(row.periodEnd)}</td>
                       <td>{formatPct(row.cumulativeProgressPct)}</td>
                       <td>{formatCurrency(row.totalToPay)}</td>
+                      <td>{row.requestedAmount != null ? formatCurrency(row.requestedAmount) : '—'}</td>
                       {section === 'payable' && <td><strong>{formatCurrency(row.authorizedAmount)}</strong></td>}
                       <td><StatusBadge estimation={row} /></td>
                       <td>
@@ -681,7 +696,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                   ))}
                   {!queueRows.length && (
                     <tr>
-                      <td colSpan={section === 'payable' ? 9 : 8} className="small" style={{ textAlign: 'center' }}>
+                      <td colSpan={section === 'payable' ? 10 : 9} className="small" style={{ textAlign: 'center' }}>
                         {section === 'review' && 'No hay estimaciones esperando autorización.'}
                         {section === 'payable' && 'No hay estimaciones aprobadas pendientes de pago.'}
                         {section === 'drafts' && 'No hay borradores ni estimaciones en revisión.'}
@@ -944,6 +959,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         <th>Retención</th>
                         <th>Amortización anticipo</th>
                         <th>Total calculado</th>
+                        <th>Solicitado</th>
                         <th>Autorizado</th>
                         <th>Estatus</th>
                         <th>Acciones</th>
@@ -963,6 +979,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                             <td>{formatCurrency(estimation.retentionAmount)}</td>
                             <td>{formatCurrency(estimation.advanceAmortizationAmount)}</td>
                             <td>{formatCurrency(estimation.totalToPay)}</td>
+                            <td>{estimation.requestedAmount != null ? formatCurrency(estimation.requestedAmount) : '—'}</td>
                             <td>
                               {workflow === 'APROBADA' ? <strong>{formatCurrency(estimation.authorizedAmount)}</strong> : '—'}
                             </td>
@@ -1004,7 +1021,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       })}
                       {!estimationsList.length && (
                         <tr>
-                          <td colSpan={10} className="small" style={{ textAlign: 'center' }}>
+                          <td colSpan={11} className="small" style={{ textAlign: 'center' }}>
                             Aún no hay estimaciones registradas para este presupuesto.
                           </td>
                         </tr>
@@ -1145,8 +1162,15 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     <div className="small" style={{ display: 'grid', gap: 2 }}>
                       <div>
                         <strong>Autorizado: {formatCurrency(viewingEstimation.authorizedAmount)}</strong>
+                        {viewingEstimation.requestedAmount != null && (
+                          <> · Solicitado por el contratista: {formatCurrency(viewingEstimation.requestedAmount)}
+                            {Math.abs(Number(viewingEstimation.authorizedVsRequested) || 0) >= 0.01 && (
+                              <> ({formatCurrency(viewingEstimation.authorizedVsRequested)} vs. solicitado)</>
+                            )}
+                          </>
+                        )}
                         {Math.abs(Number(viewingEstimation.authorizedDifference) || 0) >= 0.01 && (
-                          <> ({Number(viewingEstimation.authorizedDifference) > 0 ? '+' : ''}{formatCurrency(viewingEstimation.authorizedDifference)} vs. calculado)</>
+                          <> · {Number(viewingEstimation.authorizedDifference) > 0 ? '+' : ''}{formatCurrency(viewingEstimation.authorizedDifference)} vs. avance calculado</>
                         )}
                       </div>
                       {viewingEstimation.authorizationNote && <div>Motivo: {viewingEstimation.authorizationNote}</div>}
@@ -1157,29 +1181,72 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                   {isReviewer && viewingEstimation.workflowStatus === 'ENVIADA' && (
                     <div style={{ display: 'grid', gap: 8, borderTop: '1px solid var(--border, #e5e7eb)', paddingTop: 10 }}>
                       <strong>Autorización</strong>
-                      <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-                        <div>
-                          <label>Monto autorizado</label>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={authorizedAmount}
-                            onChange={(e) => setAuthorizedAmount(e.target.value)}
-                            style={{ width: 160 }}
-                          />
-                        </div>
-                        <div style={{ flex: 1, minWidth: 220 }}>
-                          <label>
-                            Motivo{Math.abs((Number(authorizedAmount) || 0) - (Number(viewingEstimation.totalToPay) || 0)) >= 0.01 ? ' (obligatorio, el monto cambió)' : ' (opcional)'}
-                          </label>
-                          <input value={authorizationNote} onChange={(e) => setAuthorizationNote(e.target.value)} />
-                        </div>
-                      </div>
-                      <div className="small">
-                        Calculado: {formatCurrency(viewingEstimation.totalToPay)} · Diferencia:{' '}
-                        {formatCurrency((Number(authorizedAmount === '' ? viewingEstimation.totalToPay : authorizedAmount) || 0) - (Number(viewingEstimation.totalToPay) || 0))}
-                      </div>
+                      {(() => {
+                        const calculated = Number(viewingEstimation.totalToPay) || 0;
+                        const requested = viewingEstimation.requestedAmount != null ? Number(viewingEstimation.requestedAmount) : null;
+                        const baseline = requested ?? calculated;
+                        const amount = authorizedAmount === '' ? baseline : Number(authorizedAmount) || 0;
+                        const needsNote = Math.abs(amount - baseline) >= 0.01 || amount - calculated >= 0.01;
+                        return (
+                          <>
+                            <div className="kpi-grid">
+                              <div className="kpi-card">
+                                <div>
+                                  <div className="kpi-label">Avance reportado (a liberar)</div>
+                                  <div className="kpi-value">{formatCurrency(calculated)}</div>
+                                  <div className="kpi-sub">calculado con el avance capturado</div>
+                                </div>
+                              </div>
+                              <div className="kpi-card">
+                                <div>
+                                  <div className="kpi-label">Solicitado por el contratista</div>
+                                  <div className="kpi-value">{requested !== null ? formatCurrency(requested) : '—'}</div>
+                                  <div className="kpi-sub">
+                                    {requested === null
+                                      ? 'sin capturar: se parte del avance'
+                                      : Math.abs(requested - calculated) < 0.01
+                                        ? 'igual al avance'
+                                        : `${formatCurrency(Math.abs(requested - calculated))} ${requested > calculated ? 'más' : 'menos'} que el avance`}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="kpi-card">
+                                <div>
+                                  <div className="kpi-label">A autorizar</div>
+                                  <div className="kpi-value">{formatCurrency(amount)}</div>
+                                  <div className="kpi-sub">
+                                    {requested !== null && Math.abs(amount - requested) >= 0.01
+                                      ? `${formatCurrency(Math.abs(requested - amount))} ${amount < requested ? 'menos' : 'más'} que lo solicitado`
+                                      : 'lo solicitado'}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="row" style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+                              <div>
+                                <label>Monto autorizado{requested !== null ? ' (máximo: lo solicitado)' : ''}</label>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max={requested !== null ? requested : undefined}
+                                  step="0.01"
+                                  value={authorizedAmount}
+                                  onChange={(e) => setAuthorizedAmount(e.target.value)}
+                                  style={{ width: 180, borderColor: requested !== null && amount > requested + 0.004 ? '#b91c1c' : undefined }}
+                                />
+                              </div>
+                              <div style={{ flex: 1, minWidth: 220 }}>
+                                <label>
+                                  Motivo{needsNote
+                                    ? (amount < baseline ? ' (obligatorio: se autoriza menos de lo solicitado)' : ' (obligatorio: se paga más de lo que marca el avance)')
+                                    : ' (opcional)'}
+                                </label>
+                                <input value={authorizationNote} onChange={(e) => setAuthorizationNote(e.target.value)} />
+                              </div>
+                            </div>
+                          </>
+                        );
+                      })()}
                       <div className="row" style={{ gap: 8 }}>
                         <button type="button" onClick={approveViewingEstimation} disabled={saving}>
                           {saving ? 'Procesando...' : 'Aprobar y pasar a pago'}
@@ -1217,6 +1284,18 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         value={estimationForm.periodEnd}
                         onChange={(e) => setEstimationForm((prev) => ({ ...prev, periodEnd: e.target.value }))}
                         required
+                      />
+                    </div>
+                    <div>
+                      <label>Monto solicitado por el contratista</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={estimationForm.requestedAmount}
+                        onChange={(e) => setEstimationForm((prev) => ({ ...prev, requestedAmount: e.target.value }))}
+                        placeholder="Igual al avance"
+                        style={{ width: 190 }}
                       />
                     </div>
                     <div style={{ flex: 1, minWidth: 200 }}>
@@ -1505,6 +1584,23 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                           <div className="kpi-label">A liberar (monto a autorizar)</div>
                           <div className="kpi-value">{formatCurrency(estimationPreview.totalToPay)}</div>
                           <div className="kpi-sub">total calculado de esta estimación</div>
+                        </div>
+                      </div>
+                      <div className="kpi-card">
+                        <div>
+                          <div className="kpi-label">Solicitado por el contratista</div>
+                          <div className="kpi-value">
+                            {estimationForm.requestedAmount === '' ? '—' : formatCurrency(Number(estimationForm.requestedAmount) || 0)}
+                          </div>
+                          <div className="kpi-sub">
+                            {estimationForm.requestedAmount === ''
+                              ? 'sin capturar: se toma el avance'
+                              : (() => {
+                                  const diff = (Number(estimationForm.requestedAmount) || 0) - estimationPreview.totalToPay;
+                                  if (Math.abs(diff) < 0.01) return 'igual al avance reportado';
+                                  return `${formatCurrency(Math.abs(diff))} ${diff > 0 ? 'más' : 'menos'} que el avance`;
+                                })()}
+                          </div>
                         </div>
                       </div>
                     </div>

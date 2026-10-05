@@ -268,6 +268,94 @@ class EstimationsWorkflowTests(phase1.EstimationsPhase1Tests):
         self.assertEqual(still_view['approvedProgressPct'], 40)  # el borrador de 70% aun no cuenta
         self.assertEqual(second['cumulativeProgressPct'], 70)
 
+    # ---- monto solicitado por el contratista ----
+
+    def _requested_flow(self, requested, pct=50, **extra):
+        created = self._capture({'captureMode': 'global', 'globalProgressPct': pct, 'requestedAmount': requested, **extra})
+        self._call(main.submit_estimation, self.budget['id'], created['id'], user=self.capturist)
+        return created
+
+    def test_requested_amount_is_captured_with_the_estimation_and_optional(self):
+        with_request = self._capture({'captureMode': 'global', 'globalProgressPct': 50, 'requestedAmount': 4000})
+        self.assertEqual(with_request['requestedAmount'], 4000)
+        edited = self._call(
+            main.update_estimation, self.budget['id'], with_request['id'], {'requestedAmount': '3,500.50'}, user=self.capturist,
+        )
+        self.assertEqual(edited['requestedAmount'], 3500.50)
+        cleared = self._call(main.update_estimation, self.budget['id'], with_request['id'], {'requestedAmount': ''}, user=self.capturist)
+        self.assertIsNone(cleared['requestedAmount'])
+
+    def test_requested_amount_is_validated_and_locked_after_submitting(self):
+        with self.assertRaises(HTTPException) as ctx:
+            self._capture({'captureMode': 'global', 'globalProgressPct': 50, 'requestedAmount': -1})
+        self.assertEqual(ctx.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as ctx:
+            self._capture({'captureMode': 'global', 'globalProgressPct': 50, 'requestedAmount': 'abc'})
+        self.assertEqual(ctx.exception.status_code, 400)
+        created = self._requested_flow(4000)
+        with self.assertRaises(HTTPException) as ctx:
+            self._call(main.update_estimation, self.budget['id'], created['id'], {'requestedAmount': 9999}, user=self.capturist)
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_approval_defaults_to_the_requested_amount_not_the_calculated(self):
+        created = self._requested_flow(3000)  # calculado: 50% de 10,000 - 10% retención = 4,500
+        self.assertEqual(created['totalToPay'], 4500)
+        approved = self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=ADMIN)
+        self.assertEqual(approved['authorizedAmount'], 3000)
+        self.assertEqual(approved['requestedAmount'], 3000)
+        self.assertEqual(approved['authorizedVsRequested'], 0)
+        self.assertEqual(approved['authorizedDifference'], -1500)  # contra lo calculado
+
+    def test_reviewer_can_authorize_less_than_requested_with_a_reason(self):
+        created = self._requested_flow(4500)
+        with self.assertRaises(HTTPException) as ctx:
+            self._call(main.approve_estimation, self.budget['id'], created['id'], {'authorizedAmount': 4000}, user=ADMIN)
+        self.assertEqual(ctx.exception.status_code, 400)
+        approved = self._call(
+            main.approve_estimation, self.budget['id'], created['id'],
+            {'authorizedAmount': 4000, 'authorizationNote': 'Se retienen 500 por trabajos pendientes'}, user=ADMIN,
+        )
+        self.assertEqual(approved['authorizedAmount'], 4000)
+        self.assertEqual(approved['authorizedVsRequested'], -500)
+
+    def test_reviewer_cannot_authorize_more_than_requested(self):
+        created = self._requested_flow(3000)
+        with self.assertRaises(HTTPException) as ctx:
+            self._call(
+                main.approve_estimation, self.budget['id'], created['id'],
+                {'authorizedAmount': 3500, 'authorizationNote': 'x'}, user=ADMIN,
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn('exceder', ctx.exception.detail)
+
+    def test_contractor_asking_more_than_the_progress_needs_a_reason_to_pay_it(self):
+        created = self._requested_flow(6000)  # calculado 4,500: pide 1,500 de más
+        with self.assertRaises(HTTPException) as ctx:
+            self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=ADMIN)  # aceptar lo pedido
+        self.assertEqual(ctx.exception.status_code, 400)
+        paid_as_calculated = self._call(
+            main.approve_estimation, self.budget['id'], created['id'],
+            {'authorizedAmount': 4500, 'authorizationNote': 'Se paga solo el avance'}, user=ADMIN,
+        )
+        self.assertEqual(paid_as_calculated['authorizedAmount'], 4500)
+        self.assertEqual(paid_as_calculated['authorizedVsRequested'], -1500)
+
+    def test_paying_above_the_progress_when_requested_is_allowed_with_a_reason(self):
+        created = self._requested_flow(6000)
+        approved = self._call(
+            main.approve_estimation, self.budget['id'], created['id'],
+            {'authorizationNote': 'Anticipo de materiales autorizado'}, user=ADMIN,
+        )
+        self.assertEqual(approved['authorizedAmount'], 6000)
+        self.assertEqual(approved['authorizedDifference'], 1500)
+
+    def test_without_a_requested_amount_authorization_works_as_before(self):
+        created = self._capture({'captureMode': 'global', 'globalProgressPct': 50, 'submit': True})
+        self.assertIsNone(created['requestedAmount'])
+        approved = self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=ADMIN)
+        self.assertEqual(approved['authorizedAmount'], approved['totalToPay'])
+        self.assertIsNone(approved['authorizedVsRequested'])
+
     # ---- aviso para quien autoriza ----
 
     def test_pending_summary_counts_only_submitted_estimations(self):
