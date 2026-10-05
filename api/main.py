@@ -20,6 +20,7 @@ import csv
 import openpyxl
 import pdfplumber
 from docx import Document as DocxDocument
+from docx.table import Table as DocxTable
 import os
 import logging
 import unicodedata
@@ -11153,9 +11154,22 @@ CONCEPTO_HEADER_ALIASES = {
     "costounitario": "preciounitario",
     "preciou": "preciounitario",
     "precio": "preciounitario",
+    "importe": "importe",
+    "importetotal": "importe",
+    "monto": "importe",
+    "subtotal": "importe",
+    "total": "importe",
 }
 
-CONCEPTO_REQUIRED_CANONICAL_KEYS = ("concepto", "cantidad", "preciounitario")
+CONCEPTO_REQUIRED_CANONICAL_KEYS = ("cantidad", "preciounitario")
+
+
+def parse_concepto_number(raw) -> float:
+    """parse_decimal tolerante a presupuestos de contratistas: "$ 4935ºº" (los
+    ºº son los centavos), "$ 19650º", "1,250.50"."""
+    if isinstance(raw, str):
+        raw = re.sub(r"[º°˚ᵒ]+", "", raw).strip()
+    return parse_decimal(raw)
 
 
 def detect_concepto_header_row(rows: list, max_scan_rows: int = 5):
@@ -11166,11 +11180,35 @@ def detect_concepto_header_row(rows: list, max_scan_rows: int = 5):
             if canonical and canonical not in header_index:
                 header_index[canonical] = col_idx
         if all(key in header_index for key in CONCEPTO_REQUIRED_CANONICAL_KEYS):
+            if "concepto" not in header_index:
+                # Encabezado propio del contratista ("MUEBLES", "TRABAJO", ...):
+                # el concepto es la primera columna que no se reconoció.
+                claimed = set(header_index.values())
+                free = [idx for idx in range(len(row or [])) if idx not in claimed and str((row or [])[idx] or "").strip()]
+                if not free:
+                    continue
+                header_index["concepto"] = free[0]
             return row_idx, header_index
     return None, {}
 
 
-def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False):
+def _is_total_row(row) -> bool:
+    return any(normalize_concepto_header(cell) in ("total", "subtotal", "sumatotal") for cell in (row or []))
+
+
+def _last_number_in_row(row):
+    for cell in reversed(list(row or [])):
+        try:
+            if str(cell or "").strip():
+                return parse_concepto_number(cell)
+        except ValueError:
+            continue
+    return None
+
+
+def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False, column_map: dict | None = None):
+    """column_map: indices de columnas ya conocidos (tablas de continuacion sin
+    encabezado propio dentro de un mismo documento)."""
     warnings: list[str] = []
     cleaned_rows = [
         list(row) for row in (rows or []) if row is not None and any(str(cell or "").strip() for cell in row)
@@ -11178,16 +11216,20 @@ def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False):
     if not cleaned_rows:
         return [], warnings
 
-    header_row_idx, header_index = detect_concepto_header_row(cleaned_rows)
-    if header_row_idx is None:
-        header_index = {"concepto": 0, "unidad": 1, "cantidad": 2, "preciounitario": 3}
+    if column_map is not None:
+        header_index = dict(column_map)
         data_rows = cleaned_rows
-        warnings.append(
-            "No se detectaron encabezados reconocibles; se asumió el orden Concepto, Unidad, Cantidad, "
-            "Precio Unitario. Revisa cada renglón."
-        )
     else:
-        data_rows = cleaned_rows[header_row_idx + 1:]
+        header_row_idx, header_index = detect_concepto_header_row(cleaned_rows)
+        if header_row_idx is None:
+            header_index = {"concepto": 0, "unidad": 1, "cantidad": 2, "preciounitario": 3}
+            data_rows = cleaned_rows
+            warnings.append(
+                "No se detectaron encabezados reconocibles; se asumió el orden Concepto, Unidad, Cantidad, "
+                "Precio Unitario. Revisa cada renglón."
+            )
+        else:
+            data_rows = cleaned_rows[header_row_idx + 1:]
 
     def cell_value(row, key):
         idx = header_index.get(key)
@@ -11195,42 +11237,65 @@ def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False):
             return None
         return row[idx]
 
+    def number_or_none(raw):
+        try:
+            return parse_concepto_number(raw) if raw not in (None, "") else None
+        except ValueError:
+            return None
+
     items = []
     skipped = 0
+    importe_mismatches: list[str] = []
+    document_total = None
     for row in data_rows:
         description = normalize_non_empty_string(cell_value(row, "concepto"))
         unit = normalize_non_empty_string(cell_value(row, "unidad")) or ""
-        quantity_raw = cell_value(row, "cantidad")
-        unit_price_raw = cell_value(row, "preciounitario")
-
-        try:
-            quantity = parse_decimal(quantity_raw) if quantity_raw not in (None, "") else None
-        except ValueError:
-            quantity = None
-        try:
-            unit_price = parse_decimal(unit_price_raw) if unit_price_raw not in (None, "") else None
-        except ValueError:
-            unit_price = None
+        quantity = number_or_none(cell_value(row, "cantidad"))
+        unit_price = number_or_none(cell_value(row, "preciounitario"))
 
         if not description or quantity is None or unit_price is None or quantity <= 0:
-            skipped += 1
+            if _is_total_row(row):
+                document_total = number_or_none(cell_value(row, "importe"))
+                if document_total is None:
+                    document_total = _last_number_in_row(row)
+            else:
+                skipped += 1
             continue
 
-        items.append(
-            {
-                "description": description,
-                "unit": unit,
-                "quantity": quantity,
-                "unitPrice": max(unit_price, 0.0),
-            }
-        )
+        unit_price = max(unit_price, 0.0)
+        items.append({"description": description, "unit": unit, "quantity": quantity, "unitPrice": unit_price})
+
+        stated_amount = number_or_none(cell_value(row, "importe"))
+        calculated_amount = round(quantity * unit_price, 2)
+        if stated_amount is not None and abs(stated_amount - calculated_amount) > 1:
+            importe_mismatches.append(
+                f"{description} (documento {formatear_moneda_mx(stated_amount)} vs cantidad × precio {formatear_moneda_mx(calculated_amount)})"
+            )
 
     if skipped:
         warnings.append(f"Se omitieron {skipped} renglón(es) sin cantidad/precio numérico válido (posibles totales o notas).")
+    if importe_mismatches:
+        shown = "; ".join(importe_mismatches[:5])
+        extra = f" y {len(importe_mismatches) - 5} más" if len(importe_mismatches) > 5 else ""
+        warnings.append(
+            f"El importe del documento no coincide con cantidad × precio en {len(importe_mismatches)} renglón(es): {shown}{extra}. "
+            "Se usó cantidad × precio unitario."
+        )
+    if document_total is not None and items:
+        calculated_total = round(sum(item["quantity"] * item["unitPrice"] for item in items), 2)
+        if abs(document_total - calculated_total) > 1:
+            warnings.append(
+                f"El total del documento ({formatear_moneda_mx(document_total)}) no coincide con la suma de los conceptos "
+                f"({formatear_moneda_mx(calculated_total)})."
+            )
     if low_confidence and items:
         warnings.append("Estas filas se extrajeron de texto sin tabla clara (baja confianza); revísalas con cuidado.")
 
     return items, warnings
+
+
+def formatear_moneda_mx(value) -> str:
+    return f"${float(value):,.2f}"
 
 
 def extract_table_rows_from_xlsx_bytes(file_bytes: bytes) -> list:
@@ -11277,12 +11342,20 @@ def extract_concepto_rows_from_pdf_bytes(file_bytes: bytes):
 
 
 def extract_concepto_rows_from_docx_bytes(file_bytes: bytes):
-    """Lee las tablas de un .docx. Usa solo las que traen encabezados
-    reconocibles (Concepto/Cantidad/Precio unitario); si ninguna los trae,
-    recurre a la tabla más grande con el orden fijo y lo advierte."""
+    """Lee las tablas de un .docx (presupuestos de contratistas).
+
+    - La primera tabla con encabezados reconocibles fija las columnas; las
+      demas tablas con el mismo numero de columnas se leen igual aunque no
+      repitan el encabezado (secciones de un mismo presupuesto).
+    - Tablas con otra forma (resumen de totales) se ignoran, pero su TOTAL se
+      compara contra la suma de los conceptos leidos.
+    - Si ninguna trae encabezados, se usa la tabla mas grande con orden fijo.
+    - Si un mismo concepto se repite en secciones distintas, se le agrega el
+      titulo de la seccion (el parrafo previo a la tabla) para distinguirlo.
+    """
     document = DocxDocument(BytesIO(file_bytes))
-    tables_rows: list[list[list[str]]] = []
-    for table in document.tables:
+
+    def table_rows(table) -> list[list[str]]:
         rows = []
         for row in table.rows:
             cells = []
@@ -11294,25 +11367,90 @@ def extract_concepto_rows_from_docx_bytes(file_bytes: bytes):
                 previous_tc = cell._tc
                 cells.append(cell.text.strip())
             rows.append(cells)
-        if rows:
-            tables_rows.append(rows)
+        return rows
+
+    sections: list[tuple[str, list[list[str]]]] = []
+    last_heading = ""
+    for child in document.element.body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            text = "".join(node.text or "" for node in child.iter() if node.tag.endswith("}t")).strip()
+            if text:
+                last_heading = text
+        elif tag == "tbl":
+            rows = table_rows(DocxTable(child, document))
+            if rows:
+                sections.append((last_heading, rows))
 
     items: list[dict] = []
     warnings: list[str] = []
-    recognized = [rows for rows in tables_rows if detect_concepto_header_row(rows)[0] is not None]
-    if recognized:
-        for rows in recognized:
-            table_items, table_warnings = parse_concepto_rows_from_table(rows)
-            items.extend(table_items)
-            warnings.extend(table_warnings)
-        skipped_tables = len(tables_rows) - len(recognized)
-        if skipped_tables:
-            warnings.append(f"Se ignoraron {skipped_tables} tabla(s) del documento sin columnas de concepto/cantidad/precio.")
-    elif tables_rows:
-        largest = max(tables_rows, key=len)
-        items, warnings = parse_concepto_rows_from_table(largest)
-        if len(tables_rows) > 1:
+    if not sections:
+        return items, warnings
+
+    def width(rows):
+        return max(len(row) for row in rows)
+
+    reference_map = None
+    reference_width = 0
+    for _, rows in sections:
+        header_row_idx, header_index = detect_concepto_header_row(rows)
+        if header_row_idx is not None:
+            reference_map, reference_width = header_index, width(rows)
+            break
+
+    section_items: list[tuple[str, list[dict]]] = []
+    ignored_totals: list[float] = []
+    ignored_count = 0
+    if reference_map is None:
+        heading, rows = max(sections, key=lambda section: len(section[1]))
+        table_items, table_warnings = parse_concepto_rows_from_table(rows)
+        section_items.append((heading, table_items))
+        warnings.extend(table_warnings)
+        if len(sections) > 1:
             warnings.append("El documento tiene varias tablas; se leyó solo la más grande. Revisa que sea el presupuesto.")
+    else:
+        for heading, rows in sections:
+            own_header_idx, _ = detect_concepto_header_row(rows)
+            if own_header_idx is not None:
+                table_items, table_warnings = parse_concepto_rows_from_table(rows)
+            elif width(rows) == reference_width:
+                table_items, table_warnings = parse_concepto_rows_from_table(rows, column_map=reference_map)
+            else:
+                ignored_count += 1
+                for row in rows:
+                    if _is_total_row(row):
+                        total = _last_number_in_row(row)
+                        if total is not None:
+                            ignored_totals.append(total)
+                continue
+            section_items.append((heading, table_items))
+            for warning in table_warnings:
+                if warning not in warnings:
+                    warnings.append(warning)
+
+    counts: dict[str, int] = {}
+    for _, table_items in section_items:
+        for item in table_items:
+            key = item["description"].strip().lower()
+            counts[key] = counts.get(key, 0) + 1
+    for heading, table_items in section_items:
+        for item in table_items:
+            if heading and counts[item["description"].strip().lower()] > 1:
+                item = {**item, "description": f"{item['description']} ({heading})"}
+            items.append(item)
+
+    if ignored_count:
+        warnings.append(f"Se ignoraron {ignored_count} tabla(s) del documento con otra estructura (por ejemplo, un resumen de totales).")
+    if ignored_totals and items:
+        document_total = ignored_totals[-1]
+        calculated_total = round(sum(item["quantity"] * item["unitPrice"] for item in items), 2)
+        if abs(document_total - calculated_total) > 1:
+            warnings.append(
+                f"El total del documento ({formatear_moneda_mx(document_total)}) no coincide con la suma de los conceptos leídos "
+                f"({formatear_moneda_mx(calculated_total)})."
+            )
+        else:
+            warnings.append(f"El total del documento ({formatear_moneda_mx(document_total)}) coincide con la suma de los conceptos.")
     return items, warnings
 
 

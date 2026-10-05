@@ -64,7 +64,8 @@ class ConceptoImportParsingTests(unittest.TestCase):
         items, warnings = main.parse_concepto_rows_from_table(rows)
 
         self.assertEqual(len(items), 1)
-        self.assertTrue(any('omitieron' in w.lower() for w in warnings))
+        # un renglón TOTAL se reconoce como tal: no cuenta como renglón inválido
+        self.assertFalse(any('omitieron' in w.lower() for w in warnings))
 
     def test_skips_rows_missing_description(self):
         rows = [
@@ -159,7 +160,7 @@ class DocxImportTests(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertEqual(items[0], {'description': 'Reja perimetral', 'unit': 'ml', 'quantity': 40.0, 'unitPrice': 1250.5})
         self.assertEqual(items[1]['unitPrice'], 8000.0)
-        self.assertTrue(any('omitieron' in w for w in warnings))  # fila TOTAL descartada
+        self.assertFalse(any('omitieron' in w for w in warnings))  # fila TOTAL reconocida, no es un error
 
     def test_ignores_tables_without_concept_columns(self):
         data = _docx_bytes(lambda d: (
@@ -213,6 +214,88 @@ class DocxImportTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             self._call_endpoint('vacio.docx', data)
         self.assertEqual(ctx.exception.status_code, 422)
+
+
+class ContractorBudgetFormatTests(unittest.TestCase):
+    """Formato real de presupuestos de contratistas: montos con centavos como
+    superíndice (4935ºº), encabezado propio (MUEBLES), columnas en otro orden,
+    secciones sin encabezado y una tabla final de resumen."""
+
+    def _doc(self):
+        def build(d):
+            d.add_paragraph('PRESUPUESTO DE INSTALACIONES')
+            d.add_paragraph('INSTALACION DE TUBERIA PARA MUEBLES')
+            _add_table(d, [
+                ['MUEBLES', 'CANTIDAD', 'UNIDAD', 'P/UNITARIO', 'IMPORTE'],
+                ['W.C.', '24', 'PZZAS', '$ 4935ºº', '$ 118440ºº'],
+                ['REGADERAS', '18', 'PZZAS', '$ 4200ºº', '$   75600ºº'],
+                ['', '', '', 'TOTAL', '$ 194040ºº'],
+            ])
+            d.add_paragraph('INSTALACION DE BAJADAS')
+            _add_table(d, [
+                ['B.A.N.', '5', 'PZZAS', '$ 7700ºº', '$ 38521ºº'],
+                ['LINEA GENERAL DE DRENAJE', '1', 'LOTE', '$ 60911ºº', '$ 60911º'],
+            ])
+            d.add_paragraph('COLOCACION DE MUEBLES')
+            _add_table(d, [
+                ['W.C.', '24', 'PZZAS', '$ 450ºº', '$ 10800ºº'],
+                ['', '', '', 'TOTAL', '$ 10800ºº'],
+            ])
+            d.add_paragraph('GENERALES')
+            _add_table(d, [
+                ['INSTALACION DE TUBERIA PARA MUEBLES', '$ 194040ºº'],
+                ['TOTAL', '$ 999999ºº'],
+            ])
+        return _docx_bytes(build)
+
+    def test_parses_superscript_cents_and_custom_header(self):
+        for raw, expected in (('$ 4935ºº', 4935.0), ('$ 19650º', 19650.0), ('$   75600ºº', 75600.0), ('$ 1,250.50', 1250.5)):
+            self.assertEqual(main.parse_concepto_number(raw), expected)
+
+    def test_unrecognized_first_column_header_is_used_as_concepto(self):
+        rows = [
+            ['MUEBLES', 'CANTIDAD', 'UNIDAD', 'P/UNITARIO', 'IMPORTE'],
+            ['W.C.', '24', 'PZZAS', '$ 4935ºº', '$ 118440ºº'],
+        ]
+        items, _ = main.parse_concepto_rows_from_table(rows)
+        self.assertEqual(items, [{'description': 'W.C.', 'unit': 'PZZAS', 'quantity': 24.0, 'unitPrice': 4935.0}])
+
+    def test_reads_every_section_even_without_repeating_the_header(self):
+        items, warnings = main.extract_concepto_rows_from_docx_bytes(self._doc())
+        descriptions = [item['description'] for item in items]
+        self.assertEqual(len(items), 5)
+        self.assertIn('REGADERAS', descriptions)
+        self.assertIn('LINEA GENERAL DE DRENAJE', descriptions)
+        by_name = {item['description']: item for item in items}
+        self.assertEqual(by_name['B.A.N.']['quantity'], 5.0)
+        self.assertEqual(by_name['B.A.N.']['unitPrice'], 7700.0)
+        self.assertEqual(by_name['B.A.N.']['unit'], 'PZZAS')
+
+    def test_repeated_concept_names_get_their_section_title(self):
+        items, _ = main.extract_concepto_rows_from_docx_bytes(self._doc())
+        descriptions = [item['description'] for item in items]
+        self.assertIn('W.C. (INSTALACION DE TUBERIA PARA MUEBLES)', descriptions)
+        self.assertIn('W.C. (COLOCACION DE MUEBLES)', descriptions)
+
+    def test_summary_table_is_ignored_but_its_total_is_checked(self):
+        _, warnings = main.extract_concepto_rows_from_docx_bytes(self._doc())
+        self.assertTrue(any('Se ignoraron 1 tabla' in w for w in warnings))
+        self.assertTrue(any('$999,999.00' in w and 'no coincide' in w for w in warnings))
+
+    def test_warns_when_stated_amount_differs_from_quantity_times_price(self):
+        _, warnings = main.extract_concepto_rows_from_docx_bytes(self._doc())
+        joined = ' '.join(warnings)
+        self.assertIn('B.A.N.', joined)  # 5 x 7700 = 38,500 pero el documento dice 38,521
+        self.assertIn('$38,521.00', joined)
+
+    def test_matching_section_total_does_not_warn(self):
+        rows = [
+            ['MUEBLES', 'CANTIDAD', 'UNIDAD', 'P/UNITARIO', 'IMPORTE'],
+            ['W.C.', '24', 'PZZAS', '$ 4935ºº', '$ 118440ºº'],
+            ['', '', '', 'TOTAL', '$ 118440ºº'],
+        ]
+        _, warnings = main.parse_concepto_rows_from_table(rows)
+        self.assertEqual(warnings, [])
 
 
 if __name__ == '__main__':
