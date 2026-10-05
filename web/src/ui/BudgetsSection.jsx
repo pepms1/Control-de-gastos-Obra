@@ -1,52 +1,33 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
+import {
+  buildCanonicalSupplierKey,
+  computeBudgetFormTotals,
+  computeLineItemAmount,
+  emptyBudgetForm,
+  emptyConceptoRow,
+  formatCurrency,
+  formatDate,
+  formatPct,
+  generateId,
+  isBlankConceptoRow,
+  summarizeBudgets,
+} from './estimationShared.js';
 
-const moneyFormatter = new Intl.NumberFormat('en-US', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
+// Presupuestos: aquí se capturan los presupuestos por conceptos (los mismos que
+// usa el módulo de Estimaciones), se importan desde Excel/CSV/PDF/Word, se les
+// asignan pagos y se registra su saldo inicial. Estimaciones se enfoca en
+// estimar, autorizar y pagar.
 
-function formatCurrency(value) {
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return '$0.00';
-  return `$${moneyFormatter.format(amount)}`;
-}
-
-function formatPct(value) {
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return '0.00%';
-  return `${amount.toFixed(2)}%`;
-}
-
-function classifyBudgetStatus(progressPct) {
-  const progress = Number(progressPct);
+function classifyBudgetStatus(paidPct) {
+  const progress = Number(paidPct);
   if (!Number.isFinite(progress)) return { label: 'En presupuesto', className: 'in-budget' };
   if (progress > 100) return { label: 'Excedido', className: 'exceeded' };
-  if (progress === 100) return { label: 'Pagado', className: 'paid' };
+  if (progress >= 100) return { label: 'Pagado', className: 'paid' };
   return { label: 'En presupuesto', className: 'in-budget' };
 }
 
-function normalizeTextForSupplierKey(value) {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, ' ');
-}
-
-function buildCanonicalSupplierKey({ supplierCardCode, businessPartner, supplierName }) {
-  const cardCode = String(supplierCardCode || '').trim();
-  const bp = String(businessPartner || '').trim();
-  const name = String(supplierName || '').trim();
-  if (bp && cardCode) return `bpcc:${normalizeTextForSupplierKey(bp)}|${normalizeTextForSupplierKey(cardCode)}`;
-  if (bp) return `bp:${normalizeTextForSupplierKey(bp)}`;
-  if (cardCode) return `cardcode:${normalizeTextForSupplierKey(cardCode)}`;
-  if (name) return `name:${normalizeTextForSupplierKey(name)}`;
-  return '';
-}
-
-export function BudgetsSection({ projects, selectedProjectId }) {
+export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -60,78 +41,61 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   const [areaM2Error, setAreaM2Error] = useState('');
   const [localAreaM2Override, setLocalAreaM2Override] = useState(null);
   const [totalEgresosSinIva, setTotalEgresosSinIva] = useState(0);
-  const [editingBudget, setEditingBudget] = useState(null);
+  const [expandedSuppliers, setExpandedSuppliers] = useState(() => new Set());
+
   const [showForm, setShowForm] = useState(false);
+  const [editingBudgetRow, setEditingBudgetRow] = useState(null);
+  const [form, setForm] = useState(emptyBudgetForm(selectedProjectId));
+  const [importingConceptos, setImportingConceptos] = useState(false);
+  const [importWarnings, setImportWarnings] = useState([]);
+  const importFileInputRef = useRef(null);
+
   const [assigningBudget, setAssigningBudget] = useState(null);
   const [candidateTransactions, setCandidateTransactions] = useState([]);
   const [selectedTransactionIds, setSelectedTransactionIds] = useState(new Set());
   const [transactionSearch, setTransactionSearch] = useState('');
   const [loadingTransactions, setLoadingTransactions] = useState(false);
-  const [expandedSuppliers, setExpandedSuppliers] = useState(() => new Set());
-  const [form, setForm] = useState({
-    projectId: selectedProjectId || '',
-    supplierKey: '',
-    supplierName: '',
-    supplierCardCode: '',
-    businessPartner: '',
-    vendorId: '',
-    concept: '',
-    budgetAmount: '',
-    notes: '',
-    budgetIncludesTax: true,
-  });
+
+  const [openingBudget, setOpeningBudget] = useState(null);
+  const [openingLoading, setOpeningLoading] = useState(false);
+  const [openingTransactions, setOpeningTransactions] = useState([]);
+  const [openingRequiresAssignment, setOpeningRequiresAssignment] = useState(false);
+  const [openingAssignments, setOpeningAssignments] = useState({});
+  const [openingManualAdvance, setOpeningManualAdvance] = useState('');
+  const [openingManualPrior, setOpeningManualPrior] = useState('');
+  const [openingNote, setOpeningNote] = useState('');
 
   const projectsById = useMemo(
     () => new Map((Array.isArray(projects) ? projects : []).map((project) => [String(project?._id || ''), project])),
     [projects],
   );
 
+  // ---- datos agrupados por proveedor (+ / − para expandir) ----
   const groupedRows = useMemo(() => {
     const groups = new Map();
     rows.forEach((row) => {
       const supplierKey = String(row?.supplierKey || '').trim();
       const supplierName = String(row?.supplierNameSnapshot || row?.supplierKey || 'Sin proveedor');
       const groupKey = supplierKey || `__name__:${supplierName}`;
-      if (!groups.has(groupKey)) {
-        groups.set(groupKey, {
-          key: groupKey,
-          supplierName,
-          items: [],
-          totals: {
-            budgetAmount: 0,
-            paidAmount: 0,
-            remainingAmount: 0,
-            progressPct: 0,
-          },
-        });
-      }
-      const group = groups.get(groupKey);
-      group.items.push(row);
-      group.totals.budgetAmount += Number(row?.budgetAmount) || 0;
-      group.totals.paidAmount += Number(row?.paidAmount) || 0;
-      group.totals.remainingAmount += Number(row?.remainingAmount) || 0;
+      if (!groups.has(groupKey)) groups.set(groupKey, { key: groupKey, supplierName, items: [] });
+      groups.get(groupKey).items.push(row);
     });
-
     return Array.from(groups.values())
-      .map((group) => ({
-        ...group,
-        totals: {
-          ...group.totals,
-          progressPct: group.totals.budgetAmount > 0
-            ? (group.totals.paidAmount / group.totals.budgetAmount) * 100
-            : 0,
-        },
-      }))
+      .map((group) => ({ ...group, totals: summarizeBudgets(group.items) }))
       .sort((a, b) => a.supplierName.localeCompare(b.supplierName, 'es'));
   }, [rows]);
 
-  const grandTotals = useMemo(() => {
-    const budgetAmount = groupedRows.reduce((a, g) => a + g.totals.budgetAmount, 0);
-    const paidAmount = groupedRows.reduce((a, g) => a + g.totals.paidAmount, 0);
-    const remainingAmount = budgetAmount - paidAmount;
-    const progressPct = budgetAmount > 0 ? (paidAmount / budgetAmount) * 100 : 0;
-    return { budgetAmount, paidAmount, remainingAmount, progressPct };
-  }, [groupedRows]);
+  const grandTotals = useMemo(() => summarizeBudgets(rows), [rows]);
+
+  const conceptoIdsWithHistory = useMemo(
+    () => new Set(editingBudgetRow?.conceptoIdsWithHistory || []),
+    [editingBudgetRow],
+  );
+
+  const formTotals = useMemo(
+    () => computeBudgetFormTotals(form.lineItems, form.advanceAmount),
+    [form.lineItems, form.advanceAmount],
+  );
 
   function toggleSupplierExpand(groupKey) {
     setExpandedSuppliers((prev) => {
@@ -146,7 +110,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     setLoading(true);
     setError('');
     try {
-      const data = await api.budgets({
+      const data = await api.estimationBudgets({
         projectId: selectedProjectId,
         supplier: supplierFilter,
         includeInactive: includeInactive ? 'true' : 'false',
@@ -169,6 +133,11 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     setLocalAreaM2Override(null);
     setEditingAreaM2(false);
     setTotalEgresosSinIva(0);
+    setShowForm(false);
+    setEditingBudgetRow(null);
+    setAssigningBudget(null);
+    setOpeningBudget(null);
+    setExpandedSuppliers(new Set());
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -193,88 +162,233 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     Promise.allSettled([api.expensesSummaryBySupplier(), api.suppliers()])
       .then(([summaryResult, suppliersResult]) => {
         if (!active) return;
-
         const optionsByKey = new Map();
         const summaryRows = summaryResult.status === 'fulfilled' ? normalizeRows(summaryResult.value) : [];
         const supplierCatalogRows = suppliersResult.status === 'fulfilled' ? normalizeRows(suppliersResult.value) : [];
 
-        if (summaryRows.length) {
-          summaryRows.forEach((row) => {
-            const key = String(row?.supplierKey || '').trim();
-            if (!key) return;
-            optionsByKey.set(key, {
-              supplierKey: key,
-              supplierName: row?.supplierName || key,
-              sapCardCode: row?.sapCardCode || '',
-              sapBusinessPartner: row?.sapBusinessPartner || '',
-              vendorId: row?.vendorId || '',
-            });
+        summaryRows.forEach((row) => {
+          const key = String(row?.supplierKey || '').trim();
+          if (!key) return;
+          optionsByKey.set(key, {
+            supplierKey: key,
+            supplierName: row?.supplierName || key,
+            sapCardCode: row?.sapCardCode || '',
+            sapBusinessPartner: row?.sapBusinessPartner || '',
+            vendorId: row?.vendorId || '',
           });
-        }
-
-        if (supplierCatalogRows.length) {
-          supplierCatalogRows.forEach((supplier) => {
-            const supplierName = String(supplier?.name || '').trim();
-            const sapCardCode = String(supplier?.cardCode || '').trim();
-            const key = buildCanonicalSupplierKey({
-              supplierCardCode: sapCardCode,
-              businessPartner: '',
-              supplierName,
-            });
-            if (!key) return;
-            if (!optionsByKey.has(key)) {
-              optionsByKey.set(key, {
-                supplierKey: key,
-                supplierName: supplierName || sapCardCode || key,
-                sapCardCode,
-                sapBusinessPartner: '',
-                vendorId: '',
-              });
-            }
+        });
+        supplierCatalogRows.forEach((supplier) => {
+          const supplierName = String(supplier?.name || '').trim();
+          const sapCardCode = String(supplier?.cardCode || '').trim();
+          const key = buildCanonicalSupplierKey({ supplierCardCode: sapCardCode, businessPartner: '', supplierName });
+          if (!key || optionsByKey.has(key)) return;
+          optionsByKey.set(key, {
+            supplierKey: key,
+            supplierName: supplierName || sapCardCode || key,
+            sapCardCode,
+            sapBusinessPartner: '',
+            vendorId: '',
           });
-        }
-
-        setSupplierOptions(Array.from(optionsByKey.values()).sort((a, b) => (a.supplierName || '').localeCompare(b.supplierName || '', 'es')));
+        });
+        setSupplierOptions(
+          Array.from(optionsByKey.values()).sort((a, b) => (a.supplierName || '').localeCompare(b.supplierName || '', 'es')),
+        );
       })
       .catch(() => {
-        if (!active) return;
-        setSupplierOptions([]);
+        if (active) setSupplierOptions([]);
       });
     return () => {
       active = false;
     };
   }, [selectedProjectId]);
 
-  function resetForm() {
-    setEditingBudget(null);
+  // ---- formulario de presupuesto ----
+  function resetBudgetForm() {
+    setEditingBudgetRow(null);
     setShowForm(false);
+    setForm(emptyBudgetForm(selectedProjectId));
+    setImportWarnings([]);
+  }
+
+  function startCreateBudget(prefillSupplierRow) {
+    setEditingBudgetRow(null);
+    const base = emptyBudgetForm(selectedProjectId);
+    setForm(
+      prefillSupplierRow?.supplierKey
+        ? {
+            ...base,
+            supplierKey: prefillSupplierRow.supplierKey,
+            supplierName: prefillSupplierRow.supplierNameSnapshot || '',
+            supplierCardCode: prefillSupplierRow.supplierCardCode || '',
+            businessPartner: prefillSupplierRow.businessPartner || '',
+            vendorId: prefillSupplierRow.vendorId || '',
+          }
+        : base,
+    );
+    setImportWarnings([]);
+    setShowForm(true);
+  }
+
+  function startEditBudget(row) {
+    setEditingBudgetRow(row);
     setForm({
-      projectId: selectedProjectId || '',
-      supplierKey: '',
-      supplierName: '',
-      supplierCardCode: '',
-      businessPartner: '',
-      vendorId: '',
-      concept: '',
-      budgetAmount: '',
-      notes: '',
-      budgetIncludesTax: true,
+      projectId: row.projectId || selectedProjectId || '',
+      supplierKey: row.supplierKey || '',
+      supplierName: row.supplierNameSnapshot || '',
+      supplierCardCode: row.supplierCardCode || '',
+      businessPartner: row.businessPartner || '',
+      vendorId: row.vendorId || '',
+      name: row.name || '',
+      currency: row.currency || 'MXN',
+      notes: row.notes || '',
+      retentionPct: String(row.retentionPct ?? 0),
+      advanceAmortizationEnabled: Boolean(row.advanceAmortizationEnabled),
+      advanceAmount: String(row.advanceAmount ?? 0),
+      isActive: row.isActive !== false,
+      lineItems: (row.lineItems && row.lineItems.length ? row.lineItems : [emptyConceptoRow()]).map((item) => ({
+        id: item.id,
+        description: item.description || '',
+        unit: item.unit || '',
+        quantity: String(item.quantity ?? ''),
+        unitPrice: String(item.unitPrice ?? ''),
+      })),
     });
+    setImportWarnings([]);
+    setShowForm(true);
   }
 
-  function formatDate(value) {
-    if (!value) return '—';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return String(value);
-    return parsed.toLocaleDateString('es-MX');
+  function updateConceptoRow(index, patch) {
+    setForm((prev) => ({
+      ...prev,
+      lineItems: prev.lineItems.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    }));
   }
 
-  async function loadBudgetTransactions(budgetId, search = '') {
+  function addConceptoRow() {
+    setForm((prev) => ({ ...prev, lineItems: [...prev.lineItems, emptyConceptoRow()] }));
+  }
+
+  function removeConceptoRow(index) {
+    setForm((prev) => ({ ...prev, lineItems: prev.lineItems.filter((_, i) => i !== index) }));
+  }
+
+  async function handleImportConceptosFile(event) {
+    const file = event.target.files?.[0];
+    if (event.target) event.target.value = '';
+    if (!file) return;
+
+    setImportingConceptos(true);
+    setImportWarnings([]);
+    setError('');
+    try {
+      const result = await api.importEstimationConceptos(file);
+      const importedRows = (Array.isArray(result?.items) ? result.items : []).map((item) => ({
+        id: generateId(),
+        description: item.description || '',
+        unit: item.unit || '',
+        quantity: String(item.quantity ?? ''),
+        unitPrice: String(item.unitPrice ?? ''),
+      }));
+      if (!importedRows.length) {
+        setError('El archivo no arrojó conceptos importables.');
+        return;
+      }
+      setForm((prev) => ({
+        ...prev,
+        lineItems:
+          prev.lineItems.length === 1 && isBlankConceptoRow(prev.lineItems[0])
+            ? importedRows
+            : [...prev.lineItems, ...importedRows],
+      }));
+      setImportWarnings(Array.isArray(result?.warnings) ? result.warnings : []);
+    } catch (e) {
+      setError(e.message || 'No se pudo importar el archivo');
+    } finally {
+      setImportingConceptos(false);
+    }
+  }
+
+  async function submitBudgetForm(event) {
+    event.preventDefault();
+    setSaving(true);
+    setError('');
+    try {
+      const lineItemsPayload = form.lineItems
+        .filter((row) => String(row.description || '').trim())
+        .map((row) => ({
+          id: row.id,
+          description: row.description,
+          unit: row.unit,
+          quantity: Number(String(row.quantity).replace(/,/g, '').trim()),
+          unitPrice: Number(String(row.unitPrice).replace(/,/g, '').trim()),
+        }));
+      const advanceAmount = Number(String(form.advanceAmount).replace(/,/g, '').trim()) || 0;
+
+      if (editingBudgetRow) {
+        await api.updateEstimationBudget(editingBudgetRow.id, {
+          name: form.name,
+          notes: form.notes,
+          isActive: Boolean(form.isActive),
+          currency: form.currency,
+          retentionPct: Number(form.retentionPct) || 0,
+          advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
+          advanceAmount,
+          lineItems: lineItemsPayload,
+        });
+      } else {
+        await api.createEstimationBudget({
+          projectId: form.projectId,
+          supplierKey: form.supplierKey,
+          supplierName: form.supplierName,
+          supplierCardCode: form.supplierCardCode,
+          businessPartner: form.businessPartner,
+          vendorId: form.vendorId,
+          name: form.name,
+          currency: form.currency,
+          notes: form.notes,
+          retentionPct: Number(form.retentionPct) || 0,
+          advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
+          advanceAmount,
+          lineItems: lineItemsPayload,
+        });
+        // el proveedor del presupuesto nuevo queda a la vista
+        setExpandedSuppliers((prev) => new Set(prev).add(String(form.supplierKey || '')));
+      }
+
+      await loadBudgets();
+      resetBudgetForm();
+    } catch (e) {
+      setError(e.message || 'No se pudo guardar el presupuesto');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteCurrentBudget() {
+    if (!editingBudgetRow?.id) return;
+    const confirmed = window.confirm('¿Seguro que quieres eliminar este presupuesto? Esta acción no se puede deshacer.');
+    if (!confirmed) return;
+
+    setSaving(true);
+    setError('');
+    try {
+      await api.deleteEstimationBudget(editingBudgetRow.id);
+      await loadBudgets();
+      resetBudgetForm();
+    } catch (e) {
+      setError(e.message || 'No se pudo eliminar el presupuesto');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ---- asignar pagos ----
+  async function loadBudgetPaymentTransactions(budgetId, search = '') {
     if (!budgetId) return;
     setLoadingTransactions(true);
     setError('');
     try {
-      const payload = await api.budgetTransactions(budgetId, search ? { search } : {});
+      const payload = await api.estimationBudgetTransactions(budgetId, search ? { search } : {});
       const items = Array.isArray(payload?.items) ? payload.items : [];
       setCandidateTransactions(items);
       setSelectedTransactionIds(new Set(items.filter((item) => item.isAssignedToCurrentBudget).map((item) => item.id)));
@@ -288,9 +402,23 @@ export function BudgetsSection({ projects, selectedProjectId }) {
   }
 
   function startAssignPayments(row) {
+    setOpeningBudget(null);
     setAssigningBudget(row);
     setTransactionSearch('');
-    loadBudgetTransactions(row.id);
+    loadBudgetPaymentTransactions(row.id);
+  }
+
+  // Seleccionar/quitar todos los pagos visibles (los de otro presupuesto no se tocan).
+  function setAllTransactionsSelected(selected) {
+    setSelectedTransactionIds((prev) => {
+      const next = new Set(prev);
+      candidateTransactions.forEach((tx) => {
+        if (tx.isAssignedToOtherBudget) return;
+        if (selected) next.add(tx.id);
+        else next.delete(tx.id);
+      });
+      return next;
+    });
   }
 
   function closeAssignPayments() {
@@ -305,11 +433,11 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     setSaving(true);
     setError('');
     try {
-      await api.saveBudgetTransactionLinks(assigningBudget.id, {
+      await api.saveEstimationBudgetTransactionLinks(assigningBudget.id, {
         selectedTransactionIds: Array.from(selectedTransactionIds),
       });
       await loadBudgets();
-      await loadBudgetTransactions(assigningBudget.id, transactionSearch);
+      await loadBudgetPaymentTransactions(assigningBudget.id, transactionSearch);
     } catch (e) {
       setError(e.message || 'No se pudieron guardar las asignaciones');
     } finally {
@@ -317,87 +445,64 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     }
   }
 
-  function startCreate() {
-    resetForm();
-    setShowForm(true);
+  // ---- saldo inicial: pagos previos y anticipo ya entregado ----
+  async function openOpeningPanel(row) {
+    closeAssignPayments();
+    setOpeningBudget(row);
+    setOpeningLoading(true);
+    setError('');
+    try {
+      const payload = await api.estimationBudgetTransactions(row.id);
+      setOpeningTransactions(Array.isArray(payload?.items) ? payload.items : []);
+      setOpeningRequiresAssignment(Boolean(payload?.supplierHasMultipleActiveBudgets));
+      const assignments = {};
+      (row.openingAdvanceTransactionIds || []).forEach((id) => { assignments[id] = 'advance'; });
+      (row.openingPriorPaymentTransactionIds || []).forEach((id) => { assignments[id] = 'prior'; });
+      setOpeningAssignments(assignments);
+      setOpeningManualAdvance(row.openingManualAdvanceAmount ? String(row.openingManualAdvanceAmount) : '');
+      setOpeningManualPrior(row.openingManualPriorPaidAmount ? String(row.openingManualPriorPaidAmount) : '');
+      setOpeningNote(row.openingNote || '');
+    } catch (e) {
+      setError(e.message || 'No se pudieron cargar los pagos del proveedor');
+    } finally {
+      setOpeningLoading(false);
+    }
   }
 
-  function startEdit(row) {
-    setEditingBudget(row);
-    setShowForm(true);
-    setForm({
-      projectId: row.projectId || selectedProjectId || '',
-      supplierKey: row.supplierKey || '',
-      supplierName: row.supplierNameSnapshot || '',
-      supplierCardCode: row.supplierCardCode || '',
-      businessPartner: row.businessPartner || '',
-      vendorId: row.vendorId || '',
-      concept: row.concept || 'General',
-      budgetAmount: String(row.budgetAmount ?? ''),
-      notes: row.notes || '',
-      isActive: row.isActive !== false,
-      budgetIncludesTax: row.budgetIncludesTax !== false,
+  const openingTotals = useMemo(() => {
+    let advance = Number(openingManualAdvance) || 0;
+    let prior = Number(openingManualPrior) || 0;
+    openingTransactions.forEach((tx) => {
+      if (openingAssignments[tx.id] === 'advance') advance += Number(tx.amountWithTax) || 0;
+      if (openingAssignments[tx.id] === 'prior') prior += Number(tx.amountWithTax) || 0;
     });
-  }
+    const total = Number(openingBudget?.totalContractedAmount) || 0;
+    return { advance, prior, paid: advance + prior, paidPct: total > 0 ? ((advance + prior) / total) * 100 : 0 };
+  }, [openingTransactions, openingAssignments, openingManualAdvance, openingManualPrior, openingBudget]);
 
-  async function submitForm(event) {
-    event.preventDefault();
+  async function saveOpeningBalance() {
+    if (!openingBudget) return;
     setSaving(true);
     setError('');
     try {
-      const payload = {
-        projectId: form.projectId,
-        supplierKey: form.supplierKey,
-        supplierName: form.supplierName,
-        supplierCardCode: form.supplierCardCode,
-        businessPartner: form.businessPartner,
-        vendorId: form.vendorId,
-        concept: String(form.concept || '').trim(),
-        budgetAmount: Number(String(form.budgetAmount).replace(/,/g, '').trim()),
-        notes: form.notes,
-        budgetIncludesTax: Boolean(form.budgetIncludesTax),
-      };
-
-      if (editingBudget) {
-        await api.updateBudget(editingBudget.id, {
-          budgetAmount: payload.budgetAmount,
-          notes: payload.notes,
-          isActive: Boolean(form.isActive),
-          supplierNameSnapshot: payload.supplierName,
-          concept: payload.concept,
-          budgetIncludesTax: payload.budgetIncludesTax,
-        });
-      } else {
-        await api.createBudget(payload);
-      }
-
+      const ids = (kind) => Object.entries(openingAssignments).filter(([, value]) => value === kind).map(([id]) => id);
+      await api.saveEstimationOpeningBalance(openingBudget.id, {
+        advanceTransactionIds: ids('advance'),
+        priorPaymentTransactionIds: ids('prior'),
+        manualAdvanceAmount: Number(openingManualAdvance) || 0,
+        manualPriorPaidAmount: Number(openingManualPrior) || 0,
+        note: openingNote,
+      });
+      setOpeningBudget(null);
       await loadBudgets();
-      resetForm();
     } catch (e) {
-      setError(e.message || 'No se pudo guardar el presupuesto');
+      setError(e.message || 'No se pudo guardar el saldo inicial');
     } finally {
       setSaving(false);
     }
   }
 
-  async function deleteCurrentBudget() {
-    if (!editingBudget?.id) return;
-    const confirmed = window.confirm('¿Seguro que quieres eliminar este presupuesto? Esta acción no se puede deshacer.');
-    if (!confirmed) return;
-
-    setSaving(true);
-    setError('');
-    try {
-      await api.deleteBudget(editingBudget.id);
-      await loadBudgets();
-      resetForm();
-    } catch (e) {
-      setError(e.message || 'No se pudo eliminar el presupuesto');
-    } finally {
-      setSaving(false);
-    }
-  }
-
+  // ---- costo / m² ----
   const selectedProject = projectsById.get(String(selectedProjectId || '')) || null;
   const areaM2 = localAreaM2Override ?? selectedProject?.areaM2 ?? null;
   const costoM2 = areaM2 && areaM2 > 0 ? totalEgresosSinIva / areaM2 : null;
@@ -425,50 +530,49 @@ export function BudgetsSection({ projects, selectedProjectId }) {
     setEditingAreaM2(true);
   }
 
+  const icon = (children, stroke = 'var(--primary)') => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {children}
+    </svg>
+  );
+
   const grandKpis = [
     {
       label: 'Presupuesto total',
-      value: formatCurrency(grandTotals.budgetAmount),
-      sub: 'comprometido',
-      icon: (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
-        </svg>
-      ),
-      danger: false,
+      value: formatCurrency(grandTotals.contracted),
+      sub: 'comprometido en presupuestos por conceptos',
+      icon: icon(<><line x1="12" y1="1" x2="12" y2="23" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></>),
     },
     {
       label: 'Total pagado',
-      value: formatCurrency(grandTotals.paidAmount),
+      value: formatCurrency(grandTotals.paid),
       sub: 'ejecutado',
-      icon: (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>
-        </svg>
-      ),
-      danger: false,
+      icon: icon(<><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" /><path d="M3 5v14a2 2 0 0 0 2 2h16v-5" /><path d="M18 12a2 2 0 0 0 0 4h4v-4z" /></>),
+    },
+    {
+      label: '% pagado',
+      value: formatPct(grandTotals.paidPct),
+      sub: classifyBudgetStatus(grandTotals.paidPct).label,
+      icon: icon(<><line x1="19" y1="5" x2="5" y2="19" /><circle cx="6.5" cy="6.5" r="2.5" /><circle cx="17.5" cy="17.5" r="2.5" /></>),
     },
     {
       label: 'Saldo disponible',
-      value: formatCurrency(grandTotals.remainingAmount),
-      sub: grandTotals.remainingAmount < 0 ? '⚠ excedido' : 'restante',
-      icon: (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={grandTotals.remainingAmount < 0 ? 'var(--danger-text, #b91c1c)' : 'var(--primary)'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>
-        </svg>
-      ),
-      danger: grandTotals.remainingAmount < 0,
+      value: formatCurrency(grandTotals.balance),
+      sub: grandTotals.balance < 0 ? '⚠ excedido' : 'restante',
+      icon: icon(<><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></>, grandTotals.balance < 0 ? 'var(--danger-text, #b91c1c)' : 'var(--primary)'),
+      danger: grandTotals.balance < 0,
     },
     {
-      label: 'Avance global',
-      value: `${Math.round(grandTotals.progressPct)}%`,
-      sub: classifyBudgetStatus(grandTotals.progressPct).label,
-      icon: (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M16 6h.01M8 10h.01M16 10h.01M8 14h.01M16 14h.01"/>
-        </svg>
-      ),
-      danger: false,
+      label: '% de avance estimado',
+      value: formatPct(grandTotals.progressPct),
+      sub: `${formatCurrency(grandTotals.progressAmount)} en estimaciones aprobadas`,
+      icon: icon(<><rect x="4" y="2" width="16" height="20" rx="2" /><path d="M9 22v-4h6v4M8 6h.01M16 6h.01M8 10h.01M16 10h.01M8 14h.01M16 14h.01" /></>),
+    },
+    {
+      label: 'Número de presupuestos',
+      value: grandTotals.count,
+      sub: `${groupedRows.length} proveedor${groupedRows.length === 1 ? '' : 'es'}${includeInactive ? ` · ${grandTotals.activeCount} activos` : ''}`,
+      icon: icon(<><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /></>),
     },
   ];
 
@@ -492,9 +596,7 @@ export function BudgetsSection({ projects, selectedProjectId }) {
         {/* Costo / m² — editable inline */}
         <div className="kpi-card">
           <div className="kpi-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
-            </svg>
+            {icon(<><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></>)}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="kpi-label">Costo / m²</div>
@@ -529,9 +631,6 @@ export function BudgetsSection({ projects, selectedProjectId }) {
                 title="Clic para configurar m²"
               >
                 {costoM2 != null ? formatCurrency(costoM2) : '—'}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.4, flexShrink: 0 }}>
-                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                </svg>
               </div>
             )}
             {areaM2Error && <div className="small" style={{ color: 'var(--danger-text, #b91c1c)', marginTop: 2 }}>{areaM2Error}</div>}
@@ -541,6 +640,228 @@ export function BudgetsSection({ projects, selectedProjectId }) {
           </div>
         </div>
       </div>
+
+      {error && <div className="small" style={{ color: '#b91c1c' }}>{error}</div>}
+
+      {showForm && (
+        <form className="card" style={{ display: 'grid', gap: 10, padding: 16 }} onSubmit={submitBudgetForm}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong>{editingBudgetRow ? 'Editar presupuesto' : 'Nuevo presupuesto'}</strong>
+            <button type="button" className="secondary" onClick={resetBudgetForm}>✕ Cancelar</button>
+          </div>
+
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <div>
+              <label>Obra</label>
+              <select
+                value={form.projectId}
+                onChange={(e) => setForm((prev) => ({ ...prev, projectId: e.target.value }))}
+                disabled={Boolean(editingBudgetRow)}
+                required
+              >
+                <option value="">Selecciona obra</option>
+                {(projects || []).map((project) => (
+                  <option key={project._id} value={project._id}>{project.displayName || project.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label>Proveedor</label>
+              <select
+                value={form.supplierKey}
+                onChange={(e) => {
+                  const nextKey = e.target.value;
+                  const option = supplierOptions.find((row) => row.supplierKey === nextKey);
+                  setForm((prev) => ({
+                    ...prev,
+                    supplierKey: nextKey,
+                    supplierName: option?.supplierName || prev.supplierName,
+                    supplierCardCode: option?.sapCardCode || prev.supplierCardCode,
+                    businessPartner: option?.sapBusinessPartner || prev.businessPartner,
+                    vendorId: option?.vendorId || prev.vendorId,
+                  }));
+                }}
+                disabled={Boolean(editingBudgetRow)}
+                required
+              >
+                <option value="">Selecciona proveedor</option>
+                {supplierOptions.map((row) => (
+                  <option key={row.supplierKey} value={row.supplierKey}>{row.supplierName || row.supplierKey}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label>Nombre del presupuesto</label>
+              <input
+                value={form.name}
+                onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="Ej. Instalación hidrosanitaria"
+              />
+            </div>
+            <div>
+              <label>% Retención (fondo de garantía)</label>
+              <input
+                value={form.retentionPct}
+                onChange={(e) => setForm((prev) => ({ ...prev, retentionPct: e.target.value }))}
+                placeholder="0"
+                style={{ width: 90 }}
+              />
+            </div>
+            <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={Boolean(form.advanceAmortizationEnabled)}
+                onChange={(e) => setForm((prev) => ({ ...prev, advanceAmortizationEnabled: e.target.checked }))}
+              />
+              Amortizar anticipo
+            </label>
+            <div>
+              <label>Monto de anticipo</label>
+              <input
+                value={form.advanceAmount}
+                onChange={(e) => setForm((prev) => ({ ...prev, advanceAmount: e.target.value }))}
+                placeholder="0.00"
+                style={{ width: 120 }}
+              />
+            </div>
+            <div>
+              <label>Nota (opcional)</label>
+              <input value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} />
+            </div>
+            {editingBudgetRow && (
+              <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.isActive)}
+                  onChange={(e) => setForm((prev) => ({ ...prev, isActive: e.target.checked }))}
+                />
+                Presupuesto activo
+              </label>
+            )}
+          </div>
+
+          <div>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <label>Conceptos</label>
+              <div className="row" style={{ gap: 6 }}>
+                <input
+                  ref={importFileInputRef}
+                  type="file"
+                  accept=".xlsx,.csv,.pdf,.docx"
+                  onChange={handleImportConceptosFile}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => importFileInputRef.current?.click()}
+                  disabled={importingConceptos}
+                >
+                  {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
+                </button>
+                <button type="button" className="secondary" onClick={addConceptoRow}>+ Agregar concepto</button>
+              </div>
+            </div>
+            {importWarnings.length > 0 && (
+              <div className="small" style={{ color: 'var(--gray-600)', background: 'var(--gray-100)', borderRadius: 6, padding: 8, marginBottom: 6 }}>
+                {importWarnings.map((warning, idx) => (
+                  <div key={idx}>⚠ {warning}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Descripción</th>
+                    <th>Unidad</th>
+                    <th>Cantidad</th>
+                    <th>Precio unitario</th>
+                    <th>Importe</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {form.lineItems.map((row, index) => {
+                    const hasHistory = conceptoIdsWithHistory.has(row.id);
+                    return (
+                      <tr key={row.id}>
+                        <td>
+                          <input
+                            value={row.description}
+                            onChange={(e) => updateConceptoRow(index, { description: e.target.value })}
+                            required
+                          />
+                        </td>
+                        <td>
+                          <input
+                            value={row.unit}
+                            onChange={(e) => updateConceptoRow(index, { unit: e.target.value })}
+                            placeholder="m2, pza, lote..."
+                            style={{ width: 90 }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={row.quantity}
+                            onChange={(e) => updateConceptoRow(index, { quantity: e.target.value })}
+                            style={{ width: 100 }}
+                            required
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={row.unitPrice}
+                            onChange={(e) => updateConceptoRow(index, { unitPrice: e.target.value })}
+                            style={{ width: 110 }}
+                            required
+                          />
+                        </td>
+                        <td>{formatCurrency(computeLineItemAmount(row))}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => removeConceptoRow(index)}
+                            disabled={hasHistory || form.lineItems.length <= 1}
+                            title={hasHistory ? 'No se puede quitar: ya tiene avance registrado en alguna estimación' : undefined}
+                          >
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="row" style={{ gap: 16, fontSize: 13, marginTop: 4 }}>
+              <div><strong>Total contratado:</strong> {formatCurrency(formTotals.totalContractedAmount)}</div>
+              {Boolean(form.advanceAmortizationEnabled) && (
+                <div><strong>% Anticipo (calculado):</strong> {formatPct(formTotals.advancePct)}</div>
+              )}
+            </div>
+          </div>
+
+          <div className="row" style={{ gap: 8 }}>
+            <button type="submit" disabled={saving}>
+              {saving ? 'Guardando...' : editingBudgetRow ? 'Guardar cambios' : 'Crear presupuesto'}
+            </button>
+            {editingBudgetRow && (
+              <button type="button" className="secondary" onClick={deleteCurrentBudget} disabled={saving} style={{ color: '#b91c1c' }}>
+                Eliminar
+              </button>
+            )}
+            <button type="button" className="secondary" onClick={resetBudgetForm}>Cancelar</button>
+          </div>
+        </form>
+      )}
 
       <div className="card budgets-card" style={{ overflow: 'hidden' }}>
         {/* Toolbar */}
@@ -558,309 +879,358 @@ export function BudgetsSection({ projects, selectedProjectId }) {
             <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
             Mostrar inactivos
           </label>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setExpandedSuppliers(expandedSuppliers.size ? new Set() : new Set(groupedRows.map((group) => group.key)))}
+            disabled={!groupedRows.length}
+          >
+            {expandedSuppliers.size ? 'Contraer todo' : 'Expandir todo'}
+          </button>
           <div style={{ flex: 1 }} />
-          <button type="button" onClick={showForm ? resetForm : startCreate} style={{ fontSize: 13 }}>
+          <button type="button" onClick={() => (showForm ? resetBudgetForm() : startCreateBudget())} style={{ fontSize: 13 }}>
             {showForm ? '✕ Cancelar' : '+ Nuevo presupuesto'}
           </button>
         </div>
 
-      {(showForm || !rows.length) && (
-        <form className="grid" style={{ gap: 8, borderBottom: '1px solid var(--gray-100)', padding: 16 }} onSubmit={submitForm}>
-          <div>
-            <label>Obra</label>
-            <select
-              value={form.projectId}
-              onChange={(e) => setForm((prev) => ({ ...prev, projectId: e.target.value }))}
-              disabled={Boolean(editingBudget)}
-              required
-            >
-              <option value="">Selecciona obra</option>
-              {(projects || []).map((project) => (
-                <option key={project._id} value={project._id}>{project.displayName || project.name}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label>Proveedor</label>
-            <select
-              value={form.supplierKey}
-              onChange={(e) => {
-                const nextKey = e.target.value;
-                const option = supplierOptions.find((row) => row.supplierKey === nextKey);
-                setForm((prev) => ({
-                  ...prev,
-                  supplierKey: nextKey,
-                  supplierName: option?.supplierName || prev.supplierName,
-                  supplierCardCode: option?.sapCardCode || prev.supplierCardCode,
-                  businessPartner: option?.sapBusinessPartner || prev.businessPartner,
-                  vendorId: option?.vendorId || prev.vendorId,
-                }));
-              }}
-              disabled={Boolean(editingBudget)}
-              required
-            >
-              <option value="">Selecciona proveedor</option>
-              {supplierOptions.map((row) => (
-                <option key={row.supplierKey} value={row.supplierKey}>
-                  {row.supplierName || row.supplierKey}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label>Concepto</label>
-            <input
-              value={form.concept}
-              onChange={(e) => setForm((prev) => ({ ...prev, concept: e.target.value }))}
-              placeholder="Ej. Carpintería"
-              required
-            />
-          </div>
-          <div>
-            <label>Monto presupuesto</label>
-            <input
-              value={form.budgetAmount}
-              onChange={(e) => setForm((prev) => ({ ...prev, budgetAmount: e.target.value }))}
-              placeholder="0.00"
-              required
-            />
-          </div>
-          <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-            <input
-              type="checkbox"
-              checked={Boolean(form.budgetIncludesTax)}
-              onChange={(e) => setForm((prev) => ({ ...prev, budgetIncludesTax: e.target.checked }))}
-            />
-            Incluye IVA
-          </label>
-          <div>
-            <label>Nota (opcional)</label>
-            <input
-              value={form.notes}
-              onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))}
-            />
-          </div>
-          {editingBudget && (
-            <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-              <input
-                type="checkbox"
-                checked={Boolean(form.isActive)}
-                onChange={(e) => setForm((prev) => ({ ...prev, isActive: e.target.checked }))}
-              />
-              Presupuesto activo
-            </label>
-          )}
-          <div className="row" style={{ gap: 8 }}>
-            <button type="submit" disabled={saving}>{saving ? 'Guardando...' : (editingBudget ? 'Guardar cambios' : 'Crear presupuesto')}</button>
-            {editingBudget && (
-              <button type="button" className="secondary" onClick={deleteCurrentBudget} disabled={saving} style={{ color: '#b91c1c' }}>
-                Eliminar
-              </button>
-            )}
-            {(showForm || editingBudget) && <button type="button" className="secondary" onClick={resetForm}>Cancelar</button>}
-          </div>
-        </form>
-      )}
-
-      {error && <div className="small" style={{ color: '#b91c1c' }}>{error}</div>}
-
-      {loading ? (
-        <div className="small">Cargando presupuestos...</div>
-      ) : (
-        <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
-          <table className="budgets-table">
-            <thead>
-              <tr>
-                <th className="col-supplier">Proveedor</th>
-                <th className="col-count"># presupuestos</th>
-                <th className="col-money">Presupuesto total</th>
-                <th className="col-money">Pagado total</th>
-                <th className="col-money">Saldo total</th>
-                <th className="col-progress">Avance global</th>
-                <th className="col-status">Estado global</th>
-                <th className="col-detail">Detalle</th>
-              </tr>
-            </thead>
-            <tbody>
-              {groupedRows.map((group) => {
-                const status = classifyBudgetStatus(group.totals.progressPct);
-                const isExpanded = expandedSuppliers.has(group.key);
-                return (
-                  <React.Fragment key={group.key}>
-                    <tr className="budgets-group-row">
-                      <td>
-                        <button
-                          type="button"
-                          className="secondary budgets-expand-btn"
-                          onClick={() => toggleSupplierExpand(group.key)}
-                          style={{ marginRight: 8 }}
-                          aria-expanded={isExpanded}
-                          aria-label={isExpanded ? 'Colapsar proveedor' : 'Expandir proveedor'}
-                        >
-                          {isExpanded ? '−' : '+'}
-                        </button>
-                        <strong className="supplier-name">{group.supplierName || '—'}</strong>
-                      </td>
-                      <td>{group.items.length}</td>
-                      <td>{formatCurrency(group.totals.budgetAmount)}</td>
-                      <td>{formatCurrency(group.totals.paidAmount)}</td>
-                      <td style={{ color: group.totals.remainingAmount < 0 ? 'var(--danger-text, #b91c1c)' : undefined }}>{formatCurrency(group.totals.remainingAmount)}</td>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div style={{ flex: 1, height: 6, background: 'var(--gray-150)', borderRadius: 99, overflow: 'hidden', minWidth: 60 }}>
-                            <div style={{ height: '100%', width: `${Math.min(group.totals.progressPct, 100)}%`, background: group.totals.progressPct > 100 ? 'var(--danger-text, #b91c1c)' : 'var(--primary)', borderRadius: 99, transition: 'width .4s' }} />
-                          </div>
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--gray-600)', whiteSpace: 'nowrap' }}>{Math.round(group.totals.progressPct)}%</span>
-                        </div>
-                      </td>
-                      <td><span className={`budget-badge budget-status ${status.className}`}>{status.label}</span></td>
-                      <td>
-                        <button type="button" className="secondary" onClick={() => toggleSupplierExpand(group.key)}>
-                          {isExpanded ? 'Ocultar' : 'Ver'}
-                        </button>
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr>
-                        <td colSpan={8} style={{ padding: 0 }}>
-                          <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
-                            <table className="budgets-table budgets-table-nested">
-                              <thead>
-                                <tr>
-                                  <th>Obra</th>
-                                  <th>Concepto</th>
-                                  <th>Tipo</th>
-                                  <th>Presupuesto</th>
-                                  <th>Pagado</th>
-                                  <th>Saldo</th>
-                                  <th>Avance</th>
-                                  <th>Estado</th>
-                                  <th>Nota</th>
-                                  <th>Acciones</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {group.items.map((row) => {
-                                  const project = projectsById.get(String(row.projectId || ''));
-                                  const childStatus = classifyBudgetStatus(row.progressPct);
-                                  return (
-                                    <tr key={row.id}>
-                                      <td>{project?.displayName || project?.name || row.projectId}</td>
-                                      <td>{row.concept || 'General'}</td>
-                                      <td>{row.budgetIncludesTax === false ? 'Sin IVA' : 'Con IVA'}</td>
-                                      <td>{formatCurrency(row.budgetAmount)}</td>
-                                      <td>{formatCurrency(row.paidAmount)}</td>
-                                      <td style={{ color: Number(row.remainingAmount) < 0 ? '#b91c1c' : undefined }}>{formatCurrency(row.remainingAmount)}</td>
-                                      <td><span className={`budget-badge budget-progress ${childStatus.className}`}>{formatPct(row.progressPct)}</span></td>
-                                      <td><span className={`budget-badge budget-status ${childStatus.className}`}>{childStatus.label}</span></td>
-                                      <td>{row.notes || '—'}</td>
-                                      <td>
-                                        <div className="row" style={{ gap: 6 }}>
-                                          <button type="button" className="secondary" onClick={() => startEdit(row)}>Editar</button>
-                                          <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar</button>
-                                        </div>
-                                      </td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-              {!groupedRows.length && (
+        {loading ? (
+          <div className="small" style={{ padding: 16 }}>Cargando presupuestos...</div>
+        ) : (
+          <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
+            <table className="budgets-table">
+              <thead>
                 <tr>
-                  <td colSpan={8} className="small" style={{ textAlign: 'center' }}>No hay presupuestos para los filtros seleccionados.</td>
+                  <th className="col-supplier">Proveedor</th>
+                  <th className="col-count"># presupuestos</th>
+                  <th className="col-money">Presupuesto total</th>
+                  <th className="col-money">Pagado total</th>
+                  <th className="col-money">Saldo total</th>
+                  <th className="col-progress">% pagado</th>
+                  <th className="col-count">% avance estimado</th>
+                  <th className="col-status">Estado global</th>
+                  <th className="col-detail">Detalle</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {assigningBudget && (
-        <div className="grid budgets-assignment-panel" style={{ gap: 8, borderRadius: 10, padding: 12 }}>
-          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-            <strong>Asignar · {assigningBudget.supplierNameSnapshot || assigningBudget.supplierKey}</strong>
-            <button type="button" className="secondary" onClick={closeAssignPayments}>Cerrar</button>
-          </div>
-          <div className="small">
-            Concepto: <strong>{assigningBudget.concept || 'General'}</strong> · Solo se usarán pagos asignados manualmente para este presupuesto.
-          </div>
-          <div className="row" style={{ gap: 8 }}>
-            <input
-              value={transactionSearch}
-              onChange={(e) => setTransactionSearch(e.target.value)}
-              placeholder="Buscar por descripción / concepto"
-              style={{ minWidth: 260 }}
-            />
-            <button type="button" className="secondary" onClick={() => loadBudgetTransactions(assigningBudget.id, transactionSearch)} disabled={loadingTransactions}>
-              Filtrar
-            </button>
-            <button type="button" onClick={saveAssignedPayments} disabled={saving || loadingTransactions}>
-              {saving ? 'Guardando...' : 'Guardar asignación'}
-            </button>
-          </div>
-          {loadingTransactions ? (
-            <div className="small">Cargando transacciones...</div>
-          ) : (
-            <div style={{ overflowX: 'auto', maxHeight: 320 }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>Fecha</th>
-                    <th>Descripción</th>
-                    <th>Sin IVA</th>
-                    <th>Con IVA</th>
-                    <th>Tipo</th>
-                    <th>Estado</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {candidateTransactions.map((tx) => {
-                    const disabled = tx.isAssignedToOtherBudget;
-                    const checked = selectedTransactionIds.has(tx.id);
-                    return (
-                      <tr key={tx.id}>
+              </thead>
+              <tbody>
+                {groupedRows.map((group) => {
+                  const status = classifyBudgetStatus(group.totals.paidPct);
+                  const isExpanded = expandedSuppliers.has(group.key);
+                  return (
+                    <React.Fragment key={group.key}>
+                      <tr className="budgets-group-row">
                         <td>
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={disabled}
-                            onChange={(e) => {
-                              const next = new Set(selectedTransactionIds);
-                              if (e.target.checked) next.add(tx.id);
-                              else next.delete(tx.id);
-                              setSelectedTransactionIds(next);
-                            }}
-                          />
+                          <button
+                            type="button"
+                            className="secondary budgets-expand-btn"
+                            onClick={() => toggleSupplierExpand(group.key)}
+                            style={{ marginRight: 8 }}
+                            aria-expanded={isExpanded}
+                            aria-label={isExpanded ? 'Colapsar proveedor' : 'Expandir proveedor'}
+                          >
+                            {isExpanded ? '−' : '+'}
+                          </button>
+                          <strong className="supplier-name">{group.supplierName || '—'}</strong>
                         </td>
-                        <td>{formatDate(tx.date)}</td>
-                        <td>{tx.description || '—'}</td>
-                        <td>{formatCurrency(tx.amountWithoutTax)}</td>
-                        <td>{formatCurrency(tx.amountWithTax)}</td>
-                        <td>{tx.type || 'EXPENSE'}</td>
-                        <td>{tx.isAssignedToOtherBudget ? 'Asignado a otro presupuesto' : (tx.isAssignedToCurrentBudget ? 'Asignado a este presupuesto' : 'Libre')}</td>
+                        <td>{group.items.length}</td>
+                        <td>{formatCurrency(group.totals.contracted)}</td>
+                        <td>{formatCurrency(group.totals.paid)}</td>
+                        <td style={{ color: group.totals.balance < 0 ? 'var(--danger-text, #b91c1c)' : undefined }}>{formatCurrency(group.totals.balance)}</td>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <div style={{ flex: 1, height: 6, background: 'var(--gray-150)', borderRadius: 99, overflow: 'hidden', minWidth: 60 }}>
+                              <div style={{ height: '100%', width: `${Math.min(group.totals.paidPct, 100)}%`, background: group.totals.paidPct > 100 ? 'var(--danger-text, #b91c1c)' : 'var(--primary)', borderRadius: 99, transition: 'width .4s' }} />
+                            </div>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--gray-600)', whiteSpace: 'nowrap' }}>{Math.round(group.totals.paidPct)}%</span>
+                          </div>
+                        </td>
+                        <td>{formatPct(group.totals.progressPct)}</td>
+                        <td><span className={`budget-badge budget-status ${status.className}`}>{status.label}</span></td>
+                        <td>
+                          <button type="button" className="secondary" onClick={() => toggleSupplierExpand(group.key)}>
+                            {isExpanded ? 'Ocultar' : 'Ver'}
+                          </button>
+                        </td>
                       </tr>
-                    );
-                  })}
-                  {!candidateTransactions.length && (
-                    <tr>
-                      <td colSpan={7} className="small" style={{ textAlign: 'center' }}>No hay transacciones disponibles.</td>
-                    </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan={9} style={{ padding: 0 }}>
+                            <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
+                              <table className="budgets-table budgets-table-nested">
+                                <thead>
+                                  <tr>
+                                    <th>Obra</th>
+                                    <th>Presupuesto</th>
+                                    <th>Conceptos</th>
+                                    <th>Contratado</th>
+                                    <th>Pagado</th>
+                                    <th>Saldo</th>
+                                    <th>% pagado</th>
+                                    <th>% avance estimado</th>
+                                    <th>Estimaciones</th>
+                                    <th>Estado</th>
+                                    <th>Acciones</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {group.items.map((row) => {
+                                    const project = projectsById.get(String(row.projectId || ''));
+                                    const rowTotals = summarizeBudgets([row]);
+                                    const childStatus = row.isActive === false
+                                      ? { label: 'Inactivo', className: 'in-budget' }
+                                      : classifyBudgetStatus(rowTotals.paidPct);
+                                    const hasEstimations = Number(row.estimationsCount) > 0;
+                                    return (
+                                      <tr key={row.id}>
+                                        <td>{project?.displayName || project?.name || row.projectId}</td>
+                                        <td>{row.name || '—'}</td>
+                                        <td>{(row.lineItems || []).length}</td>
+                                        <td>{formatCurrency(row.totalContractedAmount)}</td>
+                                        <td>{formatCurrency(row.paidAmount)}</td>
+                                        <td style={{ color: rowTotals.balance < 0 ? '#b91c1c' : undefined }}>{formatCurrency(rowTotals.balance)}</td>
+                                        <td><span className={`budget-badge budget-progress ${childStatus.className}`}>{formatPct(rowTotals.paidPct)}</span></td>
+                                        <td>{formatPct(rowTotals.progressPct)}</td>
+                                        <td>{row.estimationsCount}</td>
+                                        <td><span className={`budget-badge budget-status ${childStatus.className}`}>{childStatus.label}</span></td>
+                                        <td>
+                                          <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                                            <button type="button" className="secondary" onClick={() => startEditBudget(row)}>Editar</button>
+                                            <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar pagos</button>
+                                            <button
+                                              type="button"
+                                              className="secondary"
+                                              onClick={() => openOpeningPanel(row)}
+                                              disabled={hasEstimations}
+                                              title={hasEstimations ? 'El saldo inicial solo puede cambiarse antes de la primera estimación' : 'Anticipo y pagos previos ya entregados'}
+                                            >
+                                              Saldo inicial
+                                            </button>
+                                            {onOpenEstimations && (
+                                              <button type="button" onClick={() => onOpenEstimations(row.id)}>Estimaciones →</button>
+                                            )}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+                {!groupedRows.length && (
+                  <tr>
+                    <td colSpan={9} className="small" style={{ textAlign: 'center' }}>No hay presupuestos para los filtros seleccionados.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+              {assigningBudget && (
+                <div className="grid budgets-assignment-panel" style={{ gap: 8, borderRadius: 10, padding: 12 }}>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong>Asignar pagos · {assigningBudget.supplierNameSnapshot || assigningBudget.supplierKey}</strong>
+                    <button type="button" className="secondary" onClick={closeAssignPayments}>Cerrar</button>
+                  </div>
+                  <div className="small">
+                    Si este es el único presupuesto activo del proveedor, todos sus pagos cuentan automáticamente: quita aquí solo los que
+                    sean de otro presupuesto o estén fuera de este (los pagos nuevos seguirán contando). Lo que dejes marcado se descuenta
+                    de lo que se libera en la estimación. Con más de un presupuesto activo del mismo proveedor, marca manualmente qué
+                    pagos corresponden a cada uno.
+                  </div>
+                  <div className="row" style={{ gap: 8 }}>
+                    <input
+                      value={transactionSearch}
+                      onChange={(e) => setTransactionSearch(e.target.value)}
+                      placeholder="Buscar por descripción / concepto"
+                      style={{ minWidth: 260 }}
+                    />
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => loadBudgetPaymentTransactions(assigningBudget.id, transactionSearch)}
+                      disabled={loadingTransactions}
+                    >
+                      Filtrar
+                    </button>
+                    <button type="button" className="secondary" onClick={() => setAllTransactionsSelected(true)} disabled={loadingTransactions || !candidateTransactions.length}>
+                      Seleccionar todos
+                    </button>
+                    <button type="button" className="secondary" onClick={() => setAllTransactionsSelected(false)} disabled={loadingTransactions || !candidateTransactions.length}>
+                      Quitar todos
+                    </button>
+                    <button type="button" onClick={saveAssignedPayments} disabled={saving || loadingTransactions}>
+                      {saving ? 'Guardando...' : 'Guardar asignación'}
+                    </button>
+                  </div>
+                  {!loadingTransactions && candidateTransactions.length > 0 && (
+                    <div className="small">
+                      {selectedTransactionIds.size} de {candidateTransactions.filter((tx) => !tx.isAssignedToOtherBudget).length} pagos asignados a este presupuesto ·{' '}
+                      {formatCurrency(
+                        candidateTransactions
+                          .filter((tx) => selectedTransactionIds.has(tx.id))
+                          .reduce((sum, tx) => sum + (Number(tx.amountWithTax) || 0), 0),
+                      )}
+                    </div>
                   )}
-                </tbody>
-              </table>
+                  {loadingTransactions ? (
+                    <div className="small">Cargando transacciones...</div>
+                  ) : (
+                    <div style={{ overflowX: 'auto', maxHeight: 320 }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>
+                              <input
+                                type="checkbox"
+                                title="Seleccionar / quitar todos"
+                                checked={
+                                  candidateTransactions.some((tx) => !tx.isAssignedToOtherBudget) &&
+                                  candidateTransactions.filter((tx) => !tx.isAssignedToOtherBudget).every((tx) => selectedTransactionIds.has(tx.id))
+                                }
+                                onChange={(e) => setAllTransactionsSelected(e.target.checked)}
+                              />
+                            </th>
+                            <th>Fecha</th>
+                            <th>Descripción</th>
+                            <th>Monto</th>
+                            <th>Estado</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {candidateTransactions.map((tx) => {
+                            const disabled = tx.isAssignedToOtherBudget;
+                            const checked = selectedTransactionIds.has(tx.id);
+                            return (
+                              <tr key={tx.id}>
+                                <td>
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    disabled={disabled}
+                                    onChange={(e) => {
+                                      const next = new Set(selectedTransactionIds);
+                                      if (e.target.checked) next.add(tx.id);
+                                      else next.delete(tx.id);
+                                      setSelectedTransactionIds(next);
+                                    }}
+                                  />
+                                </td>
+                                <td>{formatDate(tx.date)}</td>
+                                <td>{tx.description || '—'}</td>
+                                <td>{formatCurrency(tx.amountWithTax)}</td>
+                                <td>{tx.isAssignedToOtherBudget ? 'Asignado a otro presupuesto' : (tx.isAssignedToCurrentBudget ? 'Asignado a este presupuesto' : 'Libre')}</td>
+                              </tr>
+                            );
+                          })}
+                          {!candidateTransactions.length && (
+                            <tr>
+                              <td colSpan={5} className="small" style={{ textAlign: 'center' }}>No hay transacciones disponibles.</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+
+        {openingBudget && (
+          <div className="grid budgets-assignment-panel" style={{ gap: 10, borderRadius: 10, padding: 12 }}>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <strong>Saldo inicial · {openingBudget.supplierNameSnapshot || openingBudget.supplierKey} · {openingBudget.name || 'Presupuesto'}</strong>
+              <button type="button" className="secondary" onClick={() => setOpeningBudget(null)} disabled={saving}>Cerrar</button>
             </div>
-          )}
-        </div>
-      )}
-    </div>
+            <div className="small">
+              Para presupuestos que ya traen pagos al empezar a usar el módulo. El anticipo se amortiza solo en cada estimación y los pagos a cuenta
+              se descuentan de lo que se libera. Si no registras nada, se toman todos los pagos asignados al presupuesto. Solo puede cambiarse antes de la primera estimación.
+            </div>
+            {openingLoading ? (
+              <div className="small">Cargando pagos del proveedor...</div>
+            ) : (
+              <>
+                {openingRequiresAssignment && (
+                  <div className="small" style={{ color: '#92400e' }}>
+                    Este proveedor tiene varios presupuestos activos: solo puedes elegir pagos ya asignados a este presupuesto (usa «Asignar pagos»). Los montos manuales sí funcionan.
+                  </div>
+                )}
+                <div style={{ overflowX: 'auto', maxHeight: 260, overflowY: 'auto' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Fecha</th>
+                        <th>Descripción</th>
+                        <th>Monto</th>
+                        <th>Cómo se considera</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {openingTransactions.map((tx) => {
+                        const blocked = tx.isAssignedToOtherBudget || (openingRequiresAssignment && !tx.isAssignedToCurrentBudget);
+                        return (
+                          <tr key={tx.id} style={blocked ? { opacity: 0.5 } : undefined}>
+                            <td>{formatDate(tx.date)}</td>
+                            <td>{tx.description || '—'}</td>
+                            <td>{formatCurrency(tx.amountWithTax)}</td>
+                            <td>
+                              <select
+                                value={openingAssignments[tx.id] || ''}
+                                disabled={blocked}
+                                onChange={(e) => setOpeningAssignments((prev) => {
+                                  const next = { ...prev };
+                                  if (e.target.value) next[tx.id] = e.target.value;
+                                  else delete next[tx.id];
+                                  return next;
+                                })}
+                              >
+                                <option value="">No incluir</option>
+                                <option value="advance">Anticipo</option>
+                                <option value="prior">Pago a cuenta</option>
+                              </select>
+                              {tx.isAssignedToOtherBudget && <span className="small"> asignado a otro presupuesto</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {!openingTransactions.length && (
+                        <tr><td colSpan={4} className="small" style={{ textAlign: 'center' }}>Este proveedor no tiene pagos registrados.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                  <div>
+                    <label>Anticipo manual (opcional)</label>
+                    <input type="number" min="0" step="0.01" value={openingManualAdvance} onChange={(e) => setOpeningManualAdvance(e.target.value)} style={{ width: 170 }} />
+                  </div>
+                  <div>
+                    <label>Otros pagos a cuenta manuales (opcional)</label>
+                    <input type="number" min="0" step="0.01" value={openingManualPrior} onChange={(e) => setOpeningManualPrior(e.target.value)} style={{ width: 170 }} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <label>Nota</label>
+                    <input value={openingNote} onChange={(e) => setOpeningNote(e.target.value)} />
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
+                  <div><strong>Anticipo:</strong> {formatCurrency(openingTotals.advance)}</div>
+                  <div><strong>Pagos a cuenta:</strong> {formatCurrency(openingTotals.prior)}</div>
+                  <div><strong>Pagado a la fecha:</strong> {formatCurrency(openingTotals.paid)} ({formatPct(openingTotals.paidPct)} del presupuesto)</div>
+                </div>
+                <div className="row" style={{ gap: 8 }}>
+                  <button type="button" onClick={saveOpeningBalance} disabled={saving}>{saving ? 'Guardando...' : 'Guardar saldo inicial'}</button>
+                  <button type="button" className="secondary" onClick={() => setOpeningBudget(null)} disabled={saving}>Cancelar</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
