@@ -564,6 +564,7 @@ def serialize_admin_user(user):
     user_doc["allowedProjectIds"] = normalize_allowed_project_ids(user_doc.get("allowedProjectIds"))
     user_doc["isActive"] = bool(user_doc.get("isActive", user_doc.get("active", True)))
     user_doc["canCaptureEstimations"] = bool(user_doc.get("canCaptureEstimations"))
+    user_doc["estimationApprovalProjectIds"] = normalize_approval_project_ids(user_doc.get("estimationApprovalProjectIds"))
     return user_doc
 
 
@@ -706,6 +707,7 @@ def build_current_user_payload(username: str, role: str, display_name: str, user
         "allowedProjectIds": allowed_project_ids,
         "uiPrefs": ui_prefs,
         "canCaptureEstimations": bool((user_doc or {}).get("canCaptureEstimations")),
+        "estimationApprovalProjectIds": normalize_approval_project_ids((user_doc or {}).get("estimationApprovalProjectIds")),
     }
 
 
@@ -768,6 +770,30 @@ def can_capture_estimations(user: dict | None) -> bool:
     if not user:
         return False
     return user.get("role") in {"SUPERADMIN", "ADMIN"} or bool(user.get("canCaptureEstimations"))
+
+
+def normalize_approval_project_ids(raw) -> list[str] | None:
+    """None = sin restriccion (aprueba en todas las obras); lista = solo esas obras."""
+    if raw is None:
+        return None
+    return normalize_allowed_project_ids(raw)
+
+
+def can_approve_estimations(user: dict | None, project_id: str | None) -> bool:
+    """Quien autoriza (aprobar/devolver) estimaciones de una obra. SUPERADMIN siempre;
+    un ADMIN sin lista asignada conserva el acceso a todas las obras (como antes) y,
+    con lista, solo aprueba las obras asignadas."""
+    if not user:
+        return False
+    role = user.get("role")
+    if role == "SUPERADMIN":
+        return True
+    if role != "ADMIN":
+        return False
+    assigned = normalize_approval_project_ids(user.get("estimationApprovalProjectIds"))
+    if assigned is None:
+        return True
+    return str(project_id or "").strip() in set(assigned)
 
 
 def require_estimation_capture(user=Depends(role_from_token)):
@@ -5234,6 +5260,7 @@ def me(user=Depends(require_authenticated)):
         "allowedProjectIds": normalize_allowed_project_ids(user.get("allowedProjectIds")),
         "uiPrefs": normalize_ui_prefs(user.get("uiPrefs")),
         "canCaptureEstimations": bool(user.get("canCaptureEstimations")),
+        "estimationApprovalProjectIds": normalize_approval_project_ids(user.get("estimationApprovalProjectIds")),
     }
 
 
@@ -5384,20 +5411,34 @@ def update_admin_user(user_id: str, payload: dict, _: dict = Depends(require_adm
     if "canCaptureEstimations" in payload:
         update_fields["canCaptureEstimations"] = bool(payload.get("canCaptureEstimations"))
 
+    unset_fields: dict = {}
+    if "estimationApprovalProjectIds" in payload:
+        # null = sin restriccion (todas las obras); lista = solo esas obras para autorizar estimaciones
+        raw_ids = payload.get("estimationApprovalProjectIds")
+        if raw_ids is None:
+            unset_fields["estimationApprovalProjectIds"] = ""
+        elif isinstance(raw_ids, list):
+            update_fields["estimationApprovalProjectIds"] = normalize_allowed_project_ids(raw_ids)
+        else:
+            raise HTTPException(status_code=400, detail="estimationApprovalProjectIds must be a list or null")
+
     if "displayName" in payload or "name" in payload:
         display_name = str(payload.get("displayName") or payload.get("name") or "").strip()
         if not display_name:
             raise HTTPException(status_code=400, detail="displayName cannot be empty")
         update_fields["displayName"] = display_name
 
-    if not update_fields:
+    if not update_fields and not unset_fields:
         raise HTTPException(status_code=400, detail="No editable fields in payload")
 
     update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+    update_doc: dict = {"$set": update_fields}
+    if unset_fields:
+        update_doc["$unset"] = unset_fields
 
     updated = db.users.find_one_and_update(
         {"_id": oid(user_id)},
-        {"$set": update_fields},
+        update_doc,
         return_document=ReturnDocument.AFTER,
     )
     if not updated:
@@ -11296,6 +11337,11 @@ def _require_estimation_status(estimation: dict, allowed: tuple[str, ...], actio
         raise HTTPException(status_code=409, detail=f"Cannot {action} an estimación in status {current}")
 
 
+def _require_approval_assignment(user: dict, estimation_budget: dict) -> None:
+    if not can_approve_estimations(user, str(estimation_budget.get("projectId") or "")):
+        raise HTTPException(status_code=403, detail="Esta obra no está asignada a tu usuario para autorizar estimaciones")
+
+
 def _require_positive_progress(estimation: dict) -> None:
     if float(estimation.get("periodSubtotal") or 0) <= 0:
         raise HTTPException(status_code=400, detail="La estimación no tiene avance capturado")
@@ -11457,7 +11503,8 @@ def submit_estimation(estimation_budget_id: str, estimation_id: str, user: dict 
 def return_estimation_to_draft(
     estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)
 ):
-    _get_estimation_budget_or_404(estimation_budget_id, user)
+    estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
+    _require_approval_assignment(user, estimation_budget)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
     _require_estimation_status(existing, (ESTIMATION_STATUS_SUBMITTED,), "return")
     reason = normalize_non_empty_string((payload or {}).get("reason"))
@@ -11484,6 +11531,7 @@ def approve_estimation(
     estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)
 ):
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
+    _require_approval_assignment(user, estimation_budget)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
     _require_estimation_status(existing, (ESTIMATION_STATUS_SUBMITTED,), "approve")
     existing = refresh_open_estimation_money(existing, estimation_budget)
@@ -11577,7 +11625,7 @@ def estimations_pending_summary(user: dict = Depends(require_admin_or_superadmin
     total = 0
     for row in rows:
         project_id = str(row.get("projectId") or "")
-        if not can_access_project(user, project_id):
+        if not can_access_project(user, project_id) or not can_approve_estimations(user, project_id):
             continue
         total += 1
         by_project[project_id] = by_project.get(project_id, 0) + 1

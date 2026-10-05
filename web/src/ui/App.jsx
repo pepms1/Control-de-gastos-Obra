@@ -829,6 +829,7 @@ export default function App() {
             onInitialBudgetConsumed={() => setEstimationsTargetBudgetId(null)}
             onOpenBudgets={() => setTab('budgets')}
             onWorkflowChange={refreshPendingEstimations}
+            approvalProjectIds={Array.isArray(session.estimationApprovalProjectIds) ? session.estimationApprovalProjectIds : null}
           />
         )}
 
@@ -1494,6 +1495,9 @@ function AdminUsersAccessSection() {
   const [error, setError] = useState('');
   const [editingUserId, setEditingUserId] = useState('');
   const [draftProjectIds, setDraftProjectIds] = useState([]);
+  const [approvalEditUserId, setApprovalEditUserId] = useState('');
+  const [draftApprovalMode, setDraftApprovalMode] = useState('all');
+  const [draftApprovalProjectIds, setDraftApprovalProjectIds] = useState([]);
   const [draftRoleByUserId, setDraftRoleByUserId] = useState({});
   const [savingRoleUserId, setSavingRoleUserId] = useState('');
   const [saving, setSaving] = useState(false);
@@ -1570,6 +1574,47 @@ function AdminUsersAccessSection() {
     const nextId = String(user?.id || user?._id || '');
     setEditingUserId(nextId);
     setDraftProjectIds(Array.isArray(user?.allowedProjectIds) ? user.allowedProjectIds.map(String) : []);
+  }
+
+  function startEditApproval(user) {
+    const userId = String(user?.id || user?._id || '');
+    const assigned = Array.isArray(user?.estimationApprovalProjectIds) ? user.estimationApprovalProjectIds.map(String) : null;
+    setApprovalEditUserId(userId);
+    setDraftApprovalMode(assigned === null ? 'all' : 'assigned');
+    setDraftApprovalProjectIds(assigned || []);
+  }
+
+  function toggleApprovalProject(projectId) {
+    setDraftApprovalProjectIds((prev) => (prev.includes(projectId) ? prev.filter((id) => id !== projectId) : [...prev, projectId]));
+  }
+
+  async function saveApprovalProjects(user) {
+    const userId = String(user?.id || user?._id || '');
+    if (!userId) return;
+    setSaving(true);
+    setError('');
+    try {
+      const updated = await api.updateAdminUser(userId, {
+        estimationApprovalProjectIds: draftApprovalMode === 'all' ? null : draftApprovalProjectIds,
+      });
+      setUsers((prev) => prev.map((row) => (String(row?.id || row?._id || '') === userId ? { ...row, ...updated } : row)));
+      setApprovalEditUserId('');
+    } catch (e) {
+      setError(e.message || 'No se pudieron guardar las obras para autorizar estimaciones.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function getApprovalLabel(user) {
+    const assigned = user?.estimationApprovalProjectIds;
+    if (!Array.isArray(assigned)) return 'Autoriza estimaciones de todas las obras';
+    if (!assigned.length) return 'No autoriza estimaciones de ninguna obra';
+    const names = assigned.map((id) => {
+      const project = projectMap.get(String(id));
+      return project ? getProjectDisplayName(project) : String(id);
+    });
+    return `Autoriza estimaciones de: ${names.join(', ')}`;
   }
 
   function startEditName(user) {
@@ -1870,7 +1915,9 @@ function AdminUsersAccessSection() {
                 const userId = String(user?.id || user?._id || '');
                 const role = normalizeRole(user?.role);
                 const viewer = role === 'VIEWER';
+                const adminRow = role === 'ADMIN';
                 const isEditing = editingUserId === userId;
+                const isEditingApproval = approvalEditUserId === userId;
                 const isEditingName = editingNameUserId === userId;
                 const draftRole = normalizeRole(draftRoleByUserId[userId] || user?.role);
                 const roleDirty = draftRole !== normalizeRole(user?.role);
@@ -1919,10 +1966,10 @@ function AdminUsersAccessSection() {
                         </div>
                       </td>
                       <td><span className="badge">{user?.isActive === false ? 'Inactivo' : 'Activo'}</span></td>
-                      <td className="small">{viewer ? <div style={{ display: 'grid', gap: 4 }}><strong style={{ fontSize: 12 }}>{getViewerProjectsLabel(user)}</strong><span>{renderAllowedProjects(user)}</span></div> : 'No aplica'}</td>
+                      <td className="small">{viewer ? <div style={{ display: 'grid', gap: 4 }}><strong style={{ fontSize: 12 }}>{getViewerProjectsLabel(user)}</strong><span>{renderAllowedProjects(user)}</span></div> : adminRow ? <span>{getApprovalLabel(user)}</span> : 'No aplica'}</td>
                       <td>
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          {viewer ? <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>Editar accesos</button> : <span className="small">No editable</span>}
+                          {viewer ? <button type="button" className="secondary" onClick={() => startEdit(user)} disabled={saving}>Editar accesos</button> : adminRow ? <button type="button" className="secondary" onClick={() => (isEditingApproval ? setApprovalEditUserId('') : startEditApproval(user))} disabled={saving}>Obras para autorizar</button> : <span className="small">No editable</span>}
                           {isSuperAdminUser && (
                             <button type="button" className="secondary" onClick={() => openResetPasswordModal(user)} disabled={saving || resettingPassword}>
                               Restablecer contraseña
@@ -1931,6 +1978,48 @@ function AdminUsersAccessSection() {
                         </div>
                       </td>
                     </tr>
+                    {adminRow && isEditingApproval && (
+                      <tr>
+                        <td colSpan={6}>
+                          <div className="card" style={{ margin: 0 }}>
+                            <strong>Autorizar estimaciones · {user?.displayName || user?.username}</strong>
+                            <div className="small" style={{ margin: '4px 0 8px' }}>
+                              Define de qué obras puede aprobar o devolver estimaciones este admin. No cambia el resto de lo que puede ver o hacer. El superadmin autoriza todas.
+                            </div>
+                            <div style={{ display: 'grid', gap: 6 }}>
+                              <label className="small" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <input type="radio" name={`approval-mode-${userId}`} checked={draftApprovalMode === 'all'} onChange={() => setDraftApprovalMode('all')} disabled={saving} />
+                                Todas las obras
+                              </label>
+                              <label className="small" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                <input type="radio" name={`approval-mode-${userId}`} checked={draftApprovalMode === 'assigned'} onChange={() => setDraftApprovalMode('assigned')} disabled={saving} />
+                                Solo las obras que marque
+                              </label>
+                            </div>
+                            {draftApprovalMode === 'assigned' && (
+                              <div style={{ display: 'grid', gap: 6, maxHeight: 240, overflowY: 'auto', marginTop: 8 }}>
+                                {projects.map((project) => {
+                                  const projectId = String(project?._id || '');
+                                  return (
+                                    <label key={projectId} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                                      <input type="checkbox" checked={draftApprovalProjectIds.includes(projectId)} onChange={() => toggleApprovalProject(projectId)} disabled={saving} />
+                                      <span>{getProjectDisplayName(project)}</span>
+                                    </label>
+                                  );
+                                })}
+                                {!draftApprovalProjectIds.length && (
+                                  <div className="small" style={{ color: '#92400e' }}>Sin obras marcadas, este admin no podrá autorizar ninguna estimación.</div>
+                                )}
+                              </div>
+                            )}
+                            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                              <button type="button" onClick={() => saveApprovalProjects(user)} disabled={saving}>{saving ? 'Guardando...' : 'Guardar'}</button>
+                              <button type="button" className="secondary" onClick={() => setApprovalEditUserId('')} disabled={saving}>Cancelar</button>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
                     {viewer && isEditing && (
                       <tr>
                         <td colSpan={6}>

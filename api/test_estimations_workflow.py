@@ -356,6 +356,64 @@ class EstimationsWorkflowTests(phase1.EstimationsPhase1Tests):
         self.assertEqual(approved['authorizedAmount'], approved['totalToPay'])
         self.assertIsNone(approved['authorizedVsRequested'])
 
+    # ---- obras asignadas a cada admin para autorizar ----
+
+    def _admin_for(self, project_ids):
+        return {'role': 'ADMIN', 'username': 'boss2', 'estimationApprovalProjectIds': project_ids}
+
+    def test_approval_scope_rules(self):
+        other_project = str(ObjectId())
+        self.assertTrue(main.can_approve_estimations({'role': 'SUPERADMIN'}, self.project_id))
+        self.assertTrue(main.can_approve_estimations({'role': 'ADMIN'}, self.project_id))  # sin lista: todas, como antes
+        self.assertTrue(main.can_approve_estimations(self._admin_for([self.project_id]), self.project_id))
+        self.assertFalse(main.can_approve_estimations(self._admin_for([other_project]), self.project_id))
+        self.assertFalse(main.can_approve_estimations(self._admin_for([]), self.project_id))  # lista vacía: ninguna
+        self.assertFalse(main.can_approve_estimations(CAPTURIST, self.project_id))
+        self.assertFalse(main.can_approve_estimations(None, self.project_id))
+
+    def test_admin_without_the_project_cannot_approve_or_return(self):
+        created = self._capture({'captureMode': 'global', 'globalProgressPct': 20, 'submit': True})
+        outsider = self._admin_for([str(ObjectId())])
+        with self.assertRaises(HTTPException) as ctx:
+            self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=outsider)
+        self.assertEqual(ctx.exception.status_code, 403)
+        with self.assertRaises(HTTPException) as ctx:
+            self._call(main.return_estimation_to_draft, self.budget['id'], created['id'], {'reason': 'x'}, user=outsider)
+        self.assertEqual(ctx.exception.status_code, 403)
+
+        assigned = self._admin_for([self.project_id])
+        approved = self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=assigned)
+        self.assertEqual(approved['workflowStatus'], 'APROBADA')
+
+    def test_superadmin_and_unrestricted_admin_still_approve_everything(self):
+        created = self._capture({'captureMode': 'global', 'globalProgressPct': 20, 'submit': True})
+        approved = self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=SUPERADMIN)
+        self.assertEqual(approved['workflowStatus'], 'APROBADA')
+        second = self._capture({'captureMode': 'global', 'globalProgressPct': 30, 'submit': True})
+        self.assertEqual(self._call(main.approve_estimation, self.budget['id'], second['id'], {}, user=ADMIN)['workflowStatus'], 'APROBADA')
+
+    def test_marking_paid_is_not_limited_to_the_assigned_projects(self):
+        created = self._capture({'captureMode': 'global', 'globalProgressPct': 20, 'submit': True})
+        self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=ADMIN)
+        outsider = self._admin_for([str(ObjectId())])
+        paid = self._call(main.mark_estimation_paid, self.budget['id'], created['id'], {}, user=outsider)
+        self.assertEqual(paid['paymentStatus'], 'PAGADA')
+
+    def test_pending_summary_only_counts_the_projects_the_admin_approves(self):
+        self._capture({'captureMode': 'global', 'globalProgressPct': 20, 'submit': True})
+        with patch.object(main, 'db', self.fake_db):
+            self.assertEqual(main.estimations_pending_summary(user=ADMIN)['pendingReview'], 1)
+            self.assertEqual(main.estimations_pending_summary(user=self._admin_for([self.project_id]))['pendingReview'], 1)
+            self.assertEqual(main.estimations_pending_summary(user=self._admin_for([str(ObjectId())]))['pendingReview'], 0)
+
+    def test_user_payload_exposes_the_approval_projects(self):
+        none_payload = main.build_current_user_payload('a', 'ADMIN', 'A', user_doc={})
+        self.assertIsNone(none_payload['estimationApprovalProjectIds'])
+        listed = main.build_current_user_payload('a', 'ADMIN', 'A', user_doc={'estimationApprovalProjectIds': [self.project_id, 'basura']})
+        self.assertEqual(listed['estimationApprovalProjectIds'], [self.project_id])
+        empty = main.build_current_user_payload('a', 'ADMIN', 'A', user_doc={'estimationApprovalProjectIds': []})
+        self.assertEqual(empty['estimationApprovalProjectIds'], [])
+
     # ---- aviso para quien autoriza ----
 
     def test_pending_summary_counts_only_submitted_estimations(self):

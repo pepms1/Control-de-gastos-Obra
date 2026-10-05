@@ -53,6 +53,8 @@ class FakeUsersCollection:
             return None
         for k, v in update.get('$set', {}).items():
             doc[k] = v
+        for k in update.get('$unset', {}):
+            doc.pop(k, None)
         self.docs[key] = doc
         return dict(doc)
 
@@ -191,6 +193,50 @@ class AdminUserPasswordResetTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 403)
         self.assertEqual(ctx.exception.detail, 'SUPERADMIN role required')
+
+
+class EstimationApprovalProjectsTests(unittest.TestCase):
+    def setUp(self):
+        self.user_id = ObjectId()
+        self.project_a = str(ObjectId())
+        self.project_b = str(ObjectId())
+        self.fake_users = FakeUsersCollection([
+            {'_id': self.user_id, 'username': 'boss2', 'role': 'ADMIN', 'roleVersion': 2, 'allowedProjectIds': []},
+            {'_id': ObjectId(), 'username': 'root', 'role': 'SUPERADMIN', 'roleVersion': 2, 'allowedProjectIds': []},
+        ])
+        self.fake_db = type('FakeDb', (), {'users': self.fake_users})()
+
+    def _update(self, payload):
+        with patch.object(main, 'db', self.fake_db):
+            return main.update_admin_user(str(self.user_id), payload, _={'role': 'SUPERADMIN'})
+
+    def test_new_admin_has_no_restriction_by_default(self):
+        boss = main.serialize_admin_user(self.fake_users.docs[str(self.user_id)])
+        self.assertIsNone(boss['estimationApprovalProjectIds'])
+
+    def test_assigns_the_projects_an_admin_approves(self):
+        updated = self._update({'estimationApprovalProjectIds': [self.project_a, 'no-es-un-id', self.project_a]})
+        self.assertEqual(updated['estimationApprovalProjectIds'], [self.project_a])
+        self.assertEqual(self.fake_users.docs[str(self.user_id)]['estimationApprovalProjectIds'], [self.project_a])
+
+    def test_empty_list_means_no_projects_and_null_removes_the_restriction(self):
+        none_assigned = self._update({'estimationApprovalProjectIds': []})
+        self.assertEqual(none_assigned['estimationApprovalProjectIds'], [])
+        cleared = self._update({'estimationApprovalProjectIds': None})
+        self.assertIsNone(cleared['estimationApprovalProjectIds'])
+        self.assertNotIn('estimationApprovalProjectIds', self.fake_users.docs[str(self.user_id)])
+
+    def test_rejects_a_value_that_is_not_a_list(self):
+        with self.assertRaises(HTTPException) as ctx:
+            self._update({'estimationApprovalProjectIds': 'todas'})
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_the_assignment_changes_what_the_admin_can_approve(self):
+        self._update({'estimationApprovalProjectIds': [self.project_a]})
+        doc = self.fake_users.docs[str(self.user_id)]
+        payload = main.build_current_user_payload('boss2', 'ADMIN', 'Boss 2', user_doc=doc)
+        self.assertTrue(main.can_approve_estimations(payload, self.project_a))
+        self.assertFalse(main.can_approve_estimations(payload, self.project_b))
 
 
 if __name__ == '__main__':

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
 import { ExtrasPanel } from './ExtrasPanel.jsx';
-import { formatCurrency, formatDate, formatPct, groupLabel } from './estimationShared.js';
+import { formatCurrency, formatDate, formatPct, groupLabel, openAuthorizedSheet } from './estimationShared.js';
 
 const WORKFLOW_LABELS = {
   BORRADOR: 'Borrador',
@@ -88,8 +88,12 @@ function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalance
   return { periodSubtotal, retentionAmount, advanceAmortizationAmount, priorPaidApplied, totalToPay };
 }
 
-export function EstimacionesSection({ projects, selectedProjectId, isReviewer = false, initialBudgetId = null, onInitialBudgetConsumed, onOpenBudgets, onWorkflowChange }) {
+export function EstimacionesSection({ projects, selectedProjectId, isReviewer = false, initialBudgetId = null, onInitialBudgetConsumed, onOpenBudgets, onWorkflowChange, approvalProjectIds = null }) {
   const [view, setView] = useState('list');
+  // Un admin puede tener asignadas solo algunas obras para autorizar (null = todas).
+  const canApproveProject = (projectId) =>
+    isReviewer && (approvalProjectIds === null || approvalProjectIds.includes(String(projectId || '')));
+  const canApproveSelectedProject = canApproveProject(selectedProjectId);
   const [section, setSection] = useState('budgets');
   const [extrasOpen, setExtrasOpen] = useState(false);
   const [queueRows, setQueueRows] = useState([]);
@@ -579,11 +583,14 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   // Contador del tab "Por autorizar" aunque se este en otra seccion.
   const [pendingReviewCount, setPendingReviewCount] = useState(0);
   useEffect(() => {
-    if (!isReviewer || !selectedProjectId) return;
+    if (!isReviewer || !selectedProjectId || !canApproveSelectedProject) {
+      setPendingReviewCount(0);
+      return;
+    }
     api.estimationsQueue({ projectId: selectedProjectId, status: 'ENVIADA' })
       .then((data) => setPendingReviewCount(Array.isArray(data?.items) ? data.items.length : 0))
       .catch(() => setPendingReviewCount(0));
-  }, [isReviewer, selectedProjectId, estimationsList, section]);
+  }, [isReviewer, selectedProjectId, canApproveSelectedProject, estimationsList, section]);
 
   async function openEstimationFromQueue(row) {
     setSection('budgets');
@@ -593,6 +600,25 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     setEditingEstimation(null);
     await loadBudgetDetail(row.estimationBudgetId);
     openEstimationView(row);
+  }
+
+  // Abre la hoja de autorización (imprimir / guardar como PDF). Desde la cola se carga primero el detalle.
+  async function printAuthorized(estimation) {
+    setError('');
+    try {
+      let budget = budgetDetail && budgetDetail.id === estimation.estimationBudgetId ? budgetDetail : null;
+      let full = estimation.groupBreakdown ? estimation : null;
+      if (!budget) budget = await api.getEstimationBudget(estimation.estimationBudgetId);
+      if (!full) {
+        const list = await api.estimations(estimation.estimationBudgetId);
+        full = (Array.isArray(list) ? list : list?.items || []).find((e) => e.id === estimation.id) || estimation;
+      }
+      if (!openAuthorizedSheet({ ...estimation, ...full }, budget)) {
+        setError('El navegador bloqueó la ventana. Permite ventanas emergentes para generar el PDF.');
+      }
+    } catch (err) {
+      setError(err?.message || 'No se pudo generar el PDF.');
+    }
   }
 
   async function deleteEstimationRow(estimation) {
@@ -649,6 +675,11 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
             <div style={{ flex: 1 }} />
             <button type="button" className="secondary" onClick={loadQueue}>Actualizar</button>
           </div>
+          {section === 'review' && !canApproveSelectedProject && (
+            <div className="small" style={{ padding: 12, background: '#fef3c7', color: '#92400e' }}>
+              Las estimaciones de esta obra las autoriza otro admin: aquí puedes verlas, pero no aprobarlas ni devolverlas.
+            </div>
+          )}
           {queueLoading ? (
             <div className="small" style={{ padding: 16 }}>Cargando...</div>
           ) : (
@@ -683,8 +714,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       <td>
                         <div className="row" style={{ gap: 6 }}>
                           <button type="button" onClick={() => openEstimationFromQueue(row)}>
-                            {section === 'review' ? 'Revisar' : 'Abrir'}
+                            {section === 'review' && canApproveProject(row.projectId) ? 'Revisar' : section === 'review' ? 'Ver' : 'Abrir'}
                           </button>
+                          {section === 'payable' && (
+                            <button type="button" className="secondary" onClick={() => printAuthorized(row)}>
+                              PDF autorizado
+                            </button>
+                          )}
                           {section === 'payable' && (
                             <button type="button" className="secondary" onClick={() => markEstimationPaid(row)} disabled={saving}>
                               Marcar pagada
@@ -987,8 +1023,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                             <td>
                               <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
                                 <button type="button" className="secondary" onClick={() => openEstimationView(estimation)}>
-                                  {workflow === 'ENVIADA' && isReviewer ? 'Revisar' : 'Ver'}
+                                  {workflow === 'ENVIADA' && canApproveProject(estimation.projectId || budgetDetail?.projectId) ? 'Revisar' : 'Ver'}
                                 </button>
+                                {workflow === 'APROBADA' && (
+                                  <button type="button" className="secondary" onClick={() => printAuthorized(estimation)}>
+                                    PDF autorizado
+                                  </button>
+                                )}
                                 {canEdit && (
                                   <button type="button" className="secondary" onClick={() => startEditEstimation(estimation)}>
                                     Editar
@@ -1041,7 +1082,12 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         {formatDate(viewingEstimation.periodStart)} – {formatDate(viewingEstimation.periodEnd)}
                       </span>
                     </div>
-                    <button type="button" className="secondary" onClick={() => setViewingEstimation(null)}>✕ Cerrar</button>
+                    <div className="row" style={{ gap: 6 }}>
+                      {viewingEstimation.workflowStatus === 'APROBADA' && (
+                        <button type="button" onClick={() => printAuthorized(viewingEstimation)}>PDF autorizado</button>
+                      )}
+                      <button type="button" className="secondary" onClick={() => setViewingEstimation(null)}>✕ Cerrar</button>
+                    </div>
                   </div>
 
                   {viewingEstimation.returnReason && viewingEstimation.workflowStatus === 'BORRADOR' && (
@@ -1178,7 +1224,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     </div>
                   )}
 
-                  {isReviewer && viewingEstimation.workflowStatus === 'ENVIADA' && (
+                  {isReviewer && viewingEstimation.workflowStatus === 'ENVIADA' && !canApproveProject(viewingEstimation.projectId || budgetDetail?.projectId || selectedProjectId) && (
+                    <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
+                      Esta estimación espera autorización, pero esta obra no está asignada a tu usuario para autorizar. La aprueba otro admin.
+                    </div>
+                  )}
+
+                  {isReviewer && viewingEstimation.workflowStatus === 'ENVIADA' && canApproveProject(viewingEstimation.projectId || budgetDetail?.projectId || selectedProjectId) && (
                     <div style={{ display: 'grid', gap: 8, borderTop: '1px solid var(--border, #e5e7eb)', paddingTop: 10 }}>
                       <strong>Autorización</strong>
                       {(() => {
