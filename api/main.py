@@ -11267,6 +11267,20 @@ def _get_estimation_budget_or_404(estimation_budget_id: str, user: dict) -> dict
     return doc
 
 
+def parse_requested_amount(raw) -> float | None:
+    """Monto que SOLICITA el contratista (puede ser menor o mayor al avance
+    calculado). Vacío = sin capturar: se toma el monto calculado."""
+    if raw in (None, ""):
+        return None
+    try:
+        amount = round(parse_decimal(raw), 2)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="requestedAmount is invalid")
+    if amount < 0:
+        raise HTTPException(status_code=400, detail="requestedAmount must be greater than or equal to 0")
+    return amount
+
+
 def _get_estimation_or_404(estimation_budget_id: str, estimation_id: str) -> dict:
     doc = db.estimations.find_one(
         {"_id": oid(estimation_id), "estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
@@ -11332,6 +11346,7 @@ def create_estimation(estimation_budget_id: str, payload: dict, user: dict = Dep
         "periodStart": period_start,
         "periodEnd": period_end,
         "notes": notes,
+        "requestedAmount": parse_requested_amount((payload or {}).get("requestedAmount")),
         "workflowStatus": ESTIMATION_STATUS_SUBMITTED if submit_now else ESTIMATION_STATUS_DRAFT,
         **content,
         "isDeleted": False,
@@ -11377,6 +11392,8 @@ def update_estimation(estimation_budget_id: str, estimation_id: str, payload: di
         updates["notes"] = normalize_non_empty_string(payload.get("notes")) or ""
     if is_legacy and "status" in payload:
         updates["status"] = normalize_non_empty_string(payload.get("status")) or "Registrada"
+    if "requestedAmount" in payload:
+        updates["requestedAmount"] = parse_requested_amount(payload.get("requestedAmount"))
 
     if is_latest:
         if "periodStart" in payload:
@@ -11473,9 +11490,13 @@ def approve_estimation(
     freeze_auto_opening_if_needed(estimation_budget, existing)
 
     calculated = round(float(existing.get("totalToPay") or 0), 2)
+    requested_raw = existing.get("requestedAmount")
+    requested = round(float(requested_raw), 2) if requested_raw is not None else None
+    # Sin monto solicitado se parte del calculado; con solicitado, de lo que pidió el contratista.
+    baseline = requested if requested is not None else calculated
     raw_authorized = (payload or {}).get("authorizedAmount")
     if raw_authorized in (None, ""):
-        authorized = calculated
+        authorized = baseline
     else:
         try:
             authorized = round(parse_decimal(raw_authorized), 2)
@@ -11483,10 +11504,17 @@ def approve_estimation(
             raise HTTPException(status_code=400, detail="authorizedAmount is invalid")
         if authorized < 0:
             raise HTTPException(status_code=400, detail="authorizedAmount must be greater than or equal to 0")
+    if requested is not None and authorized > requested + 0.004:
+        raise HTTPException(status_code=400, detail="El monto autorizado no puede exceder lo solicitado por el contratista")
     note = normalize_non_empty_string((payload or {}).get("authorizationNote")) or ""
     difference = round(authorized - calculated, 2)
-    if abs(difference) >= 0.01 and not note:
-        raise HTTPException(status_code=400, detail="authorizationNote is required when the authorized amount differs from the calculated total")
+    # Se pide motivo al autorizar menos de lo solicitado o más de lo que marca el avance.
+    needs_note = abs(authorized - baseline) >= 0.01 or authorized - calculated >= 0.01
+    if needs_note and not note:
+        raise HTTPException(
+            status_code=400,
+            detail="authorizationNote is required when the authorized amount is below the requested amount or above the calculated total",
+        )
 
     now_iso = datetime.now(timezone.utc).isoformat()
     db.estimations.update_one(
@@ -11496,6 +11524,7 @@ def approve_estimation(
                 "workflowStatus": ESTIMATION_STATUS_APPROVED,
                 "authorizedAmount": authorized,
                 "authorizedDifference": difference,
+                "authorizedVsRequested": round(authorized - requested, 2) if requested is not None else None,
                 "authorizationNote": note,
                 "approvedBy": normalize_non_empty_string(user.get("username")) or "system",
                 "approvedAt": now_iso,
