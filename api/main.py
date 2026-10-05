@@ -10477,10 +10477,23 @@ def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dic
     rows = list(
         db.estimations.find(
             {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}},
-            {"retentionAmount": 1, "advanceAmortizationAmount": 1, "priorPaidApplied": 1, "workflowStatus": 1},
+            {"retentionAmount": 1, "advanceAmortizationAmount": 1, "priorPaidApplied": 1, "workflowStatus": 1, "periodSubtotal": 1},
         )
     )
     payload["estimationsCount"] = len(rows)
+    # Avance de obra reconocido: estimaciones aprobadas (y las anteriores al
+    # flujo); borradores y por autorizar todavia no cuentan.
+    progress_amount = round(
+        sum(
+            float(r.get("periodSubtotal") or 0)
+            for r in rows
+            if estimation_workflow_status(r) in (ESTIMATION_STATUS_APPROVED, ESTIMATION_STATUS_LEGACY)
+        ),
+        2,
+    )
+    contracted_for_progress = float(payload.get("totalContractedAmount") or 0)
+    payload["approvedProgressAmount"] = progress_amount
+    payload["approvedProgressPct"] = round(progress_amount / contracted_for_progress * 100, 2) if contracted_for_progress > 0 else 0.0
     opening_advance = float(payload.get("openingAdvanceAmount") or 0)
     payload["openingAdvanceAmount"] = round(opening_advance, 2)
     # Si la unica estimacion sigue abierta, los pagos previos se calculan como
