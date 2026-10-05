@@ -333,18 +333,48 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       captureMode: mode,
       globalProgressPct: estimation.globalProgressPct != null ? String(estimation.globalProgressPct) : '',
       groups: buildGroupForm(previousQty, estimation.groupProgress, Object.keys(previousAmountByGroup).length ? previousAmountByGroup : null),
-      lineItems: (estimation.lineItems || []).map((li) => ({
-        conceptoId: li.conceptoId,
-        description: li.description,
-        unit: li.unit,
-        group: li.group || '',
-        unitPrice: li.unitPrice,
-        contractedQuantity: li.contractedQuantity,
-        previousCumulativeQuantity: li.previousCumulativeQuantity,
-        previousProgressPct: String(li.previousProgressPct ?? pctOf(li.previousCumulativeQuantity, li.contractedQuantity)),
-        progressPct: String(li.progressPct ?? pctOf(li.cumulativeQuantity, li.contractedQuantity)),
-        periodQuantity: String(li.periodQuantity ?? ''),
-      })),
+      // Se arma con los conceptos ACTUALES del presupuesto (con el avance que ya traía el
+      // borrador): así los extras agregados después de crear el borrador también cuentan.
+      lineItems: (() => {
+        const savedById = new Map((estimation.lineItems || []).map((li) => [li.conceptoId, li]));
+        const concepts = budgetDetail?.lineItems || [];
+        if (!concepts.length) {
+          return (estimation.lineItems || []).map((li) => ({
+            conceptoId: li.conceptoId,
+            description: li.description,
+            unit: li.unit,
+            group: li.group || '',
+            unitPrice: li.unitPrice,
+            contractedQuantity: li.contractedQuantity,
+            previousCumulativeQuantity: li.previousCumulativeQuantity,
+            previousProgressPct: String(li.previousProgressPct ?? pctOf(li.previousCumulativeQuantity, li.contractedQuantity)),
+            progressPct: String(li.progressPct ?? pctOf(li.cumulativeQuantity, li.contractedQuantity)),
+            periodQuantity: String(li.periodQuantity ?? ''),
+          }));
+        }
+        return concepts.map((concept) => {
+          const li = savedById.get(concept.id);
+          const base = {
+            conceptoId: concept.id,
+            description: concept.description,
+            unit: concept.unit,
+            group: concept.group || '',
+            unitPrice: concept.unitPrice,
+            contractedQuantity: concept.quantity,
+          };
+          if (!li) {
+            // concepto agregado después (extra): sin historial en este borrador
+            return { ...base, previousCumulativeQuantity: 0, previousProgressPct: '0', progressPct: '0', periodQuantity: '' };
+          }
+          return {
+            ...base,
+            previousCumulativeQuantity: li.previousCumulativeQuantity,
+            previousProgressPct: String(li.previousProgressPct ?? pctOf(li.previousCumulativeQuantity, li.contractedQuantity)),
+            progressPct: String(li.progressPct ?? pctOf(li.cumulativeQuantity, li.contractedQuantity)),
+            periodQuantity: String(li.periodQuantity ?? ''),
+          };
+        });
+      })(),
     });
     setShowEstimationForm(true);
   }
