@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
 import { ExtrasPanel } from './ExtrasPanel.jsx';
-import { formatCurrency, formatDate, formatPct, groupLabel } from './estimationShared.js';
+import { formatCurrency, formatDate, formatPct, groupLabel, openAuthorizedSheet } from './estimationShared.js';
 
 const WORKFLOW_LABELS = {
   BORRADOR: 'Borrador',
@@ -602,6 +602,25 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     openEstimationView(row);
   }
 
+  // Abre la hoja de autorización (imprimir / guardar como PDF). Desde la cola se carga primero el detalle.
+  async function printAuthorized(estimation) {
+    setError('');
+    try {
+      let budget = budgetDetail && budgetDetail.id === estimation.estimationBudgetId ? budgetDetail : null;
+      let full = estimation.groupBreakdown ? estimation : null;
+      if (!budget) budget = await api.getEstimationBudget(estimation.estimationBudgetId);
+      if (!full) {
+        const list = await api.estimations(estimation.estimationBudgetId);
+        full = (Array.isArray(list) ? list : list?.items || []).find((e) => e.id === estimation.id) || estimation;
+      }
+      if (!openAuthorizedSheet({ ...estimation, ...full }, budget)) {
+        setError('El navegador bloqueó la ventana. Permite ventanas emergentes para generar el PDF.');
+      }
+    } catch (err) {
+      setError(err?.message || 'No se pudo generar el PDF.');
+    }
+  }
+
   async function deleteEstimationRow(estimation) {
     const confirmed = window.confirm(`¿Eliminar la estimación #${estimation.folio}? Esta acción no se puede deshacer.`);
     if (!confirmed) return;
@@ -697,6 +716,11 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                           <button type="button" onClick={() => openEstimationFromQueue(row)}>
                             {section === 'review' && canApproveProject(row.projectId) ? 'Revisar' : section === 'review' ? 'Ver' : 'Abrir'}
                           </button>
+                          {section === 'payable' && (
+                            <button type="button" className="secondary" onClick={() => printAuthorized(row)}>
+                              PDF autorizado
+                            </button>
+                          )}
                           {section === 'payable' && (
                             <button type="button" className="secondary" onClick={() => markEstimationPaid(row)} disabled={saving}>
                               Marcar pagada
@@ -1001,6 +1025,11 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                                 <button type="button" className="secondary" onClick={() => openEstimationView(estimation)}>
                                   {workflow === 'ENVIADA' && canApproveProject(estimation.projectId || budgetDetail?.projectId) ? 'Revisar' : 'Ver'}
                                 </button>
+                                {workflow === 'APROBADA' && (
+                                  <button type="button" className="secondary" onClick={() => printAuthorized(estimation)}>
+                                    PDF autorizado
+                                  </button>
+                                )}
                                 {canEdit && (
                                   <button type="button" className="secondary" onClick={() => startEditEstimation(estimation)}>
                                     Editar
@@ -1053,7 +1082,12 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         {formatDate(viewingEstimation.periodStart)} – {formatDate(viewingEstimation.periodEnd)}
                       </span>
                     </div>
-                    <button type="button" className="secondary" onClick={() => setViewingEstimation(null)}>✕ Cerrar</button>
+                    <div className="row" style={{ gap: 6 }}>
+                      {viewingEstimation.workflowStatus === 'APROBADA' && (
+                        <button type="button" onClick={() => printAuthorized(viewingEstimation)}>PDF autorizado</button>
+                      )}
+                      <button type="button" className="secondary" onClick={() => setViewingEstimation(null)}>✕ Cerrar</button>
+                    </div>
                   </div>
 
                   {viewingEstimation.returnReason && viewingEstimation.workflowStatus === 'BORRADOR' && (

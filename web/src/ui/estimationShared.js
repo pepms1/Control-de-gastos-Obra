@@ -143,3 +143,87 @@ export function summarizeBudgets(budgetRows) {
 export function isBlankConceptoRow(row) {
   return !String(row.description || '').trim() && !String(row.quantity || '').trim() && !String(row.unitPrice || '').trim();
 }
+
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+// Hoja de autorización lista para imprimir / guardar como PDF (sin dependencias).
+// Solo incluye la hoja de estimación hacia abajo; el monto autorizado y quién autorizó van en grande.
+export function buildAuthorizedSheetHtml(estimation, budget = {}) {
+  const sheet = estimation.groupBreakdown || [];
+  const sum = (key) => sheet.reduce((total, row) => total + (Number(row[key]) || 0), 0);
+  const totalBudget = sum('budgetAmount');
+  const advanceGiven = budget.advanceAmortizationEnabled ? Number(budget.advanceAmount) || 0 : 0;
+  const showPaidLines = Number(estimation.priorPaidApplied) > 0;
+  const paidToDate = (Number(estimation.priorPaidApplied) || 0) + advanceGiven;
+  const money = formatCurrency;
+  const hasGroups = sheet.some((row) => row.group);
+  const requested = estimation.requestedAmount != null ? Number(estimation.requestedAmount) : null;
+
+  const rows = sheet.map((row) => `<tr>
+    <td>${escapeHtml(groupLabel(row.group))}${row.isExtra ? ' <em>(extra)</em>' : ''}</td>
+    <td class="n">${money(row.budgetAmount)}</td>
+    <td class="n">${Number(row.advanceAmount) > 0 ? money(row.advanceAmount) : '—'}</td>
+    <td class="n">${Number(row.advancePct) > 0 ? formatPct(row.advancePct) : '—'}</td>
+    <td class="n">${money(row.cumulativeAmount)}</td>
+    <td class="n">${formatPct(row.cumulativePct)}</td>
+    <td class="n">${Number(row.cumulativeAmortization) > 0 ? money(row.cumulativeAmortization) : '—'}</td>
+    <td class="n">${money(row.netAmount)}</td></tr>`).join('');
+
+  const conceptRows = (estimation.lineItems || []).filter((li) => Number(li.periodAmount) !== 0).map((li) => `<tr>
+    <td>${escapeHtml(li.description)}</td><td>${escapeHtml(li.unit || '—')}</td>
+    <td class="n">${formatPct(li.previousProgressPct)}</td><td class="n">${formatPct(li.progressPct)}</td>
+    <td class="n">${money(li.periodAmount)}</td></tr>`).join('');
+
+  const totals = [
+    ['avance acumulado +', money(sum('cumulativeAmount'))],
+    ['amortización de anticipos −', money(sum('cumulativeAmortization'))],
+    ['saldo acumulado', money(sum('netAmount'))],
+    Number(estimation.retentionAmount) > 0 ? ['retención −', money(estimation.retentionAmount)] : null,
+    showPaidLines && advanceGiven > 0 ? ['anticipo +', money(advanceGiven)] : null,
+    showPaidLines ? ['pagado a la fecha −', money(paidToDate)] : null,
+    ['saldo total (a liberar)', money(estimation.totalToPay)],
+  ].filter(Boolean).map(([label, value]) => `<div>${label} <strong>${value}</strong></div>`).join('');
+
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8">
+<title>Estimación ${escapeHtml(estimation.folio)} autorizada</title>
+<style>
+  body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:28px;font-size:12px}
+  h1{font-size:18px;margin:0 0 2px} .sub{color:#555;margin-bottom:14px}
+  .auth{border:2px solid #166534;background:#f0fdf4;border-radius:8px;padding:14px 18px;margin:12px 0 18px}
+  .auth .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#166534}
+  .auth .amt{font-size:34px;font-weight:700;color:#14532d;margin:2px 0}
+  .auth .who{font-size:15px;font-weight:600}
+  table{width:100%;border-collapse:collapse;margin:8px 0} th,td{border:1px solid #ccc;padding:4px 6px;text-align:left}
+  th{background:#f3f4f6} td.n{text-align:right} tr.tot td{font-weight:700;background:#fafafa}
+  h2{font-size:13px;margin:16px 0 4px} .totals{text-align:right;line-height:1.6;margin-top:6px}
+  @media print{body{margin:12mm}}
+</style></head><body>
+<h1>Estimación #${escapeHtml(estimation.folio)} · ${escapeHtml(budget.supplierNameSnapshot || estimation.supplierName || '')}</h1>
+<div class="sub">${escapeHtml(budget.name || estimation.budgetName || '')} · Periodo ${formatDate(estimation.periodStart)} – ${formatDate(estimation.periodEnd)}</div>
+<div class="auth">
+  <div class="lbl">Monto autorizado</div>
+  <div class="amt">${money(estimation.authorizedAmount)}</div>
+  <div class="who">Autorizó: ${escapeHtml(estimation.approvedBy || '—')} · ${formatDate(estimation.approvedAt)}</div>
+  ${requested !== null ? `<div>Solicitado por el contratista: ${money(requested)}</div>` : ''}
+  <div>Avance calculado (a liberar): ${money(estimation.totalToPay)}</div>
+  ${estimation.authorizationNote ? `<div>Motivo: ${escapeHtml(estimation.authorizationNote)}</div>` : ''}
+</div>
+<h2>Hoja de estimación${hasGroups ? ' por grupo (acumulado a la fecha)' : ''}</h2>
+${hasGroups ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Anticipo</th><th>%</th><th>Avance $</th><th>Avance %</th><th>Amortización</th><th>Saldo</th></tr></thead><tbody>${rows}
+<tr class="tot"><td>Total</td><td class="n">${money(totalBudget)}</td><td class="n">${money(sum('advanceAmount'))}</td><td></td><td class="n">${money(sum('cumulativeAmount'))}</td><td class="n">${formatPct(totalBudget > 0 ? (sum('cumulativeAmount') / totalBudget) * 100 : 0)}</td><td class="n">${money(sum('cumulativeAmortization'))}</td><td class="n">${money(sum('netAmount'))}</td></tr></tbody></table>`
+: `<table><thead><tr><th>Concepto</th><th>Unidad</th><th>Avance previo</th><th>Avance acumulado</th><th>Importe periodo</th></tr></thead><tbody>${conceptRows}</tbody></table>`}
+<div class="totals">${totals}</div>
+</body></html>`;
+}
+
+export function openAuthorizedSheet(estimation, budget) {
+  const win = window.open('', '_blank');
+  if (!win) return false;
+  win.document.open();
+  win.document.write(buildAuthorizedSheetHtml(estimation, budget));
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 300);
+  return true;
+}
