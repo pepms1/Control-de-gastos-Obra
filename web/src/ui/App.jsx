@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
 import { isSapSboTransaction } from '../transactions/helpers.js';
 import { ImportSapScreen, LatestImportsScreen, SuspiciousProjectResolutionScreen } from './ImportAndAdminScreens.jsx';
@@ -330,11 +330,29 @@ function SourceBadges({ transaction }) {
 }
 
 /* ================= NAV ================= */
+// Cada módulo tiene su propia URL (/estimaciones, /presupuestos...), así al recargar
+// la página te quedas en el mismo módulo. vercel.json ya manda cualquier ruta a la app.
+const TAB_PATHS = {
+  dashboard: 'dashboard',
+  search: 'buscar',
+  budgets: 'presupuestos',
+  estimaciones: 'estimaciones',
+  settings: 'ajustes',
+};
+const PATH_TABS = Object.fromEntries(Object.entries(TAB_PATHS).map(([tabKey, path]) => [path, tabKey]));
+
+function tabFromLocation() {
+  if (typeof window === 'undefined') return null;
+  const slug = window.location.pathname.replace(/^\/+|\/+$/g, '').split('/')[0].toLowerCase();
+  return PATH_TABS[slug] || null;
+}
+
 function Nav({
   tab,
   setTab,
   role,
   canCaptureEstimations,
+  pendingEstimations = 0,
   username,
   displayName,
   onLogout,
@@ -401,16 +419,21 @@ function Nav({
           <div className="nav-tabs-pill">
             {items
               .filter(([, , show]) => show)
-              .map(([k, label]) => (
-                <button
-                  key={k}
-                  type="button"
-                  className={tab === k ? 'active' : ''}
-                  onClick={() => setTab(k)}
-                >
-                  {label}
-                </button>
-              ))}
+              .map(([k, label]) => {
+                const flashing = k === 'estimaciones' && pendingEstimations > 0;
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    className={[tab === k ? 'active' : '', flashing ? 'nav-flash' : ''].filter(Boolean).join(' ')}
+                    onClick={() => setTab(k)}
+                    title={flashing ? `${pendingEstimations} estimación(es) por autorizar` : undefined}
+                  >
+                    {label}
+                    {flashing && <span className="nav-badge" aria-label={`${pendingEstimations} por autorizar`}>{pendingEstimations}</span>}
+                  </button>
+                );
+              })}
           </div>
         </div>
 
@@ -432,16 +455,20 @@ function Nav({
       </div>
 
       <div className="mobile-bottom-nav">
-        {items.filter(([, , show]) => show).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            className={tab === key ? 'active' : ''}
-            onClick={() => setTab(key)}
-          >
-            {label}
-          </button>
-        ))}
+        {items.filter(([, , show]) => show).map(([key, label]) => {
+          const flashing = key === 'estimaciones' && pendingEstimations > 0;
+          return (
+            <button
+              key={key}
+              type="button"
+              className={[tab === key ? 'active' : '', flashing ? 'nav-flash' : ''].filter(Boolean).join(' ')}
+              onClick={() => setTab(key)}
+            >
+              {label}
+              {flashing && <span className="nav-badge" aria-label={`${pendingEstimations} por autorizar`}>{pendingEstimations}</span>}
+            </button>
+          );
+        })}
       </div>
     </>
   );
@@ -519,7 +546,8 @@ function Login({ onLogin }) {
 
 /* ================= APP ================= */
 export default function App() {
-  const [tab, setTab] = useState('dashboard');
+  const [tab, setTab] = useState(() => tabFromLocation() || 'dashboard');
+  const [sessionVerified, setSessionVerified] = useState(false);
   const [dashboardType, setDashboardType] = useState('expenses');
   const [cats, setCats] = useState([]);
   const [vendors, setVendors] = useState([]);
@@ -541,6 +569,7 @@ export default function App() {
   const canUseAdminPreferences = isAdminUser || isSuperAdminUser;
   const isAdmin = isSuperAdminUser;
   const [estimationsTargetBudgetId, setEstimationsTargetBudgetId] = useState(null);
+  const [pendingEstimations, setPendingEstimations] = useState(0);
   const canCaptureEstimations = isSuperAdminUser || isAdminUser || Boolean(session.canCaptureEstimations);
   const isDarkMode = themePreference === 'dark';
 
@@ -592,7 +621,10 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!session.token) return;
+    if (!session.token) {
+      setSessionVerified(false);
+      return undefined;
+    }
     let active = true;
 
     async function bootstrapSessionData() {
@@ -614,6 +646,7 @@ export default function App() {
         clearSession();
         setSession(getSession());
       }
+      if (active) setSessionVerified(true);
 
       refreshCatalog().catch(() => {});
 
@@ -671,6 +704,9 @@ export default function App() {
     if (tab === 'transactions') {
       setTab('settings');
     }
+    // Hasta confirmar el usuario con /me no se saca a nadie de su módulo (al recargar, los
+    // permisos guardados pueden estar desactualizados).
+    if (!sessionVerified) return;
     if (!(isSuperAdminUser || isAdminUser) && tab === 'budgets') {
       setTab('dashboard');
     }
@@ -680,7 +716,57 @@ export default function App() {
     if (isViewerUser && tab === 'settings') {
       setTab('dashboard');
     }
-  }, [isSuperAdminUser, isAdminUser, isViewerUser, canCaptureEstimations, tab]);
+  }, [isSuperAdminUser, isAdminUser, isViewerUser, canCaptureEstimations, tab, sessionVerified]);
+
+  // URL <-> módulo: cambiar de módulo cambia la URL (y el botón «atrás» regresa al anterior).
+  useEffect(() => {
+    const path = `/${TAB_PATHS[tab] || 'dashboard'}`;
+    if (window.location.pathname === path) return;
+    const alreadyOnAModule = Boolean(tabFromLocation());
+    const url = `${path}${window.location.search}`;
+    if (alreadyOnAModule) window.history.pushState(null, '', url);
+    else window.history.replaceState(null, '', url);
+  }, [tab]);
+
+  useEffect(() => {
+    const onPopState = () => setTab(tabFromLocation() || 'dashboard');
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  // Quien autoriza ve parpadear «Estimaciones» mientras haya estimaciones enviadas por
+  // aprobar (de cualquier obra): al abrir la app, cada minuto, al volver a la pestaña y
+  // después de cada aprobación/devolución.
+  const isReviewerUser = isSuperAdminUser || isAdminUser;
+  const refreshPendingEstimations = useCallback(async () => {
+    if (!session.token || !isReviewerUser) {
+      setPendingEstimations(0);
+      return;
+    }
+    try {
+      const summary = await api.pendingEstimationsSummary();
+      setPendingEstimations(Number(summary?.pendingReview) || 0);
+    } catch {
+      /* sin red o sin permiso: no se cambia lo que ya se mostraba */
+    }
+  }, [session.token, isReviewerUser]);
+
+  useEffect(() => {
+    if (!session.token || !isReviewerUser) {
+      setPendingEstimations(0);
+      return undefined;
+    }
+    refreshPendingEstimations();
+    const timer = setInterval(refreshPendingEstimations, 60000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshPendingEstimations();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [session.token, isReviewerUser, refreshPendingEstimations]);
 
   if (!session.token) return <Login onLogin={setSession} />;
 
@@ -691,6 +777,7 @@ export default function App() {
         setTab={setTab}
         role={userRole}
         canCaptureEstimations={canCaptureEstimations}
+        pendingEstimations={pendingEstimations}
         username={session.username}
         displayName={session.displayName}
         onLogout={logout}
@@ -741,6 +828,7 @@ export default function App() {
             initialBudgetId={estimationsTargetBudgetId}
             onInitialBudgetConsumed={() => setEstimationsTargetBudgetId(null)}
             onOpenBudgets={() => setTab('budgets')}
+            onWorkflowChange={refreshPendingEstimations}
           />
         )}
 

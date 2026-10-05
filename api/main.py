@@ -11532,6 +11532,39 @@ def mark_estimation_paid(
     return serialize_estimation(db.estimations.find_one({"_id": oid(estimation_id)}))
 
 
+@app.get("/api/estimations/pending-summary")
+def estimations_pending_summary(user: dict = Depends(require_admin_or_superadmin)):
+    """Estimaciones enviadas que esperan autorización (todas las obras a las que
+    tiene acceso). La app lo usa para hacer parpadear el módulo hasta atenderlas."""
+    rows = list(
+        db.estimations.find(
+            {"isDeleted": {"$ne": True}, "workflowStatus": ESTIMATION_STATUS_SUBMITTED},
+            {"projectId": 1, "submittedAt": 1, "submittedBy": 1, "folio": 1},
+        )
+    )
+    by_project: dict[str, int] = {}
+    submitted_by: set[str] = set()
+    oldest = None
+    total = 0
+    for row in rows:
+        project_id = str(row.get("projectId") or "")
+        if not can_access_project(user, project_id):
+            continue
+        total += 1
+        by_project[project_id] = by_project.get(project_id, 0) + 1
+        if row.get("submittedBy"):
+            submitted_by.add(str(row.get("submittedBy")))
+        submitted_at = str(row.get("submittedAt") or "")
+        if submitted_at and (oldest is None or submitted_at < oldest):
+            oldest = submitted_at
+    return {
+        "pendingReview": total,
+        "byProject": by_project,
+        "submittedBy": sorted(submitted_by),
+        "oldestSubmittedAt": oldest,
+    }
+
+
 @app.get("/api/estimations/queue")
 def list_estimations_queue(
     projectId: str | None = None,

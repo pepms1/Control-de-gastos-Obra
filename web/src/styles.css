@@ -1271,3 +1271,40 @@ body.theme-dark .type-btn { color: var(--gray-500); }
 
 /* ── Table wrap ──────────────────────────────────────── */
 .table-wrap { overflow-x: auto; }
+
+
+/* Aviso: estimaciones enviadas por autorizar -> «Estimaciones» parpadea hasta atenderlas */
+.nav-tabs-pill button.nav-flash,
+.mobile-bottom-nav button.nav-flash {
+  position: relative;
+  animation: nav-flash-pulse 1.3s ease-in-out infinite;
+}
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 8px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+}
+@keyframes nav-flash-pulse {
+  0%, 100% { background: #fde68a; color: #92400e; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+  50%      { background: #f59e0b; color: #fff;    box-shadow: 0 0 0 5px rgba(245, 158, 11, .35); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nav-tabs-pill button.nav-flash,
+  .mobile-bottom-nav button.nav-flash {
+    animation: none;
+    background: #fde68a;
+    color: #92400e;
+    box-shadow: 0 0 0 2px #f59e0b;
+  }
+}

@@ -479,6 +479,8 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  pendingEstimationsSummary: () => backendReq('/api/estimations/pending-summary'),
+
   estimationsQueue: (params = {}) => {
     const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '')).toString();
     return backendReq(`/api/estimations/queue${qs ? `?${qs}` : ''}`);
