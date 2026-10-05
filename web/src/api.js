@@ -19,6 +19,7 @@ const USER_ID_KEY = 'obra_user_id';
 const USER_EMAIL_KEY = 'obra_user_email';
 const USER_ACTIVE_KEY = 'obra_user_is_active';
 const USER_CAN_CAPTURE_KEY = 'auth_can_capture_estimations';
+const USER_APPROVAL_PROJECTS_KEY = 'auth_estimation_approval_projects';
 const USER_UI_PREFS_KEY = 'obra_user_ui_prefs';
 export const SELECTED_PROJECT_KEY = 'selectedProjectId';
 
@@ -73,6 +74,15 @@ export function getSession() {
     email: localStorage.getItem(USER_EMAIL_KEY) || '',
     isActive: localStorage.getItem(USER_ACTIVE_KEY) !== 'false',
     canCaptureEstimations: localStorage.getItem(USER_CAN_CAPTURE_KEY) === 'true',
+    // null = aprueba estimaciones de todas las obras; lista = solo esas
+    estimationApprovalProjectIds: (() => {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(USER_APPROVAL_PROJECTS_KEY) || 'null');
+        return Array.isArray(parsed) ? parsed.map(String) : null;
+      } catch {
+        return null;
+      }
+    })(),
     uiPrefs: (() => {
       try {
         const raw = localStorage.getItem(USER_UI_PREFS_KEY);
@@ -84,7 +94,7 @@ export function getSession() {
   };
 }
 
-export function saveSession({ access_token, token, role, username, displayName, id, email, isActive, name, uiPrefs, canCaptureEstimations }) {
+export function saveSession({ access_token, token, role, username, displayName, id, email, isActive, name, uiPrefs, canCaptureEstimations, estimationApprovalProjectIds }) {
   localStorage.setItem(TOKEN_KEY, access_token || token || '');
   localStorage.setItem(ROLE_KEY, role || '');
   localStorage.setItem(USER_KEY, username || '');
@@ -93,6 +103,7 @@ export function saveSession({ access_token, token, role, username, displayName, 
   localStorage.setItem(USER_EMAIL_KEY, email || '');
   localStorage.setItem(USER_ACTIVE_KEY, String(isActive !== false));
   localStorage.setItem(USER_CAN_CAPTURE_KEY, String(Boolean(canCaptureEstimations)));
+  localStorage.setItem(USER_APPROVAL_PROJECTS_KEY, JSON.stringify(Array.isArray(estimationApprovalProjectIds) ? estimationApprovalProjectIds : null));
   localStorage.setItem(USER_UI_PREFS_KEY, JSON.stringify(uiPrefs && typeof uiPrefs === 'object' ? uiPrefs : { hiddenProjectIds: [], defaultProjectId: '' }));
 }
 
@@ -105,6 +116,7 @@ export function clearSession() {
   localStorage.removeItem(USER_EMAIL_KEY);
   localStorage.removeItem(USER_ACTIVE_KEY);
   localStorage.removeItem(USER_CAN_CAPTURE_KEY);
+  localStorage.removeItem(USER_APPROVAL_PROJECTS_KEY);
   localStorage.removeItem(USER_UI_PREFS_KEY);
 }
 
