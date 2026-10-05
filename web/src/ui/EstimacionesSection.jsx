@@ -597,6 +597,15 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     openEstimationView(row);
   }
 
+  function changeEstimationFolio(estimation) {
+    const raw = window.prompt(
+      `Número de la estimación #${estimation.folio}. Las siguientes continuarán a partir del número más alto.`,
+      String(estimation.folio),
+    );
+    if (raw === null || raw.trim() === '' || Number(raw) === Number(estimation.folio)) return;
+    runEstimationAction(api.setEstimationFolio, estimation, Number(raw));
+  }
+
   // Abre la hoja de autorización (imprimir / guardar como PDF). Desde la cola se carga primero el detalle.
   async function printAuthorized(estimation) {
     setError('');
@@ -1020,6 +1029,11 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                                 <button type="button" className="secondary" onClick={() => openEstimationView(estimation)}>
                                   {workflow === 'ENVIADA' && canApproveProject(estimation.projectId || budgetDetail?.projectId) ? 'Revisar' : 'Ver'}
                                 </button>
+                                {isReviewer && (
+                                  <button type="button" className="secondary" onClick={() => changeEstimationFolio(estimation)}>
+                                    Cambiar nº
+                                  </button>
+                                )}
                                 {workflow === 'APROBADA' && (
                                   <button type="button" className="secondary" onClick={() => printAuthorized(estimation)}>
                                     PDF autorizado

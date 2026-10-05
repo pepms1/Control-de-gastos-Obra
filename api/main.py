@@ -10103,7 +10103,15 @@ def compute_estimation_budget_totals(line_items: list[dict], advance_amount: flo
 
 
 def compute_next_estimation_folio(estimation_budget_id: str) -> int:
-    return db.estimations.count_documents({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}) + 1
+    """Consecutivo: el folio mas alto + 1 (asi, si a una estimacion se le puso un
+    numero manual, las siguientes continuan a partir de ese)."""
+    rows = list(
+        db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}})
+        .sort("folio", -1)
+        .limit(1)
+    )
+    highest = int(rows[0].get("folio") or 0) if rows else 0
+    return highest + 1
 
 
 def get_latest_estimation(estimation_budget_id: str) -> dict | None:
@@ -11505,6 +11513,44 @@ def update_estimation(estimation_budget_id: str, estimation_id: str, payload: di
     db.estimations.update_one({"_id": oid(estimation_id)}, {"$set": updates})
     saved = db.estimations.find_one({"_id": oid(estimation_id)})
     return serialize_estimation(saved) if saved else {"ok": True}
+
+
+@app.post("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}/folio")
+def set_estimation_folio(
+    estimation_budget_id: str, estimation_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)
+):
+    """Cambia el numero (folio) de una estimacion, p. ej. al tomar una obra a
+    media ejecucion. Debe ser unico en el presupuesto y respetar el orden
+    (mayor que la anterior y menor que la siguiente); las nuevas continuan
+    desde el folio mas alto."""
+    _get_estimation_budget_or_404(estimation_budget_id, user)
+    existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    raw = (payload or {}).get("folio")
+    try:
+        new_folio = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="folio debe ser un número entero")
+    if new_folio < 1:
+        raise HTTPException(status_code=400, detail="folio debe ser mayor o igual a 1")
+    rows = sorted(
+        db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}),
+        key=lambda row: int(row.get("folio") or 0),
+    )
+    others = [row for row in rows if str(row.get("_id")) != str(existing.get("_id"))]
+    if any(int(row.get("folio") or 0) == new_folio for row in others):
+        raise HTTPException(status_code=409, detail=f"Ya existe la estimación #{new_folio} en este presupuesto")
+    current = int(existing.get("folio") or 0)
+    before = [int(row.get("folio") or 0) for row in others if int(row.get("folio") or 0) < current]
+    after = [int(row.get("folio") or 0) for row in others if int(row.get("folio") or 0) > current]
+    if before and new_folio <= max(before):
+        raise HTTPException(status_code=409, detail=f"El número debe ser mayor que el de la estimación anterior (#{max(before)})")
+    if after and new_folio >= min(after):
+        raise HTTPException(status_code=409, detail=f"El número debe ser menor que el de la estimación siguiente (#{min(after)})")
+    db.estimations.update_one(
+        {"_id": oid(estimation_id)},
+        {"$set": {"folio": new_folio, "updatedAt": datetime.now(timezone.utc).isoformat()}},
+    )
+    return serialize_estimation(db.estimations.find_one({"_id": oid(estimation_id)}))
 
 
 @app.delete("/api/estimation-budgets/{estimation_budget_id}/estimations/{estimation_id}")

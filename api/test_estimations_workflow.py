@@ -554,3 +554,43 @@ class EstimationAutoPaidTests(EstimationsWorkflowTests):
         self.assertEqual([r['paymentStatus'] for r in rows], ['PAGADA', 'POR_PAGAR'])
         rows = self._list_with_paid(9000)
         self.assertEqual([r['paymentStatus'] for r in rows], ['PAGADA', 'PAGADA'])
+
+
+class EstimationFolioTests(EstimationsWorkflowTests):
+    def _closed(self, pct):
+        created = self._capture({'captureMode': 'global', 'globalProgressPct': pct})
+        self._call(main.submit_estimation, self.budget['id'], created['id'], user=self.capturist)
+        return self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=ADMIN)
+
+    def _set(self, estimation, folio):
+        return self._call(main.set_estimation_folio, self.budget['id'], estimation['id'], {'folio': folio}, user=ADMIN)
+
+    def test_manual_folio_and_next_ones_continue_from_it(self):
+        first = self._closed(30)
+        self.assertEqual(first['folio'], 1)
+        self.assertEqual(self._set(first, 32)['folio'], 32)
+        second = self._closed(60)
+        self.assertEqual(second['folio'], 33)
+
+    def test_folio_must_be_unique_and_keep_order(self):
+        first = self._closed(30)
+        second = self._closed(60)
+        for bad in (2, 3):
+            with self.assertRaises(HTTPException) as ctx:
+                self._set(first, bad)
+            self.assertEqual(ctx.exception.status_code, 409)
+        with self.assertRaises(HTTPException) as ctx:
+            self._set(second, 1)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(self._set(second, 11)['folio'], 11)
+        self.assertEqual(self._set(first, 10)['folio'], 10)
+
+    def test_folio_rejects_garbage_and_non_admins(self):
+        first = self._closed(30)
+        for bad in ('abc', 0, -3, None):
+            with self.assertRaises(HTTPException) as ctx:
+                self._set(first, bad)
+            self.assertEqual(ctx.exception.status_code, 400)
+        with self.assertRaises(HTTPException) as ctx:
+            main.require_admin_or_superadmin(user=CAPTURIST)
+        self.assertEqual(ctx.exception.status_code, 403)
