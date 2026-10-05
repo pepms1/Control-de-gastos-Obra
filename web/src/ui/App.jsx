@@ -353,6 +353,7 @@ function Nav({
   role,
   canCaptureEstimations,
   pendingEstimations = 0,
+  pendingBudgets = 0,
   username,
   displayName,
   onLogout,
@@ -420,17 +421,18 @@ function Nav({
             {items
               .filter(([, , show]) => show)
               .map(([k, label]) => {
-                const flashing = k === 'estimaciones' && pendingEstimations > 0;
+                const pendingCount = k === 'estimaciones' ? pendingEstimations : k === 'budgets' ? pendingBudgets : 0;
+                const flashing = pendingCount > 0;
                 return (
                   <button
                     key={k}
                     type="button"
                     className={[tab === k ? 'active' : '', flashing ? 'nav-flash' : ''].filter(Boolean).join(' ')}
                     onClick={() => setTab(k)}
-                    title={flashing ? `${pendingEstimations} estimación(es) por autorizar` : undefined}
+                    title={flashing ? `${pendingCount} ${k === 'budgets' ? 'presupuesto(s)' : 'estimación(es)'} por autorizar` : undefined}
                   >
                     {label}
-                    {flashing && <span className="nav-badge" aria-label={`${pendingEstimations} por autorizar`}>{pendingEstimations}</span>}
+                    {flashing && <span className="nav-badge" aria-label={`${pendingCount} por autorizar`}>{pendingCount}</span>}
                   </button>
                 );
               })}
@@ -456,7 +458,8 @@ function Nav({
 
       <div className="mobile-bottom-nav">
         {items.filter(([, , show]) => show).map(([key, label]) => {
-          const flashing = key === 'estimaciones' && pendingEstimations > 0;
+          const pendingCount = key === 'estimaciones' ? pendingEstimations : key === 'budgets' ? pendingBudgets : 0;
+          const flashing = pendingCount > 0;
           return (
             <button
               key={key}
@@ -465,7 +468,7 @@ function Nav({
               onClick={() => setTab(key)}
             >
               {label}
-              {flashing && <span className="nav-badge" aria-label={`${pendingEstimations} por autorizar`}>{pendingEstimations}</span>}
+              {flashing && <span className="nav-badge" aria-label={`${pendingCount} por autorizar`}>{pendingCount}</span>}
             </button>
           );
         })}
@@ -570,6 +573,7 @@ export default function App() {
   const isAdmin = isSuperAdminUser;
   const [estimationsTargetBudgetId, setEstimationsTargetBudgetId] = useState(null);
   const [pendingEstimations, setPendingEstimations] = useState(0);
+  const [pendingBudgets, setPendingBudgets] = useState(0);
   const canCaptureEstimations = isSuperAdminUser || isAdminUser || Boolean(session.canCaptureEstimations);
   const isDarkMode = themePreference === 'dark';
 
@@ -741,11 +745,13 @@ export default function App() {
   const refreshPendingEstimations = useCallback(async () => {
     if (!session.token || !isReviewerUser) {
       setPendingEstimations(0);
+      setPendingBudgets(0);
       return;
     }
     try {
       const summary = await api.pendingEstimationsSummary();
       setPendingEstimations(Number(summary?.pendingReview) || 0);
+      setPendingBudgets(Number(summary?.pendingBudgets) || 0);
     } catch {
       /* sin red o sin permiso: no se cambia lo que ya se mostraba */
     }
@@ -754,6 +760,7 @@ export default function App() {
   useEffect(() => {
     if (!session.token || !isReviewerUser) {
       setPendingEstimations(0);
+      setPendingBudgets(0);
       return undefined;
     }
     refreshPendingEstimations();
@@ -778,6 +785,7 @@ export default function App() {
         role={userRole}
         canCaptureEstimations={canCaptureEstimations}
         pendingEstimations={pendingEstimations}
+        pendingBudgets={pendingBudgets}
         username={session.username}
         displayName={session.displayName}
         onLogout={logout}
@@ -812,6 +820,8 @@ export default function App() {
         {tab === 'budgets' && (isSuperAdminUser || isAdminUser || canCaptureEstimations) && (
           <BudgetsSection
             isReviewer={isSuperAdminUser || isAdminUser}
+            approvalProjectIds={Array.isArray(session.estimationApprovalProjectIds) ? session.estimationApprovalProjectIds : null}
+            onApprovalChange={refreshPendingEstimations}
             projects={personalizedProjects}
             selectedProjectId={selectedProjectId}
             onOpenEstimations={(budgetId) => {

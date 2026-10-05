@@ -642,6 +642,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     }
   }
 
+  const budgetPending = budgetDetail?.approvalStatus === 'PENDIENTE';
   const hasOpenEstimation = estimationsList.some((row) => row.workflowStatus === 'BORRADOR' || row.workflowStatus === 'ENVIADA');
 
   return (
@@ -980,13 +981,18 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     <button
                       type="button"
                       onClick={startCreateEstimation}
-                      disabled={budgetDetail.isActive === false || hasOpenEstimation}
-                      title={hasOpenEstimation ? 'Hay una estimación abierta; ciérrala (aprobada) antes de crear otra' : undefined}
+                      disabled={budgetDetail.isActive === false || hasOpenEstimation || budgetPending}
+                      title={budgetPending ? 'El presupuesto está pendiente de autorización' : hasOpenEstimation ? 'Hay una estimación abierta; ciérrala (aprobada) antes de crear otra' : undefined}
                     >
                       + Nueva estimación
                     </button>
                   )}
                 </div>
+                {budgetPending && (
+                  <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
+                    Este presupuesto está pendiente de autorización{budgetDetail.reauthRequired ? ' (se modificó después de autorizado)' : ''}. Un admin debe autorizarlo en Presupuestos antes de estimar.
+                  </div>
+                )}
 
                 <div style={{ overflowX: 'auto' }}>
                   <table>

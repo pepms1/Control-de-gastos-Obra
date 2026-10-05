@@ -485,6 +485,9 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  authorizeEstimationBudget: (id) =>
+    backendReq(`/api/estimation-budgets/${id}/authorize`, { method: 'POST', body: JSON.stringify({}) }),
+
   setEstimationFolio: (estimationBudgetId, estimationId, folio) =>
     backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}/folio`, {
       method: 'POST',
