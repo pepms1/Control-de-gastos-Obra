@@ -268,6 +268,41 @@ class EstimationsWorkflowTests(phase1.EstimationsPhase1Tests):
         self.assertEqual(still_view['approvedProgressPct'], 40)  # el borrador de 70% aun no cuenta
         self.assertEqual(second['cumulativeProgressPct'], 70)
 
+    # ---- aviso para quien autoriza ----
+
+    def test_pending_summary_counts_only_submitted_estimations(self):
+        with patch.object(main, 'db', self.fake_db):
+            self.assertEqual(main.estimations_pending_summary(user=ADMIN)['pendingReview'], 0)
+
+        draft = self._capture({'captureMode': 'global', 'globalProgressPct': 20})
+        with patch.object(main, 'db', self.fake_db):
+            self.assertEqual(main.estimations_pending_summary(user=ADMIN)['pendingReview'], 0)  # un borrador no cuenta
+
+        self._call(main.submit_estimation, self.budget['id'], draft['id'], user=self.capturist)
+        with patch.object(main, 'db', self.fake_db):
+            summary = main.estimations_pending_summary(user=ADMIN)
+        self.assertEqual(summary['pendingReview'], 1)
+        self.assertEqual(summary['byProject'], {self.project_id: 1})
+        self.assertEqual(summary['submittedBy'], ['mps'])
+        self.assertTrue(summary['oldestSubmittedAt'])
+
+        self._call(main.approve_estimation, self.budget['id'], draft['id'], {}, user=ADMIN)
+        with patch.object(main, 'db', self.fake_db):
+            self.assertEqual(main.estimations_pending_summary(user=ADMIN)['pendingReview'], 0)  # aprobada: deja de avisar
+
+    def test_returned_estimation_stops_flashing_for_the_reviewer(self):
+        created = self._capture({'captureMode': 'global', 'globalProgressPct': 20, 'submit': True})
+        with patch.object(main, 'db', self.fake_db):
+            self.assertEqual(main.estimations_pending_summary(user=ADMIN)['pendingReview'], 1)
+        self._call(main.return_estimation_to_draft, self.budget['id'], created['id'], {'reason': 'Falta soporte'}, user=ADMIN)
+        with patch.object(main, 'db', self.fake_db):
+            self.assertEqual(main.estimations_pending_summary(user=ADMIN)['pendingReview'], 0)
+
+    def test_pending_summary_is_for_admins_only(self):
+        with self.assertRaises(HTTPException) as ctx:
+            main.require_admin_or_superadmin(user=CAPTURIST)
+        self.assertEqual(ctx.exception.status_code, 403)
+
     # ---- legacy estimations (created before the workflow existed) ----
 
     def test_legacy_estimation_is_admin_only(self):

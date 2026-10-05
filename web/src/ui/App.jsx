@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, clearSession, getSession, saveSession, SELECTED_PROJECT_KEY } from '../api.js';
 import { isSapSboTransaction } from '../transactions/helpers.js';
 import { ImportSapScreen, LatestImportsScreen, SuspiciousProjectResolutionScreen } from './ImportAndAdminScreens.jsx';
@@ -335,6 +335,7 @@ function Nav({
   setTab,
   role,
   canCaptureEstimations,
+  pendingEstimations = 0,
   username,
   displayName,
   onLogout,
@@ -401,16 +402,21 @@ function Nav({
           <div className="nav-tabs-pill">
             {items
               .filter(([, , show]) => show)
-              .map(([k, label]) => (
-                <button
-                  key={k}
-                  type="button"
-                  className={tab === k ? 'active' : ''}
-                  onClick={() => setTab(k)}
-                >
-                  {label}
-                </button>
-              ))}
+              .map(([k, label]) => {
+                const flashing = k === 'estimaciones' && pendingEstimations > 0;
+                return (
+                  <button
+                    key={k}
+                    type="button"
+                    className={[tab === k ? 'active' : '', flashing ? 'nav-flash' : ''].filter(Boolean).join(' ')}
+                    onClick={() => setTab(k)}
+                    title={flashing ? `${pendingEstimations} estimación(es) por autorizar` : undefined}
+                  >
+                    {label}
+                    {flashing && <span className="nav-badge" aria-label={`${pendingEstimations} por autorizar`}>{pendingEstimations}</span>}
+                  </button>
+                );
+              })}
           </div>
         </div>
 
@@ -432,16 +438,20 @@ function Nav({
       </div>
 
       <div className="mobile-bottom-nav">
-        {items.filter(([, , show]) => show).map(([key, label]) => (
-          <button
-            key={key}
-            type="button"
-            className={tab === key ? 'active' : ''}
-            onClick={() => setTab(key)}
-          >
-            {label}
-          </button>
-        ))}
+        {items.filter(([, , show]) => show).map(([key, label]) => {
+          const flashing = key === 'estimaciones' && pendingEstimations > 0;
+          return (
+            <button
+              key={key}
+              type="button"
+              className={[tab === key ? 'active' : '', flashing ? 'nav-flash' : ''].filter(Boolean).join(' ')}
+              onClick={() => setTab(key)}
+            >
+              {label}
+              {flashing && <span className="nav-badge" aria-label={`${pendingEstimations} por autorizar`}>{pendingEstimations}</span>}
+            </button>
+          );
+        })}
       </div>
     </>
   );
@@ -541,6 +551,7 @@ export default function App() {
   const canUseAdminPreferences = isAdminUser || isSuperAdminUser;
   const isAdmin = isSuperAdminUser;
   const [estimationsTargetBudgetId, setEstimationsTargetBudgetId] = useState(null);
+  const [pendingEstimations, setPendingEstimations] = useState(0);
   const canCaptureEstimations = isSuperAdminUser || isAdminUser || Boolean(session.canCaptureEstimations);
   const isDarkMode = themePreference === 'dark';
 
@@ -682,6 +693,40 @@ export default function App() {
     }
   }, [isSuperAdminUser, isAdminUser, isViewerUser, canCaptureEstimations, tab]);
 
+  // Quien autoriza ve parpadear «Estimaciones» mientras haya estimaciones enviadas por
+  // aprobar (de cualquier obra): al abrir la app, cada minuto, al volver a la pestaña y
+  // después de cada aprobación/devolución.
+  const isReviewerUser = isSuperAdminUser || isAdminUser;
+  const refreshPendingEstimations = useCallback(async () => {
+    if (!session.token || !isReviewerUser) {
+      setPendingEstimations(0);
+      return;
+    }
+    try {
+      const summary = await api.pendingEstimationsSummary();
+      setPendingEstimations(Number(summary?.pendingReview) || 0);
+    } catch {
+      /* sin red o sin permiso: no se cambia lo que ya se mostraba */
+    }
+  }, [session.token, isReviewerUser]);
+
+  useEffect(() => {
+    if (!session.token || !isReviewerUser) {
+      setPendingEstimations(0);
+      return undefined;
+    }
+    refreshPendingEstimations();
+    const timer = setInterval(refreshPendingEstimations, 60000);
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshPendingEstimations();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [session.token, isReviewerUser, refreshPendingEstimations]);
+
   if (!session.token) return <Login onLogin={setSession} />;
 
   return (
@@ -691,6 +736,7 @@ export default function App() {
         setTab={setTab}
         role={userRole}
         canCaptureEstimations={canCaptureEstimations}
+        pendingEstimations={pendingEstimations}
         username={session.username}
         displayName={session.displayName}
         onLogout={logout}
@@ -741,6 +787,7 @@ export default function App() {
             initialBudgetId={estimationsTargetBudgetId}
             onInitialBudgetConsumed={() => setEstimationsTargetBudgetId(null)}
             onOpenBudgets={() => setTab('budgets')}
+            onWorkflowChange={refreshPendingEstimations}
           />
         )}
 

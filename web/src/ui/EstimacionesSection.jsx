@@ -88,7 +88,7 @@ function computeEstimationPreview(budgetDetail, lineItemInputs, remainingBalance
   return { periodSubtotal, retentionAmount, advanceAmortizationAmount, priorPaidApplied, totalToPay };
 }
 
-export function EstimacionesSection({ projects, selectedProjectId, isReviewer = false, initialBudgetId = null, onInitialBudgetConsumed, onOpenBudgets }) {
+export function EstimacionesSection({ projects, selectedProjectId, isReviewer = false, initialBudgetId = null, onInitialBudgetConsumed, onOpenBudgets, onWorkflowChange }) {
   const [view, setView] = useState('list');
   const [section, setSection] = useState('budgets');
   const [extrasOpen, setExtrasOpen] = useState(false);
@@ -466,6 +466,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       await loadBudgetDetail(selectedBudgetId);
       await loadEstimationBudgets();
       await loadQueue();
+      if (onWorkflowChange) onWorkflowChange();
       resetEstimationForm();
     } catch (e) {
       setError(e.message || 'No se pudo guardar la estimación');
@@ -482,6 +483,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       if (selectedBudgetId) await loadBudgetDetail(selectedBudgetId);
       await loadEstimationBudgets();
       await loadQueue();
+      if (onWorkflowChange) onWorkflowChange();
       setViewingEstimation(null);
     } catch (e) {
       setError(e.message || 'No se pudo completar la acción');
