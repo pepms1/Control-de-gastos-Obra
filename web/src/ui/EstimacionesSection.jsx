@@ -852,6 +852,17 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 </div>
               </div>
 
+              {isReviewer && !hasNamedGroups && (budgetDetail.lineItems || []).length > 1 && estimationsList.length === 0 && (
+                <div className="card small" style={{ padding: 12, background: '#fef3c7', color: '#92400e' }}>
+                  Este presupuesto no tiene <strong>grupos</strong> de conceptos (tuberías, bajadas, cuarto de bombas...), por eso solo se puede estimar por
+                  concepto o en global. Para estimar por grupo, agrúpalos en Presupuestos → Editar (puedes marcar conceptos y asignarles el grupo, o
+                  usar «Agrupar desde archivo» con el Word/Excel del contratista).
+                  {onOpenBudgets && (
+                    <> <button type="button" className="secondary" onClick={onOpenBudgets} style={{ marginLeft: 8 }}>Ir a Presupuestos →</button></>
+                  )}
+                </div>
+              )}
+
               {extrasOpen && isReviewer && (
                 <ExtrasPanel
                   budget={budgetDetail}
