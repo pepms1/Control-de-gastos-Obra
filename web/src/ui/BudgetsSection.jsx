@@ -65,6 +65,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   const [transactionSearch, setTransactionSearch] = useState('');
   const [loadingTransactions, setLoadingTransactions] = useState(false);
 
+  const [viewingBudget, setViewingBudget] = useState(null);
   const [extrasBudget, setExtrasBudget] = useState(null);
   const [openingBudget, setOpeningBudget] = useState(null);
   const [openingLoading, setOpeningLoading] = useState(false);
@@ -148,6 +149,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
     setAssigningBudget(null);
     setOpeningBudget(null);
     setExtrasBudget(null);
+    setViewingBudget(null);
     setExpandedSuppliers(new Set());
   }, [selectedProjectId]);
 
@@ -249,6 +251,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   }
 
   function startEditBudget(row) {
+    setViewingBudget(null);
     resetGroupingTools();
     setEditingBudgetRow(row);
     setForm({
@@ -533,6 +536,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   }
 
   function startAssignPayments(row) {
+    setViewingBudget(null);
     setOpeningBudget(null);
     setAssigningBudget(row);
     setTransactionSearch('');
@@ -578,6 +582,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
 
   // ---- saldo inicial: pagos previos y anticipo ya entregado ----
   async function openOpeningPanel(row) {
+    setViewingBudget(null);
     closeAssignPayments();
     setOpeningBudget(row);
     setOpeningLoading(true);
@@ -1248,12 +1253,20 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                                         <td><span className={`budget-badge budget-status ${childStatus.className}`}>{childStatus.label}</span></td>
                                         <td>
                                           <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                                            <button
+                                              type="button"
+                                              className="secondary"
+                                              onClick={() => { closeAssignPayments(); setOpeningBudget(null); setExtrasBudget(null); setViewingBudget(row); }}
+                                              title="Ver el presupuesto: grupos, conceptos y totales"
+                                            >
+                                              Ver
+                                            </button>
                                             <button type="button" className="secondary" onClick={() => startEditBudget(row)}>Editar</button>
                                             <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar pagos</button>
                                             <button
                                               type="button"
                                               className="secondary"
-                                              onClick={() => { closeAssignPayments(); setOpeningBudget(null); setExtrasBudget(row); }}
+                                              onClick={() => { closeAssignPayments(); setOpeningBudget(null); setViewingBudget(null); setExtrasBudget(row); }}
                                               title="Agregar conceptos extra o un presupuesto adicional"
                                             >
                                               + Extras
@@ -1402,6 +1415,98 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                   )}
                 </div>
               )}
+
+        {viewingBudget && (() => {
+          const budget = rows.find((row) => row.id === viewingBudget.id) || viewingBudget;
+          const concepts = budget.lineItems || [];
+          const groups = budget.groups && budget.groups.length ? budget.groups : listFormGroups(concepts).map((g) => ({
+            name: g.name, budgetAmount: g.amount, advancePct: 0, advanceAmount: 0, isExtra: false,
+          }));
+          const totals = summarizeBudgets([budget]);
+          return (
+            <div className="grid budgets-assignment-panel" style={{ gap: 10, borderRadius: 10, padding: 12 }}>
+              <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <div>
+                  <strong>{budget.supplierNameSnapshot || budget.supplierKey} · {budget.name || 'Presupuesto'}</strong>
+                  <div className="small">
+                    {concepts.length} concepto(s) en {groups.length} grupo(s) · retención {formatPct(budget.retentionPct)}
+                    {Number(budget.advanceAmount) > 0 ? ` · anticipo ${formatCurrency(budget.advanceAmount)}` : ''}
+                    {budget.notes ? ` · ${budget.notes}` : ''}
+                  </div>
+                </div>
+                <div className="row" style={{ gap: 6 }}>
+                  <button type="button" className="secondary" onClick={() => { startEditBudget(budget); }}>Editar</button>
+                  {onOpenEstimations && <button type="button" onClick={() => onOpenEstimations(budget.id)}>Estimaciones →</button>}
+                  <button type="button" className="secondary" onClick={() => setViewingBudget(null)}>✕ Cerrar</button>
+                </div>
+              </div>
+              <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
+                <div><strong>Contratado:</strong> {formatCurrency(budget.totalContractedAmount)}</div>
+                {Number(budget.extraAmount) > 0 && <div><strong>Extras:</strong> {formatCurrency(budget.extraAmount)}</div>}
+                <div><strong>Pagado:</strong> {formatCurrency(budget.paidAmount)} ({formatPct(totals.paidPct)})</div>
+                <div><strong>Saldo:</strong> {formatCurrency(totals.balance)}</div>
+                <div><strong>Avance estimado:</strong> {formatPct(totals.progressPct)}</div>
+              </div>
+              <div style={{ overflowX: 'auto', maxHeight: 420, overflowY: 'auto' }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Concepto</th>
+                      <th>Unidad</th>
+                      <th>Cantidad</th>
+                      <th>Precio unitario</th>
+                      <th>Importe</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groups.map((group) => (
+                      <React.Fragment key={group.name || '__general__'}>
+                        {(groups.length > 1 || group.name) && (
+                          <tr>
+                            <td colSpan={5} style={{ fontWeight: 600, background: 'var(--gray-100)' }}>
+                              {groupLabel(group.name)}
+                              {group.isExtra && <> <span className="small" style={{ marginLeft: 6, color: '#92400e' }}>extra</span></>}
+                              {' '}
+                              <span className="small" style={{ marginLeft: 12, fontWeight: 400 }}>
+                                {formatCurrency(group.budgetAmount)}
+                                {Number(group.advancePct) > 0 ? ` · anticipo ${formatPct(group.advancePct)} (${formatCurrency(group.advanceAmount)})` : ''}
+                              </span>
+                            </td>
+                          </tr>
+                        )}
+                        {concepts
+                          .filter((concept) => (concept.group || '') === group.name)
+                          .map((concept) => (
+                            <tr key={concept.id}>
+                              <td>
+                                {concept.description}
+                                {concept.isExtra && (
+                                  <>
+                                    {' '}
+                                    <span className="small" style={{ marginLeft: 6, color: '#92400e' }} title={concept.extraNote || undefined}>
+                                      {concept.extraKind === 'adicional' ? 'adicional' : 'extra'}
+                                    </span>
+                                  </>
+                                )}
+                              </td>
+                              <td>{concept.unit || '—'}</td>
+                              <td>{concept.quantity}</td>
+                              <td>{formatCurrency(concept.unitPrice)}</td>
+                              <td>{formatCurrency(concept.amount)}</td>
+                            </tr>
+                          ))}
+                      </React.Fragment>
+                    ))}
+                    <tr style={{ fontWeight: 600 }}>
+                      <td colSpan={4}>Total contratado</td>
+                      <td>{formatCurrency(budget.totalContractedAmount)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
 
         {extrasBudget && (
           <div style={{ padding: 12 }}>
