@@ -330,6 +330,23 @@ function SourceBadges({ transaction }) {
 }
 
 /* ================= NAV ================= */
+// Cada módulo tiene su propia URL (/estimaciones, /presupuestos...), así al recargar
+// la página te quedas en el mismo módulo. vercel.json ya manda cualquier ruta a la app.
+const TAB_PATHS = {
+  dashboard: 'dashboard',
+  search: 'buscar',
+  budgets: 'presupuestos',
+  estimaciones: 'estimaciones',
+  settings: 'ajustes',
+};
+const PATH_TABS = Object.fromEntries(Object.entries(TAB_PATHS).map(([tabKey, path]) => [path, tabKey]));
+
+function tabFromLocation() {
+  if (typeof window === 'undefined') return null;
+  const slug = window.location.pathname.replace(/^\/+|\/+$/g, '').split('/')[0].toLowerCase();
+  return PATH_TABS[slug] || null;
+}
+
 function Nav({
   tab,
   setTab,
@@ -529,7 +546,8 @@ function Login({ onLogin }) {
 
 /* ================= APP ================= */
 export default function App() {
-  const [tab, setTab] = useState('dashboard');
+  const [tab, setTab] = useState(() => tabFromLocation() || 'dashboard');
+  const [sessionVerified, setSessionVerified] = useState(false);
   const [dashboardType, setDashboardType] = useState('expenses');
   const [cats, setCats] = useState([]);
   const [vendors, setVendors] = useState([]);
@@ -603,7 +621,10 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!session.token) return;
+    if (!session.token) {
+      setSessionVerified(false);
+      return undefined;
+    }
     let active = true;
 
     async function bootstrapSessionData() {
@@ -625,6 +646,7 @@ export default function App() {
         clearSession();
         setSession(getSession());
       }
+      if (active) setSessionVerified(true);
 
       refreshCatalog().catch(() => {});
 
@@ -682,6 +704,9 @@ export default function App() {
     if (tab === 'transactions') {
       setTab('settings');
     }
+    // Hasta confirmar el usuario con /me no se saca a nadie de su módulo (al recargar, los
+    // permisos guardados pueden estar desactualizados).
+    if (!sessionVerified) return;
     if (!(isSuperAdminUser || isAdminUser) && tab === 'budgets') {
       setTab('dashboard');
     }
@@ -691,7 +716,23 @@ export default function App() {
     if (isViewerUser && tab === 'settings') {
       setTab('dashboard');
     }
-  }, [isSuperAdminUser, isAdminUser, isViewerUser, canCaptureEstimations, tab]);
+  }, [isSuperAdminUser, isAdminUser, isViewerUser, canCaptureEstimations, tab, sessionVerified]);
+
+  // URL <-> módulo: cambiar de módulo cambia la URL (y el botón «atrás» regresa al anterior).
+  useEffect(() => {
+    const path = `/${TAB_PATHS[tab] || 'dashboard'}`;
+    if (window.location.pathname === path) return;
+    const alreadyOnAModule = Boolean(tabFromLocation());
+    const url = `${path}${window.location.search}`;
+    if (alreadyOnAModule) window.history.pushState(null, '', url);
+    else window.history.replaceState(null, '', url);
+  }, [tab]);
+
+  useEffect(() => {
+    const onPopState = () => setTab(tabFromLocation() || 'dashboard');
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   // Quien autoriza ve parpadear «Estimaciones» mientras haya estimaciones enviadas por
   // aprobar (de cualquier obra): al abrir la app, cada minuto, al volver a la pestaña y
