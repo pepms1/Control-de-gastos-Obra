@@ -31,7 +31,7 @@ function classifyBudgetStatus(paidPct) {
   return { label: 'En presupuesto', className: 'in-budget' };
 }
 
-export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations }) {
+export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations, isReviewer = false }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -154,7 +154,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
   }, [selectedProjectId]);
 
   useEffect(() => {
-    if (!selectedProjectId) return;
+    if (!selectedProjectId || !isReviewer) return;
     let active = true;
     api.spendByCategory({ include_iva: 'false' })
       .then((data) => { if (active) setTotalEgresosSinIva(Number(data?.total_expenses) || 0); })
@@ -712,11 +712,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
     },
   ];
 
+  // Quien solo captura presupuestos (sin rol admin) no ve pagos, saldos ni costos.
+  const visibleKpis = isReviewer ? grandKpis : grandKpis.filter((k) => !['Total pagado', '% pagado', 'Saldo disponible'].includes(k.label));
+
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       {/* KPI bar */}
       <div className="kpi-grid">
-        {grandKpis.map((k) => (
+        {visibleKpis.map((k) => (
           <div className="kpi-card" key={k.label}>
             <div className="kpi-icon" style={k.danger ? { background: 'var(--danger-bg, #fee2e2)' } : undefined}>
               {k.icon}
@@ -730,6 +733,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
         ))}
 
         {/* Costo / m² — editable inline */}
+        {isReviewer && (
         <div className="kpi-card">
           <div className="kpi-icon">
             {icon(<><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><polyline points="9 22 9 12 15 12 15 22" /></>)}
@@ -775,6 +779,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {error && <div className="small" style={{ color: '#b91c1c' }}>{error}</div>}
@@ -1108,7 +1113,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
             <button type="submit" disabled={saving}>
               {saving ? 'Guardando...' : editingBudgetRow ? 'Guardar cambios' : 'Crear presupuesto'}
             </button>
-            {editingBudgetRow && (
+            {editingBudgetRow && isReviewer && (
               <button type="button" className="secondary" onClick={deleteCurrentBudget} disabled={saving} style={{ color: '#b91c1c' }}>
                 Eliminar
               </button>
@@ -1158,11 +1163,11 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                   <th className="col-supplier">Proveedor</th>
                   <th className="col-count"># presupuestos</th>
                   <th className="col-money">Presupuesto total</th>
-                  <th className="col-money">Pagado total</th>
-                  <th className="col-money">Saldo total</th>
-                  <th className="col-progress">% pagado</th>
+                  {isReviewer && <th className="col-money">Pagado total</th>}
+                  {isReviewer && <th className="col-money">Saldo total</th>}
+                  {isReviewer && <th className="col-progress">% pagado</th>}
                   <th className="col-count">% avance estimado</th>
-                  <th className="col-status">Estado global</th>
+                  {isReviewer && <th className="col-status">Estado global</th>}
                   <th className="col-detail">Detalle</th>
                 </tr>
               </thead>
@@ -1188,18 +1193,18 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                         </td>
                         <td>{group.items.length}</td>
                         <td>{formatCurrency(group.totals.contracted)}</td>
-                        <td>{formatCurrency(group.totals.paid)}</td>
-                        <td style={{ color: group.totals.balance < 0 ? 'var(--danger-text, #b91c1c)' : undefined }}>{formatCurrency(group.totals.balance)}</td>
-                        <td>
+                        {isReviewer && <td>{formatCurrency(group.totals.paid)}</td>}
+                        {isReviewer && <td style={{ color: group.totals.balance < 0 ? 'var(--danger-text, #b91c1c)' : undefined }}>{formatCurrency(group.totals.balance)}</td>}
+                        {isReviewer && <td>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                             <div style={{ flex: 1, height: 6, background: 'var(--gray-150)', borderRadius: 99, overflow: 'hidden', minWidth: 60 }}>
                               <div style={{ height: '100%', width: `${Math.min(group.totals.paidPct, 100)}%`, background: group.totals.paidPct > 100 ? 'var(--danger-text, #b91c1c)' : 'var(--primary)', borderRadius: 99, transition: 'width .4s' }} />
                             </div>
                             <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--gray-600)', whiteSpace: 'nowrap' }}>{Math.round(group.totals.paidPct)}%</span>
                           </div>
-                        </td>
+                        </td>}
                         <td>{formatPct(group.totals.progressPct)}</td>
-                        <td><span className={`budget-badge budget-status ${status.className}`}>{status.label}</span></td>
+                        {isReviewer && <td><span className={`budget-badge budget-status ${status.className}`}>{status.label}</span></td>}
                         <td>
                           <button type="button" className="secondary" onClick={() => toggleSupplierExpand(group.key)}>
                             {isExpanded ? 'Ocultar' : 'Ver'}
@@ -1217,12 +1222,12 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                                     <th>Presupuesto</th>
                                     <th>Conceptos</th>
                                     <th>Contratado</th>
-                                    <th>Pagado</th>
-                                    <th>Saldo</th>
-                                    <th>% pagado</th>
+                                    {isReviewer && <th>Pagado</th>}
+                                    {isReviewer && <th>Saldo</th>}
+                                    {isReviewer && <th>% pagado</th>}
                                     <th>% avance estimado</th>
                                     <th>Estimaciones</th>
-                                    <th>Estado</th>
+                                    {isReviewer && <th>Estado</th>}
                                     <th>Acciones</th>
                                   </tr>
                                 </thead>
@@ -1245,12 +1250,12 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                                             <div className="small" style={{ color: '#92400e' }}>incluye {formatCurrency(row.extraAmount)} en extras</div>
                                           )}
                                         </td>
-                                        <td>{formatCurrency(row.paidAmount)}</td>
-                                        <td style={{ color: rowTotals.balance < 0 ? '#b91c1c' : undefined }}>{formatCurrency(rowTotals.balance)}</td>
-                                        <td><span className={`budget-badge budget-progress ${childStatus.className}`}>{formatPct(rowTotals.paidPct)}</span></td>
+                                        {isReviewer && <td>{formatCurrency(row.paidAmount)}</td>}
+                                        {isReviewer && <td style={{ color: rowTotals.balance < 0 ? '#b91c1c' : undefined }}>{formatCurrency(rowTotals.balance)}</td>}
+                                        {isReviewer && <td><span className={`budget-badge budget-progress ${childStatus.className}`}>{formatPct(rowTotals.paidPct)}</span></td>}
                                         <td>{formatPct(rowTotals.progressPct)}</td>
                                         <td>{row.estimationsCount}</td>
-                                        <td><span className={`budget-badge budget-status ${childStatus.className}`}>{childStatus.label}</span></td>
+                                        {isReviewer && <td><span className={`budget-badge budget-status ${childStatus.className}`}>{childStatus.label}</span></td>}
                                         <td>
                                           <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
                                             <button
@@ -1262,16 +1267,16 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                                               Ver
                                             </button>
                                             <button type="button" className="secondary" onClick={() => startEditBudget(row)}>Editar</button>
-                                            <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar pagos</button>
-                                            <button
+                                            {isReviewer && <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar pagos</button>}
+                                            {isReviewer && <button
                                               type="button"
                                               className="secondary"
                                               onClick={() => { closeAssignPayments(); setOpeningBudget(null); setViewingBudget(null); setExtrasBudget(row); }}
                                               title="Agregar conceptos extra o un presupuesto adicional"
                                             >
                                               + Extras
-                                            </button>
-                                            <button
+                                            </button>}
+                                            {isReviewer && <button
                                               type="button"
                                               className="secondary"
                                               onClick={() => openOpeningPanel(row)}
@@ -1279,7 +1284,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
                                               title={hasEstimations ? 'El saldo inicial solo puede cambiarse antes de la primera estimación' : 'Anticipo y pagos previos ya entregados'}
                                             >
                                               Saldo inicial
-                                            </button>
+                                            </button>}
                                             {onOpenEstimations && (
                                               <button type="button" onClick={() => onOpenEstimations(row.id)}>Estimaciones →</button>
                                             )}
@@ -1443,8 +1448,8 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
               <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
                 <div><strong>Contratado:</strong> {formatCurrency(budget.totalContractedAmount)}</div>
                 {Number(budget.extraAmount) > 0 && <div><strong>Extras:</strong> {formatCurrency(budget.extraAmount)}</div>}
-                <div><strong>Pagado:</strong> {formatCurrency(budget.paidAmount)} ({formatPct(totals.paidPct)})</div>
-                <div><strong>Saldo:</strong> {formatCurrency(totals.balance)}</div>
+                {isReviewer && <div><strong>Pagado:</strong> {formatCurrency(budget.paidAmount)} ({formatPct(totals.paidPct)})</div>}
+                {isReviewer && <div><strong>Saldo:</strong> {formatCurrency(totals.balance)}</div>}
                 <div><strong>Avance estimado:</strong> {formatPct(totals.progressPct)}</div>
               </div>
               <div style={{ overflowX: 'auto', maxHeight: 420, overflowY: 'auto' }}>
