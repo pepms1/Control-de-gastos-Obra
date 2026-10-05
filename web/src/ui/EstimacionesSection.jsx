@@ -1280,7 +1280,16 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 <div>
                   <div className="kpi-label">Total pagado</div>
                   <div className="kpi-value">{formatCurrency(listTotals.paidAmount)}</div>
-                  <div className="kpi-sub">{formatPct(listPaidPct)} del contratado</div>
+                  <div className="kpi-sub">egresos ligados a estos presupuestos</div>
+                </div>
+              </div>
+            )}
+            {isReviewer && (
+              <div className="kpi-card">
+                <div>
+                  <div className="kpi-label">% pagado</div>
+                  <div className="kpi-value">{formatPct(listPaidPct)}</div>
+                  <div className="kpi-sub">pagado / contratado, sin importar el avance estimado</div>
                 </div>
               </div>
             )}
@@ -1295,7 +1304,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
             )}
             <div className="kpi-card">
               <div>
-                <div className="kpi-label">Avance de obra</div>
+                <div className="kpi-label">% de avance estimado</div>
                 <div className="kpi-value">{formatPct(listProgressPct)}</div>
                 <div className="kpi-sub">{formatCurrency(listTotals.approvedProgressAmount)} en estimaciones aprobadas</div>
               </div>
