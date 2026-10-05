@@ -541,11 +541,6 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     runEstimationAction(api.returnEstimation, estimation, { reason: reason.trim() });
   }
 
-  function markEstimationPaid(estimation) {
-    if (!window.confirm(`¿Marcar la estimación #${estimation.folio} como pagada?`)) return;
-    runEstimationAction(api.markEstimationPaid, estimation, {});
-  }
-
   function openEstimationView(estimation) {
     setShowEstimationForm(false);
     setEditingEstimation(null);
@@ -680,6 +675,11 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
               Las estimaciones de esta obra las autoriza otro admin: aquí puedes verlas, pero no aprobarlas ni devolverlas.
             </div>
           )}
+          {section === 'payable' && (
+            <div className="small" style={{ padding: 12, color: '#475569' }}>
+              Se marcan como pagadas solas cuando se importa el pago del proveedor y cubre el monto autorizado.
+            </div>
+          )}
           {queueLoading ? (
             <div className="small" style={{ padding: 16 }}>Cargando...</div>
           ) : (
@@ -719,11 +719,6 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                           {section === 'payable' && (
                             <button type="button" className="secondary" onClick={() => printAuthorized(row)}>
                               PDF autorizado
-                            </button>
-                          )}
-                          {section === 'payable' && (
-                            <button type="button" className="secondary" onClick={() => markEstimationPaid(row)} disabled={saving}>
-                              Marcar pagada
                             </button>
                           )}
                         </div>
@@ -1048,11 +1043,6 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                                     style={{ color: '#b91c1c' }}
                                   >
                                     Eliminar
-                                  </button>
-                                )}
-                                {isReviewer && workflow === 'APROBADA' && estimation.paymentStatus === 'POR_PAGAR' && (
-                                  <button type="button" className="secondary" onClick={() => markEstimationPaid(estimation)} disabled={saving}>
-                                    Marcar pagada
                                   </button>
                                 )}
                               </div>
