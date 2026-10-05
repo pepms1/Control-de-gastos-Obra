@@ -31,7 +31,7 @@ function classifyBudgetStatus(paidPct) {
   return { label: 'En presupuesto', className: 'in-budget' };
 }
 
-export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations, isReviewer = false }) {
+export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations, isReviewer = false, approvalProjectIds = null, onApprovalChange }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -491,8 +491,30 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
 
       await loadBudgets();
       resetBudgetForm();
+      if (onApprovalChange) onApprovalChange();
     } catch (e) {
       setError(e.message || 'No se pudo guardar el presupuesto');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const canAuthorizeProject = (projectId) =>
+    isReviewer && (!Array.isArray(approvalProjectIds) || approvalProjectIds.includes(String(projectId)));
+
+  async function authorizeBudget(row) {
+    const confirmed = window.confirm(
+      `¿Autorizar el presupuesto «${row.name || row.supplierNameSnapshot}»? Se bloquearán conceptos, precios y volúmenes, y ya se podrá estimar.`,
+    );
+    if (!confirmed) return;
+    setSaving(true);
+    setError('');
+    try {
+      await api.authorizeEstimationBudget(row.id);
+      await loadBudgets();
+      if (onApprovalChange) onApprovalChange();
+    } catch (e) {
+      setError(e.message || 'No se pudo autorizar el presupuesto');
     } finally {
       setSaving(false);
     }
@@ -790,6 +812,22 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
             <strong>{editingBudgetRow ? 'Editar presupuesto' : 'Nuevo presupuesto'}</strong>
             <button type="button" className="secondary" onClick={resetBudgetForm}>✕ Cancelar</button>
           </div>
+          {!isReviewer && !editingBudgetRow && (
+            <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
+              Al crearlo, el presupuesto queda <strong>por autorizar</strong>: un admin debe autorizarlo antes de poder estimar sobre él.
+            </div>
+          )}
+          {!isReviewer && editingBudgetRow && editingBudgetRow.approvalStatus !== 'PENDIENTE' && (
+            <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
+              Este presupuesto ya está autorizado. Si cambias conceptos, precios unitarios, volúmenes, anticipo o retención, volverá a
+              <strong> autorización</strong> y no se podrá estimar hasta que un admin lo autorice de nuevo.
+            </div>
+          )}
+          {editingBudgetRow?.approvalStatus === 'PENDIENTE' && (
+            <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
+              Pendiente de autorización{editingBudgetRow.reauthRequired ? ' (modificado después de autorizado)' : ''}.
+            </div>
+          )}
 
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
             <div>
@@ -1242,7 +1280,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                                     return (
                                       <tr key={row.id}>
                                         <td>{project?.displayName || project?.name || row.projectId}</td>
-                                        <td>{row.name || '—'}</td>
+                                        <td>
+                                          {row.name || '—'}
+                                          {row.approvalStatus === 'PENDIENTE' && (
+                                            <div className="small" style={{ color: '#92400e', fontWeight: 600 }}>
+                                              {row.reauthRequired ? 'Por reautorizar' : 'Por autorizar'} · no se puede estimar
+                                            </div>
+                                          )}
+                                        </td>
                                         <td>{(row.lineItems || []).length}</td>
                                         <td>
                                           {formatCurrency(row.totalContractedAmount)}
@@ -1267,6 +1312,9 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                                               Ver
                                             </button>
                                             <button type="button" className="secondary" onClick={() => startEditBudget(row)}>Editar</button>
+                                            {row.approvalStatus === 'PENDIENTE' && canAuthorizeProject(row.projectId) && (
+                                              <button type="button" onClick={() => authorizeBudget(row)} disabled={saving}>Autorizar</button>
+                                            )}
                                             {isReviewer && <button type="button" className="secondary" onClick={() => startAssignPayments(row)}>Asignar pagos</button>}
                                             {isReviewer && <button
                                               type="button"

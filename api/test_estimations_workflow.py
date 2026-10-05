@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 import os
 import sys
 import unittest
@@ -622,3 +623,84 @@ class CapturistBudgetsAccessTests(EstimationsWorkflowTests):
         self.assertNotIn('paidAmount', created)
         self.assertTrue(listed)
         self.assertTrue(all('paidAmount' not in row for row in listed))
+
+
+class BudgetAuthorizationTests(EstimationsWorkflowTests):
+    """Presupuestos capturados por MPS necesitan autorización antes de estimar."""
+
+    def _create_as(self, user, **overrides):
+        with patch.object(main, 'db', self.fake_db):
+            return main.create_estimation_budget(
+                self._base_budget_payload(**overrides), SimpleNamespace(headers={}, query_params={}), user=user
+            )
+
+    def _estimate(self, budget_id, user=None):
+        with patch.object(main, 'db', self.fake_db):
+            return main.create_estimation(
+                budget_id,
+                {'periodStart': '2026-02-01', 'periodEnd': '2026-02-07', 'captureMode': 'global', 'globalProgressPct': 10},
+                user=user or self.capturist,
+            )
+
+    def test_admin_budget_is_authorized_and_capturist_budget_is_pending(self):
+        self.assertEqual(self.budget['approvalStatus'], 'AUTORIZADO')
+        pending = self._create_as(self.capturist, name='Herrería')
+        self.assertEqual(pending['approvalStatus'], 'PENDIENTE')
+        self.assertEqual(pending['submittedBy'], 'mps')
+
+    def test_cannot_estimate_on_a_pending_budget(self):
+        pending = self._create_as(self.capturist, name='Herrería')
+        with self.assertRaises(HTTPException) as ctx:
+            self._estimate(pending['id'])
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn('autorización', ctx.exception.detail)
+
+    def test_authorizing_unlocks_estimating(self):
+        pending = self._create_as(self.capturist, name='Herrería')
+        with patch.object(main, 'db', self.fake_db):
+            authorized = main.authorize_estimation_budget(pending['id'], {}, user=ADMIN)
+        self.assertEqual(authorized['approvalStatus'], 'AUTORIZADO')
+        self.assertEqual(authorized['approvedBy'], 'boss')
+        self.assertEqual(self._estimate(pending['id'])['workflowStatus'], 'BORRADOR')
+        with self.assertRaises(HTTPException) as ctx, patch.object(main, 'db', self.fake_db):
+            main.authorize_estimation_budget(pending['id'], {}, user=ADMIN)
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_capturist_changing_prices_or_volumes_requires_reauthorization(self):
+        items = [dict(i) for i in self.budget['lineItems']]
+        items[0]['unitPrice'] = 70
+        with patch.object(main, 'db', self.fake_db):
+            updated = main.update_estimation_budget(self.budget['id'], {'lineItems': items}, user=self.capturist)
+        self.assertEqual(updated['approvalStatus'], 'PENDIENTE')
+        self.assertTrue(updated['reauthRequired'])
+        with self.assertRaises(HTTPException):
+            self._estimate(self.budget['id'])
+        with patch.object(main, 'db', self.fake_db):
+            again = main.authorize_estimation_budget(self.budget['id'], {}, user=ADMIN)
+        self.assertEqual(again['approvalStatus'], 'AUTORIZADO')
+        self.assertFalse(again['reauthRequired'])
+
+    def test_non_material_edits_and_admin_edits_keep_the_authorization(self):
+        items = [dict(i) for i in self.budget['lineItems']]
+        with patch.object(main, 'db', self.fake_db):
+            same = main.update_estimation_budget(self.budget['id'], {'lineItems': items, 'notes': 'ok'}, user=self.capturist)
+        self.assertEqual(same['approvalStatus'], 'AUTORIZADO')
+        items[0]['quantity'] = 999
+        with patch.object(main, 'db', self.fake_db):
+            by_admin = main.update_estimation_budget(self.budget['id'], {'lineItems': items}, user=ADMIN)
+        self.assertEqual(by_admin['approvalStatus'], 'AUTORIZADO')
+
+    def test_legacy_budgets_without_status_count_as_authorized(self):
+        self.assertEqual(main.budget_approval_status({}), 'AUTORIZADO')
+        self.assertEqual(main.budget_approval_status({'approvalStatus': 'PENDIENTE'}), 'PENDIENTE')
+
+    def test_pending_budgets_are_counted_for_the_flash(self):
+        self._create_as(self.capturist, name='Herrería')
+        with patch.object(main, 'db', self.fake_db):
+            summary = main.estimations_pending_summary(user=ADMIN)
+        self.assertEqual(summary['pendingBudgets'], 1)
+
+    def test_only_admins_can_authorize(self):
+        import inspect
+        dep = inspect.signature(main.authorize_estimation_budget).parameters['user'].default.dependency
+        self.assertIs(dep, main.require_admin_or_superadmin)

@@ -10701,8 +10701,45 @@ def get_open_estimation(estimation_budget_id: str, exclude_estimation_id: str | 
 
 
 
+BUDGET_APPROVAL_PENDING = "PENDIENTE"
+BUDGET_APPROVAL_AUTHORIZED = "AUTORIZADO"
+
+
+def budget_approval_status(budget: dict | None) -> str:
+    """Presupuestos anteriores al flujo de autorizacion no tienen estado y se
+    consideran autorizados (no se bloquea lo que ya se estaba estimando)."""
+    return normalize_non_empty_string((budget or {}).get("approvalStatus")) or BUDGET_APPROVAL_AUTHORIZED
+
+
+def _require_budget_authorized(budget: dict) -> None:
+    if budget_approval_status(budget) != BUDGET_APPROVAL_AUTHORIZED:
+        raise HTTPException(
+            status_code=409,
+            detail="El presupuesto está pendiente de autorización: un admin debe autorizarlo antes de estimar",
+        )
+
+
+def _budget_material_snapshot(line_items, advance_amount, group_advance_pcts, retention_pct, advance_enabled):
+    """Lo que, al cambiar, exige reautorizar: conceptos, precios, volumenes, grupos,
+    anticipo y retencion."""
+    items = sorted(
+        (
+            str(i.get("id") or ""),
+            str(i.get("description") or "").strip(),
+            str(i.get("unit") or "").strip(),
+            round(float(i.get("quantity") or 0), 8),
+            round(float(i.get("unitPrice") or 0), 8),
+            normalize_group_name(i.get("group")),
+        )
+        for i in (line_items or [])
+    )
+    pcts = sorted((str(k), round(float(v or 0), 4)) for k, v in (normalize_group_advance_pcts(group_advance_pcts) or {}).items())
+    return (items, round(float(advance_amount or 0), 2), pcts, round(float(retention_pct or 0), 4), bool(advance_enabled))
+
+
 def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dict:
     payload = serialize_raw_doc(doc)
+    payload["approvalStatus"] = budget_approval_status(doc)
     estimation_budget_id = str(payload.get("id") or "")
     project_id = str(payload.get("projectId") or "")
     supplier_key = str(payload.get("supplierKey") or "")
@@ -10870,6 +10907,12 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
         "createdAt": now_iso,
         "updatedAt": now_iso,
     }
+    username = normalize_non_empty_string(user.get("username")) or "system"
+    if is_admin_or_superadmin_user(user):
+        # Un admin crea y queda autorizado: el es quien autoriza.
+        doc.update({"approvalStatus": BUDGET_APPROVAL_AUTHORIZED, "approvedBy": username, "approvedAt": now_iso})
+    else:
+        doc.update({"approvalStatus": BUDGET_APPROVAL_PENDING, "submittedBy": username, "submittedAt": now_iso})
     inserted_id = db.estimationBudgets.insert_one(doc).inserted_id
     saved = db.estimationBudgets.find_one({"_id": inserted_id})
     return serialize_estimation_budget(saved, include_payments=is_admin_or_superadmin_user(user)) if saved else {"ok": True, "id": str(inserted_id)}
@@ -11284,9 +11327,55 @@ def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dic
         return serialize_estimation_budget(existing, include_payments=is_admin_or_superadmin_user(user))
 
     updates["updatedAt"] = datetime.now(timezone.utc).isoformat()
+    if not is_admin_or_superadmin_user(user) and budget_approval_status(existing) == BUDGET_APPROVAL_AUTHORIZED:
+        before = _budget_material_snapshot(
+            existing.get("lineItems"), existing.get("advanceAmount"), existing.get("groupAdvancePcts"),
+            existing.get("retentionPct"), existing.get("advanceAmortizationEnabled"),
+        )
+        after = _budget_material_snapshot(
+            line_items, advance_amount, group_advance_pcts,
+            updates.get("retentionPct", existing.get("retentionPct")),
+            updates.get("advanceAmortizationEnabled", existing.get("advanceAmortizationEnabled")),
+        )
+        if before != after:
+            updates.update({
+                "approvalStatus": BUDGET_APPROVAL_PENDING,
+                "reauthRequired": True,
+                "submittedBy": normalize_non_empty_string(user.get("username")) or "system",
+                "submittedAt": updates["updatedAt"],
+            })
     db.estimationBudgets.update_one({"_id": oid(estimation_budget_id)}, {"$set": updates})
     saved = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
     return serialize_estimation_budget(saved, include_payments=is_admin_or_superadmin_user(user)) if saved else {"ok": True}
+
+
+@app.post("/api/estimation-budgets/{estimation_budget_id}/authorize")
+def authorize_estimation_budget(
+    estimation_budget_id: str, payload: dict | None = None, user: dict = Depends(require_admin_or_superadmin)
+):
+    """Un admin autoriza el presupuesto (conceptos, precios y volumenes). Hasta
+    entonces no se puede estimar sobre el; si quien captura lo modifica despues,
+    vuelve a quedar pendiente."""
+    existing = _get_estimation_budget_or_404(estimation_budget_id, user)
+    _require_approval_assignment(user, existing)
+    if budget_approval_status(existing) == BUDGET_APPROVAL_AUTHORIZED:
+        raise HTTPException(status_code=409, detail="El presupuesto ya está autorizado")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db.estimationBudgets.update_one(
+        {"_id": oid(estimation_budget_id)},
+        {
+            "$set": {
+                "approvalStatus": BUDGET_APPROVAL_AUTHORIZED,
+                "approvedBy": normalize_non_empty_string(user.get("username")) or "system",
+                "approvedAt": now_iso,
+                "reauthRequired": False,
+                "updatedAt": now_iso,
+            }
+        },
+    )
+    return serialize_estimation_budget(
+        db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)}), include_payments=True
+    )
 
 
 @app.delete("/api/estimation-budgets/{estimation_budget_id}")
@@ -11419,6 +11508,7 @@ def create_estimation(estimation_budget_id: str, payload: dict, user: dict = Dep
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
     if not estimation_budget.get("isActive", True):
         raise HTTPException(status_code=409, detail="Cannot create an estimación for an inactive estimation budget")
+    _require_budget_authorized(estimation_budget)
 
     period_start = normalize_non_empty_string((payload or {}).get("periodStart"))
     period_end = normalize_non_empty_string((payload or {}).get("periodEnd"))
@@ -11577,6 +11667,7 @@ def submit_estimation(estimation_budget_id: str, estimation_id: str, user: dict 
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
     _require_estimation_status(existing, (ESTIMATION_STATUS_DRAFT,), "submit")
+    _require_budget_authorized(estimation_budget)
     existing = refresh_open_estimation_money(existing, estimation_budget)
     _require_positive_progress(existing)
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -11731,8 +11822,14 @@ def estimations_pending_summary(user: dict = Depends(require_admin_or_superadmin
         submitted_at = str(row.get("submittedAt") or "")
         if submitted_at and (oldest is None or submitted_at < oldest):
             oldest = submitted_at
+    pending_budgets = 0
+    for budget_row in db.estimationBudgets.find({"approvalStatus": BUDGET_APPROVAL_PENDING}):
+        project_id = str(budget_row.get("projectId") or "")
+        if can_access_project(user, project_id) and can_approve_estimations(user, project_id):
+            pending_budgets += 1
     return {
         "pendingReview": total,
+        "pendingBudgets": pending_budgets,
         "byProject": by_project,
         "submittedBy": sorted(submitted_by),
         "oldestSubmittedAt": oldest,
