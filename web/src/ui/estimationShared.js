@@ -144,12 +144,35 @@ export function isBlankConceptoRow(row) {
   return !String(row.description || '').trim() && !String(row.quantity || '').trim() && !String(row.unitPrice || '').trim();
 }
 
+// Conceptos de un grupo de extras con su avance acumulado, para desglosarlos en la hoja.
+export function extraConceptsOfGroup(group, estimation, budget) {
+  const progressById = {};
+  (estimation?.lineItems || []).forEach((li) => { progressById[li.conceptoId] = li; });
+  return (budget?.lineItems || [])
+    .filter((c) => c.isExtra && (c.group || '') === (group || ''))
+    .map((c) => {
+      const li = progressById[c.id] || {};
+      const unitPrice = Number(c.unitPrice) || 0;
+      const budgetAmount = Number(c.amount) || (Number(c.quantity) || 0) * unitPrice;
+      const cumulativeAmount = (Number(li.cumulativeQuantity) || 0) * unitPrice;
+      return {
+        id: c.id,
+        description: c.description,
+        unit: c.unit,
+        quantity: c.quantity,
+        budgetAmount,
+        cumulativeAmount,
+        cumulativePct: budgetAmount > 0 ? (cumulativeAmount / budgetAmount) * 100 : 0,
+      };
+    });
+}
+
 const escapeHtml = (value) => String(value ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 // Hoja de autorización lista para imprimir / guardar como PDF (sin dependencias).
 // Solo incluye la hoja de estimación hacia abajo; el monto autorizado y quién autorizó van en grande.
-export function buildAuthorizedSheetHtml(estimation, budget = {}) {
+export function buildAuthorizedSheetHtml(estimation, budget = {}, projectName = '') {
   const sheet = estimation.groupBreakdown || [];
   const sum = (key) => sheet.reduce((total, row) => total + (Number(row[key]) || 0), 0);
   const totalBudget = sum('budgetAmount');
@@ -160,6 +183,12 @@ export function buildAuthorizedSheetHtml(estimation, budget = {}) {
   const hasGroups = sheet.some((row) => row.group);
   const requested = estimation.requestedAmount != null ? Number(estimation.requestedAmount) : null;
 
+  const extraRows = (row) => (row.isExtra ? extraConceptsOfGroup(row.group, estimation, budget) : []).map((c) => `<tr class="sub">
+    <td>&nbsp;&nbsp;↳ ${escapeHtml(c.description)}${c.unit ? ` (${escapeHtml(c.quantity)} ${escapeHtml(c.unit)})` : ''}</td>
+    <td class="n">${money(c.budgetAmount)}</td><td class="n">—</td><td class="n">—</td>
+    <td class="n">${money(c.cumulativeAmount)}</td><td class="n">${formatPct(c.cumulativePct)}</td><td class="n">—</td>
+    <td class="n">${money(c.cumulativeAmount)}</td></tr>`).join('');
+
   const rows = sheet.map((row) => `<tr>
     <td>${escapeHtml(groupLabel(row.group))}${row.isExtra ? ' <em>(extra)</em>' : ''}</td>
     <td class="n">${money(row.budgetAmount)}</td>
@@ -168,7 +197,7 @@ export function buildAuthorizedSheetHtml(estimation, budget = {}) {
     <td class="n">${money(row.cumulativeAmount)}</td>
     <td class="n">${formatPct(row.cumulativePct)}</td>
     <td class="n">${Number(row.cumulativeAmortization) > 0 ? money(row.cumulativeAmortization) : '—'}</td>
-    <td class="n">${money(row.netAmount)}</td></tr>`).join('');
+    <td class="n">${money(row.netAmount)}</td></tr>${extraRows(row)}`).join('');
 
   const conceptRows = (estimation.lineItems || []).filter((li) => Number(li.periodAmount) !== 0).map((li) => `<tr>
     <td>${escapeHtml(li.description)}</td><td>${escapeHtml(li.unit || '—')}</td>
@@ -189,13 +218,14 @@ export function buildAuthorizedSheetHtml(estimation, budget = {}) {
 <title>Estimación ${escapeHtml(estimation.folio)} autorizada</title>
 <style>
   body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:28px;font-size:12px}
+    .obra{font-size:20px;font-weight:700;margin-bottom:6px}
   h1{font-size:18px;margin:0 0 2px} .sub{color:#555;margin-bottom:14px}
   .auth{border:2px solid #166534;background:#f0fdf4;border-radius:8px;padding:14px 18px;margin:12px 0 18px}
   .auth .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#166534}
   .auth .amt{font-size:34px;font-weight:700;color:#14532d;margin:2px 0}
   .auth .who{font-size:15px;font-weight:600}
   table{width:100%;border-collapse:collapse;margin:8px 0} th,td{border:1px solid #ccc;padding:4px 6px;text-align:left}
-  th{background:#f3f4f6} td.n{text-align:right} tr.tot td{font-weight:700;background:#fafafa}
+  th{background:#f3f4f6} td.n{text-align:right} tr.tot td{font-weight:700;background:#fafafa} tr.sub td{font-size:11px;color:#444;background:#fcfcfc}
   h2{font-size:13px;margin:16px 0 4px} .totals{text-align:right;line-height:1.6;margin-top:6px}
   .sign{display:flex;gap:40px;margin-top:48px;page-break-inside:avoid}
   .sign div{flex:1;text-align:center}
@@ -203,6 +233,7 @@ export function buildAuthorizedSheetHtml(estimation, budget = {}) {
   .sign small{color:#555}
   @media print{body{margin:12mm}}
 </style></head><body>
+${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
 <h1>Estimación #${escapeHtml(estimation.folio)} · ${escapeHtml(budget.supplierNameSnapshot || estimation.supplierName || '')}</h1>
 <div class="sub">${escapeHtml(budget.name || estimation.budgetName || '')} · Periodo ${formatDate(estimation.periodStart)} – ${formatDate(estimation.periodEnd)}</div>
 <div class="auth">
@@ -220,16 +251,15 @@ ${hasGroups ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Anticipo<
 <div class="totals">${totals}</div>
 <div class="sign">
   <div><div class="line"></div>Firma de autorización<br><small>${escapeHtml(estimation.approvedBy || '')}</small></div>
-  <div><div class="line"></div>Fecha<br><small>&nbsp;</small></div>
 </div>
 </body></html>`;
 }
 
-export function openAuthorizedSheet(estimation, budget) {
+export function openAuthorizedSheet(estimation, budget, projectName = '') {
   const win = window.open('', '_blank');
   if (!win) return false;
   win.document.open();
-  win.document.write(buildAuthorizedSheetHtml(estimation, budget));
+  win.document.write(buildAuthorizedSheetHtml(estimation, budget, projectName));
   win.document.close();
   win.focus();
   setTimeout(() => win.print(), 300);
