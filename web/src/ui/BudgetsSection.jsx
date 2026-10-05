@@ -338,26 +338,48 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations 
         return;
       }
       const keyOf = (text) => normalizeTextForSupplierKey(text).replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
-      const queues = new Map();
-      form.lineItems.forEach((row) => {
-        const key = keyOf(row.description);
-        if (!queues.has(key)) queues.set(key, []);
-        queues.get(key).push(row.id);
-      });
-      const groupById = new Map();
-      let unmatched = 0;
+      const withoutParens = (text) => String(text || '').replace(/\([^)]*\)/g, ' ');
+      const rowInfo = form.lineItems.map((row) => ({ id: row.id, full: keyOf(row.description), loose: keyOf(withoutParens(row.description)) }));
+      const matched = new Map(); // id del concepto -> grupo
+      const takeFrom = (field, key, candidates) => {
+        const hit = candidates.find((info) => info[field] === key && !matched.has(info.id));
+        return hit ? hit.id : null;
+      };
+      const unmatchedItems = [];
+      // 1) exacto: la descripción tal cual, o con la sección entre paréntesis (como la
+      //    primera versión del importador de Word nombraba los conceptos repetidos).
       items.forEach((item) => {
-        const queue = queues.get(keyOf(item.description));
-        if (queue && queue.length) groupById.set(queue.shift(), item.group || '');
-        else unmatched += 1;
+        const group = item.group || '';
+        const id = takeFrom('full', keyOf(`${item.description} (${group})`), rowInfo) || takeFrom('full', keyOf(item.description), rowInfo);
+        if (id) matched.set(id, group);
+        else unmatchedItems.push(item);
+      });
+      // 2) flexible: ignorando lo que va entre paréntesis en cualquiera de los dos lados.
+      const stillUnmatched = [];
+      unmatchedItems.forEach((item) => {
+        const id = takeFrom('loose', keyOf(withoutParens(item.description)), rowInfo);
+        if (id) matched.set(id, item.group || '');
+        else stillUnmatched.push(item);
       });
       setForm((prev) => ({
         ...prev,
-        lineItems: prev.lineItems.map((row) => (groupById.has(row.id) ? { ...row, group: groupById.get(row.id) } : row)),
+        lineItems: prev.lineItems.map((row) => {
+          if (!matched.has(row.id)) return row;
+          const group = matched.get(row.id);
+          // «W.C. (COLOCACION DE MUEBLES)» ya no necesita el sufijo: el grupo lo distingue.
+          const suffix = ` (${group})`;
+          const description = group && row.description.toLowerCase().endsWith(suffix.toLowerCase())
+            ? row.description.slice(0, row.description.length - suffix.length).trim()
+            : row.description;
+          return { ...row, group, description };
+        }),
       }));
+      const sample = stillUnmatched.slice(0, 4).map((item) => `«${item.description}»`).join(', ');
       setGroupingMessage(
-        `${groupById.size} concepto(s) agrupados desde el archivo` +
-        (unmatched ? `; ${unmatched} del archivo no coinciden con ningún concepto del presupuesto (no se agregaron)` : '') +
+        `${matched.size} concepto(s) agrupados desde el archivo` +
+        (stillUnmatched.length
+          ? `; ${stillUnmatched.length} del archivo no coinciden con ningún concepto del presupuesto (no se agregaron): ${sample}${stillUnmatched.length > 4 ? '…' : ''}`
+          : '') +
         `. Revisa y guarda el presupuesto.`,
       );
     } catch (e) {
