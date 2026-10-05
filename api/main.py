@@ -11347,10 +11347,59 @@ def _require_positive_progress(estimation: dict) -> None:
         raise HTTPException(status_code=400, detail="La estimación no tiene avance capturado")
 
 
+def reconcile_budget_estimation_payments(estimation_budget: dict | None) -> None:
+    """Marca PAGADA, sola, cada estimacion aprobada cuyo monto autorizado ya
+    quedo cubierto por los pagos del proveedor asignados al presupuesto.
+
+    Pagado acumulado >= anticipo + saldo inicial + autorizado acumulado (en
+    orden de folio). Solo toca las que marco el sistema (paidAuto): una marca
+    manual vieja se respeta, y si se quita un pago, una marca automatica se
+    revierte a POR_PAGAR."""
+    if not estimation_budget:
+        return
+    budget_id = str(estimation_budget.get("_id") or "")
+    rows = [
+        row
+        for row in db.estimations.find({"estimationBudgetId": budget_id, "isDeleted": {"$ne": True}})
+        if estimation_workflow_status(row) == ESTIMATION_STATUS_APPROVED
+    ]
+    if not rows:
+        return
+    rows.sort(key=lambda row: int(row.get("folio") or 0))
+    paid_amount = compute_estimation_budget_paid_amount(
+        str(estimation_budget.get("projectId") or ""),
+        str(estimation_budget.get("supplierKey") or ""),
+        budget_id,
+        estimation_budget_is_active=bool(estimation_budget.get("isActive", True)),
+        excluded_transaction_ids=estimation_budget.get("excludedTransactionIds"),
+    )
+    opening, _mode = get_effective_opening_prior_paid(estimation_budget)
+    advance = float(estimation_budget.get("advanceAmount") or 0) if estimation_budget.get("advanceAmortizationEnabled") else 0.0
+    cumulative = advance + opening
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        cumulative += float(row.get("authorizedAmount") or 0)
+        covered = paid_amount + 0.5 >= cumulative
+        status = row.get("paymentStatus") or ESTIMATION_PAYMENT_PENDING
+        if covered and status != ESTIMATION_PAYMENT_PAID:
+            db.estimations.update_one(
+                {"_id": row["_id"]},
+                {"$set": {"paymentStatus": ESTIMATION_PAYMENT_PAID, "paidAuto": True, "paidMarkedBy": "sistema",
+                          "paidMarkedAt": now_iso, "updatedAt": now_iso}},
+            )
+        elif not covered and status == ESTIMATION_PAYMENT_PAID and row.get("paidAuto"):
+            db.estimations.update_one(
+                {"_id": row["_id"]},
+                {"$set": {"paymentStatus": ESTIMATION_PAYMENT_PENDING, "paidAuto": False, "updatedAt": now_iso},
+                 "$unset": {"paidMarkedBy": "", "paidMarkedAt": ""}},
+            )
+
+
 @app.get("/api/estimation-budgets/{estimation_budget_id}/estimations")
 def list_estimations(estimation_budget_id: str, user: dict = Depends(require_estimation_capture)):
     _get_estimation_budget_or_404(estimation_budget_id, user)
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
+    reconcile_budget_estimation_payments(estimation_budget)
     rows = list(
         db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}).sort("folio", 1)
     )
@@ -11581,6 +11630,8 @@ def approve_estimation(
             }
         },
     )
+    # se relee el presupuesto: freeze_auto_opening_if_needed pudo guardar el saldo inicial
+    reconcile_budget_estimation_payments(db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)}))
     return serialize_estimation(db.estimations.find_one({"_id": oid(estimation_id)}))
 
 
@@ -11668,6 +11719,9 @@ def list_estimations_queue(
             raise HTTPException(status_code=400, detail="paymentStatus must be POR_PAGAR or PAGADA")
         query["paymentStatus"] = payment_filter.upper()
 
+    if ESTIMATION_STATUS_APPROVED in statuses:
+        for budget_row in db.estimationBudgets.find({"projectId": project_id, "isDeleted": {"$ne": True}}):
+            reconcile_budget_estimation_payments(budget_row)
     rows = list(db.estimations.find(query).sort("updatedAt", -1))
     budget_cache: dict[str, dict | None] = {}
     items = []

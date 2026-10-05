@@ -197,6 +197,10 @@ export function buildAuthorizedSheetHtml(estimation, budget = {}) {
   table{width:100%;border-collapse:collapse;margin:8px 0} th,td{border:1px solid #ccc;padding:4px 6px;text-align:left}
   th{background:#f3f4f6} td.n{text-align:right} tr.tot td{font-weight:700;background:#fafafa}
   h2{font-size:13px;margin:16px 0 4px} .totals{text-align:right;line-height:1.6;margin-top:6px}
+  .sign{display:flex;gap:40px;margin-top:48px;page-break-inside:avoid}
+  .sign div{flex:1;text-align:center}
+  .sign .line{border-top:1px solid #111;height:70px;margin-bottom:4px}
+  .sign small{color:#555}
   @media print{body{margin:12mm}}
 </style></head><body>
 <h1>Estimación #${escapeHtml(estimation.folio)} · ${escapeHtml(budget.supplierNameSnapshot || estimation.supplierName || '')}</h1>
@@ -214,6 +218,10 @@ ${hasGroups ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Anticipo<
 <tr class="tot"><td>Total</td><td class="n">${money(totalBudget)}</td><td class="n">${money(sum('advanceAmount'))}</td><td></td><td class="n">${money(sum('cumulativeAmount'))}</td><td class="n">${formatPct(totalBudget > 0 ? (sum('cumulativeAmount') / totalBudget) * 100 : 0)}</td><td class="n">${money(sum('cumulativeAmortization'))}</td><td class="n">${money(sum('netAmount'))}</td></tr></tbody></table>`
 : `<table><thead><tr><th>Concepto</th><th>Unidad</th><th>Avance previo</th><th>Avance acumulado</th><th>Importe periodo</th></tr></thead><tbody>${conceptRows}</tbody></table>`}
 <div class="totals">${totals}</div>
+<div class="sign">
+  <div><div class="line"></div>Firma de autorización<br><small>${escapeHtml(estimation.approvedBy || '')}</small></div>
+  <div><div class="line"></div>Fecha<br><small>&nbsp;</small></div>
+</div>
 </body></html>`;
 }
 

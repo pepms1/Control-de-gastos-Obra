@@ -509,3 +509,48 @@ for _name in [n for n in dir(phase1.EstimationsPhase1Tests) if n.startswith('tes
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class EstimationAutoPaidTests(EstimationsWorkflowTests):
+    """La estimacion aprobada se marca PAGADA sola cuando los pagos asignados la cubren."""
+
+    def _approved(self, pct=50):
+        created = self._capture({'captureMode': 'global', 'globalProgressPct': pct})
+        self._call(main.submit_estimation, self.budget['id'], created['id'], user=self.capturist)
+        return self._call(main.approve_estimation, self.budget['id'], created['id'], {}, user=ADMIN)
+
+    def _list_with_paid(self, paid):
+        with patch.object(main, 'db', self.fake_db), patch.object(
+            main, 'compute_estimation_budget_paid_amount', return_value=paid
+        ):
+            return main.list_estimations(self.budget['id'], user=ADMIN)
+
+    def test_stays_por_pagar_until_payments_cover_the_authorized_amount(self):
+        approved = self._approved()  # 50% de 10,000 = 5,000 - 10% retención = 4,500
+        self.assertEqual(approved['authorizedAmount'], 4500.0)
+        self.assertEqual(self._list_with_paid(0)[0]['paymentStatus'], 'POR_PAGAR')
+        self.assertEqual(self._list_with_paid(4000)[0]['paymentStatus'], 'POR_PAGAR')
+
+    def test_marks_paid_automatically_when_the_payment_arrives(self):
+        self._approved()
+        rows = self._list_with_paid(4500)
+        self.assertEqual(rows[0]['paymentStatus'], 'PAGADA')
+        self.assertEqual(rows[0]['paidMarkedBy'], 'sistema')
+
+    def test_reverts_if_the_payment_is_unassigned_but_keeps_manual_marks(self):
+        self._approved()
+        self.assertEqual(self._list_with_paid(4500)[0]['paymentStatus'], 'PAGADA')
+        self.assertEqual(self._list_with_paid(0)[0]['paymentStatus'], 'POR_PAGAR')
+        created = self._list_with_paid(0)[0]
+        self._call(main.mark_estimation_paid, self.budget['id'], created['id'], {}, user=ADMIN)
+        self.assertEqual(self._list_with_paid(0)[0]['paymentStatus'], 'PAGADA')
+
+    def test_second_estimation_needs_the_cumulative_amount(self):
+        self._approved(pct=50)
+        second = self._capture({'captureMode': 'global', 'globalProgressPct': 100})
+        self._call(main.submit_estimation, self.budget['id'], second['id'], user=self.capturist)
+        self._call(main.approve_estimation, self.budget['id'], second['id'], {}, user=ADMIN)
+        rows = self._list_with_paid(4500)
+        self.assertEqual([r['paymentStatus'] for r in rows], ['PAGADA', 'POR_PAGAR'])
+        rows = self._list_with_paid(9000)
+        self.assertEqual([r['paymentStatus'] for r in rows], ['PAGADA', 'PAGADA'])
