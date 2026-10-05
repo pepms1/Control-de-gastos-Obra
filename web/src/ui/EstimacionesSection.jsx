@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
 import { ExtrasPanel } from './ExtrasPanel.jsx';
-import { formatCurrency, formatDate, formatPct, groupLabel, openAuthorizedSheet } from './estimationShared.js';
+import { formatCurrency, formatDate, formatPct, groupLabel, openAuthorizedSheet, extraConceptsOfGroup } from './estimationShared.js';
 
 const WORKFLOW_LABELS = {
   BORRADOR: 'Borrador',
@@ -608,7 +608,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
         const list = await api.estimations(estimation.estimationBudgetId);
         full = (Array.isArray(list) ? list : list?.items || []).find((e) => e.id === estimation.id) || estimation;
       }
-      if (!openAuthorizedSheet({ ...estimation, ...full }, budget)) {
+      if (!openAuthorizedSheet({ ...estimation, ...full }, budget, (projects || []).find((p) => String(p._id) === String(selectedProjectId))?.name || '')) {
         setError('El navegador bloqueó la ventana. Permite ventanas emergentes para generar el PDF.');
       }
     } catch (err) {
@@ -1140,7 +1140,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                               </tr>
                             </thead>
                             <tbody>
-                              {sheet.map((row) => (
+                              {sheet.flatMap((row) => [(
                                 <tr key={row.group || '__general__'}>
                                   <td>
                                     {groupLabel(row.group)}
@@ -1154,7 +1154,18 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                                   <td>{Number(row.cumulativeAmortization) > 0 ? formatCurrency(row.cumulativeAmortization) : '—'}</td>
                                   <td>{formatCurrency(row.netAmount)}</td>
                                 </tr>
-                              ))}
+                              ), ...(row.isExtra ? extraConceptsOfGroup(row.group, viewingEstimation, budgetDetail) : []).map((c) => (
+                                <tr key={`${row.group}-${c.id}`} style={{ fontSize: 12, color: '#475569' }}>
+                                  <td style={{ paddingLeft: 24 }}>↳ {c.description}{c.unit ? ` (${c.quantity} ${c.unit})` : ''}</td>
+                                  <td>{formatCurrency(c.budgetAmount)}</td>
+                                  <td>—</td>
+                                  <td>—</td>
+                                  <td>{formatCurrency(c.cumulativeAmount)}</td>
+                                  <td>{formatPct(c.cumulativePct)}</td>
+                                  <td>—</td>
+                                  <td>{formatCurrency(c.cumulativeAmount)}</td>
+                                </tr>
+                              ))])}
                               <tr style={{ fontWeight: 600 }}>
                                 <td>Total</td>
                                 <td>{formatCurrency(totalBudget)}</td>
