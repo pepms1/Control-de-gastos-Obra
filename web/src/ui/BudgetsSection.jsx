@@ -9,7 +9,9 @@ import {
   buildCanonicalSupplierKey,
   computeBudgetFormTotals,
   normalizeTextForSupplierKey,
+  computeFormDiscount,
   computeLineItemAmount,
+  netUnitPrice,
   groupLabel,
   listFormGroups,
   emptyBudgetForm,
@@ -103,9 +105,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
     [editingBudgetRow],
   );
 
+  const formDiscount = useMemo(
+    () => computeFormDiscount(form.lineItems, form),
+    [form.lineItems, form.discountEnabled, form.discountMode, form.discountValue],
+  );
+  const discountPct = formDiscount.applies ? formDiscount.pct : 0;
   const formTotals = useMemo(
-    () => computeBudgetFormTotals(form.lineItems, form.advanceAmount, form.groupAdvancePcts),
-    [form.lineItems, form.advanceAmount, form.groupAdvancePcts],
+    () => computeBudgetFormTotals(form.lineItems, form.advanceAmount, form.groupAdvancePcts, discountPct),
+    [form.lineItems, form.advanceAmount, form.groupAdvancePcts, discountPct],
   );
 
   function toggleSupplierExpand(groupKey) {
@@ -267,6 +274,9 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
       retentionPct: String(row.retentionPct ?? 0),
       advanceAmortizationEnabled: Boolean(row.advanceAmortizationEnabled),
       advanceAmount: String(row.advanceAmount ?? 0),
+      discountEnabled: Boolean(row.discountMode),
+      discountMode: row.discountMode === 'amount' ? 'amount' : 'pct',
+      discountValue: row.discountMode === 'amount' ? String(row.discountAmount ?? '') : row.discountMode === 'pct' ? String(row.discountPct ?? '') : '',
       groupAdvancePcts: Object.fromEntries(Object.entries(row.groupAdvancePcts || {}).map(([name, pct]) => [name, String(pct)])),
       isActive: row.isActive !== false,
       lineItems: (row.lineItems && row.lineItems.length ? row.lineItems : [emptyConceptoRow()]).map((item) => ({
@@ -274,7 +284,8 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
         description: item.description || '',
         unit: item.unit || '',
         quantity: String(item.quantity ?? ''),
-        unitPrice: String(item.unitPrice ?? ''),
+        // En el formulario se edita el precio de lista; el descuento se aplica aparte.
+        unitPrice: String(item.listUnitPrice ?? item.unitPrice ?? ''),
         group: item.group || '',
         ...(item.isExtra
           ? { isExtra: true, extraKind: item.extraKind, extraNote: item.extraNote, addedAt: item.addedAt, addedBy: item.addedBy }
@@ -459,6 +470,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           .map(([name, pct]) => [name, Number(pct)]),
       );
       const advanceAmount = Number(String(form.advanceAmount).replace(/,/g, '').trim()) || 0;
+      if (form.discountEnabled && !formDiscount.applies) {
+        setError('El descuento no es válido: debe ser mayor a 0 y menor al subtotal (o a 100 %).');
+        setSaving(false);
+        return;
+      }
+      const discountPayload = form.discountEnabled && formDiscount.applies
+        ? { discountMode: form.discountMode, ...(form.discountMode === 'amount' ? { discountAmount: Number(form.discountValue) } : { discountPct: Number(form.discountValue) }) }
+        : { discountMode: null };
 
       if (editingBudgetRow) {
         await api.updateEstimationBudget(editingBudgetRow.id, {
@@ -470,6 +489,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
           advanceAmount,
           groupAdvancePcts,
+          ...discountPayload,
           lineItems: lineItemsPayload,
         });
       } else {
@@ -487,6 +507,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
           advanceAmount,
           groupAdvancePcts,
+          ...discountPayload,
           lineItems: lineItemsPayload,
         });
         // el proveedor del presupuesto nuevo queda a la vista
@@ -904,6 +925,58 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           </div>
 
           <div>
+            <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+              <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.discountEnabled)}
+                  onChange={(e) => setForm((prev) => ({ ...prev, discountEnabled: e.target.checked }))}
+                />
+                <strong>Agregar descuento al presupuesto</strong>
+              </label>
+              {form.discountEnabled && (
+                <div className="row" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: 10 }}>
+                  <div className="row" style={{ gap: 12, alignItems: 'center' }}>
+                    <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <input type="radio" name="discount-mode" checked={form.discountMode === 'pct'} onChange={() => setForm((prev) => ({ ...prev, discountMode: 'pct', discountValue: '' }))} />
+                      Porcentaje (%)
+                    </label>
+                    <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <input type="radio" name="discount-mode" checked={form.discountMode === 'amount'} onChange={() => setForm((prev) => ({ ...prev, discountMode: 'amount', discountValue: '' }))} />
+                      Cantidad cerrada ($)
+                    </label>
+                  </div>
+                  <div>
+                    <label>{form.discountMode === 'amount' ? 'Descuento ($)' : 'Descuento (%)'}</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form.discountValue}
+                      onChange={(e) => setForm((prev) => ({ ...prev, discountValue: e.target.value }))}
+                      placeholder={form.discountMode === 'amount' ? '0.00' : '0'}
+                      style={{ width: 150, borderColor: form.discountValue !== '' && !formDiscount.applies ? '#b91c1c' : undefined }}
+                    />
+                  </div>
+                  <div className="small" style={{ display: 'grid', gap: 2, minWidth: 260 }}>
+                    <div>Subtotal sin descuento: <strong>{formatCurrency(formDiscount.subtotal)}</strong></div>
+                    <div>
+                      Descuento: <strong>{formatCurrency(formDiscount.amount)}</strong>
+                      {formDiscount.applies && <> = <strong>{formatPct(formDiscount.pct)}</strong>{form.discountMode === 'amount' ? ' (se aplica a todos los precios)' : ''}</>}
+                    </div>
+                    <div>Total con descuento: <strong>{formatCurrency(formDiscount.subtotal - formDiscount.amount)}</strong></div>
+                  </div>
+                  {form.discountValue !== '' && !formDiscount.applies && (
+                    <div className="small" style={{ color: '#b91c1c' }}>El descuento debe ser mayor a 0 y menor al subtotal (o a 100 %).</div>
+                  )}
+                  {editingBudgetRow && Number(editingBudgetRow.estimationsCount) > 0 && (
+                    <div className="small" style={{ color: '#92400e', flexBasis: '100%' }}>
+                      Este presupuesto ya tiene estimaciones: el descuento solo cambia los precios de las estimaciones nuevas; las ya capturadas conservan sus montos.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
               <label>Conceptos</label>
               <div className="row" style={{ gap: 6 }}>
@@ -987,6 +1060,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                     <th>Unidad</th>
                     <th>Cantidad</th>
                     <th>Precio unitario</th>
+                    {discountPct > 0 && <th>Precio con descuento ({formatPct(discountPct)})</th>}
                     <th>Importe</th>
                     <th></th>
                   </tr>
@@ -1050,7 +1124,10 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                             required
                           />
                         </td>
-                        <td>{formatCurrency(computeLineItemAmount(row))}</td>
+                        {discountPct > 0 && (
+                          <td>{row.isExtra ? <span className="small">sin descuento</span> : <strong>{formatCurrency(netUnitPrice(row, discountPct))}</strong>}</td>
+                        )}
+                        <td>{formatCurrency(computeLineItemAmount(row, discountPct))}</td>
                         <td>
                           <button
                             type="button"
@@ -1069,11 +1146,11 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
               </table>
             </div>
             <datalist id="budget-group-options">
-              {listFormGroups(form.lineItems).filter((g) => g.name).map((g) => (
+              {listFormGroups(form.lineItems, discountPct).filter((g) => g.name).map((g) => (
                 <option key={g.name} value={g.name} />
               ))}
             </datalist>
-            {listFormGroups(form.lineItems).some((g) => g.name) && (
+            {listFormGroups(form.lineItems, discountPct).some((g) => g.name) && (
               <div style={{ marginTop: 10 }}>
                 <label>Anticipo por grupo</label>
                 <div className="small" style={{ marginBottom: 4 }}>
@@ -1091,7 +1168,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                       </tr>
                     </thead>
                     <tbody>
-                      {listFormGroups(form.lineItems).map((group) => {
+                      {listFormGroups(form.lineItems, discountPct).map((group) => {
                         const pct = Number((form.groupAdvancePcts || {})[group.name]) || 0;
                         return (
                           <tr key={group.name || '__general__'}>
@@ -1122,6 +1199,12 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
               </div>
             )}
             <div className="row" style={{ gap: 16, fontSize: 13, marginTop: 4 }}>
+              {discountPct > 0 && (
+                <>
+                  <div><strong>Subtotal:</strong> {formatCurrency(formDiscount.subtotal)}</div>
+                  <div><strong>Descuento ({formatPct(discountPct)}):</strong> −{formatCurrency(formDiscount.amount)}</div>
+                </>
+              )}
               <div><strong>Total contratado:</strong> {formatCurrency(formTotals.totalContractedAmount)}</div>
               {(Boolean(form.advanceAmortizationEnabled) || formTotals.usesGroupAdvance) && (
                 <div><strong>% Anticipo (calculado):</strong> {formatPct(formTotals.advancePct)}</div>
@@ -1497,6 +1580,8 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
             name: g.name, budgetAmount: g.amount, advancePct: 0, advanceAmount: 0, isExtra: false,
           }));
           const totals = summarizeBudgets([budget]);
+          const discounted = Number(budget.discountPct) > 0;
+          const cols = discounted ? 6 : 5;
           return (
             <div className="grid budgets-assignment-panel" style={{ gap: 10, borderRadius: 10, padding: 12 }}>
               <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
@@ -1515,6 +1600,8 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                 </div>
               </div>
               <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
+                {discounted && <div><strong>Subtotal:</strong> {formatCurrency(budget.listSubtotal)}</div>}
+                {discounted && <div><strong>Descuento ({formatPct(budget.discountPct)}):</strong> −{formatCurrency(budget.discountAmount)}</div>}
                 <div><strong>Contratado:</strong> {formatCurrency(budget.totalContractedAmount)}</div>
                 {Number(budget.extraAmount) > 0 && <div><strong>Extras:</strong> {formatCurrency(budget.extraAmount)}</div>}
                 {isReviewer && <div><strong>Pagado:</strong> {formatCurrency(budget.paidAmount)} ({formatPct(totals.paidPct)})</div>}
@@ -1529,6 +1616,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                       <th>Unidad</th>
                       <th>Cantidad</th>
                       <th>Precio unitario</th>
+                      {discounted && <th>Precio con descuento</th>}
                       <th>Importe</th>
                     </tr>
                   </thead>
@@ -1537,7 +1625,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                       <React.Fragment key={group.name || '__general__'}>
                         {(groups.length > 1 || group.name) && (
                           <tr>
-                            <td colSpan={5} style={{ fontWeight: 600, background: 'var(--gray-100)' }}>
+                            <td colSpan={cols} style={{ fontWeight: 600, background: 'var(--gray-100)' }}>
                               {groupLabel(group.name)}
                               {group.isExtra && <> <span className="small" style={{ marginLeft: 6, color: '#92400e' }}>extra</span></>}
                               {' '}
@@ -1565,14 +1653,17 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                               </td>
                               <td>{concept.unit || '—'}</td>
                               <td>{concept.quantity}</td>
-                              <td>{formatCurrency(concept.unitPrice)}</td>
+                              <td>{formatCurrency(concept.listUnitPrice ?? concept.unitPrice)}</td>
+                              {discounted && (
+                                <td>{concept.listUnitPrice != null ? <strong>{formatCurrency(concept.unitPrice)}</strong> : <span className="small">sin descuento</span>}</td>
+                              )}
                               <td>{formatCurrency(concept.amount)}</td>
                             </tr>
                           ))}
                       </React.Fragment>
                     ))}
                     <tr style={{ fontWeight: 600 }}>
-                      <td colSpan={4}>Total contratado</td>
+                      <td colSpan={cols - 1}>Total contratado</td>
                       <td>{formatCurrency(budget.totalContractedAmount)}</td>
                     </tr>
                   </tbody>

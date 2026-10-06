@@ -82,7 +82,7 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <strong>{budget.name || budget.supplierNameSnapshot}</strong>
         <span className="small" style={{ color: 'var(--gray-600)' }}>
-          Contratado {formatCurrency(budget.totalContractedAmount)} · avance a la fecha {formatPct(budget.cumulativeProgressPct ?? budget.approvedProgressPct ?? 0)}
+          Contratado {formatCurrency(budget.totalContractedAmount)}{Number(budget.discountPct) > 0 ? ` (con ${formatPct(budget.discountPct)} de descuento)` : ''} · avance a la fecha {formatPct(budget.cumulativeProgressPct ?? budget.approvedProgressPct ?? 0)}
         </span>
         {onRemove && <button type="button" className="secondary" onClick={onRemove}>Quitar de esta estimación</button>}
       </div>

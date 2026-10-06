@@ -54,10 +54,31 @@ export function emptyConceptoRow() {
   return { id: generateId(), description: '', unit: '', quantity: '', unitPrice: '', group: '' };
 }
 
-export function computeLineItemAmount(row) {
-  const quantity = Number(row.quantity) || 0;
+// Descuento del presupuesto: `discountPct` se aplica a los precios de lista (los extras no llevan descuento).
+export function netUnitPrice(row, discountPct = 0) {
   const unitPrice = Number(row.unitPrice) || 0;
-  return quantity * unitPrice;
+  return row.isExtra || !(discountPct > 0) ? unitPrice : unitPrice * (1 - discountPct / 100);
+}
+
+export function computeLineItemAmount(row, discountPct = 0) {
+  const quantity = Number(row.quantity) || 0;
+  return quantity * netUnitPrice(row, discountPct);
+}
+
+// % de descuento resultante del formulario ({ discountEnabled, discountMode: 'pct'|'amount', discountValue }).
+export function computeFormDiscount(lineItems, form) {
+  const subtotal = (lineItems || []).reduce(
+    (sum, row) => sum + (row.isExtra ? 0 : (Number(row.quantity) || 0) * (Number(row.unitPrice) || 0)),
+    0,
+  );
+  const value = Number(form?.discountValue);
+  if (!form?.discountEnabled || !Number.isFinite(value) || value <= 0 || subtotal <= 0) {
+    return { applies: false, pct: 0, amount: 0, subtotal, valid: !form?.discountEnabled };
+  }
+  const pct = form.discountMode === 'amount' ? (value / subtotal) * 100 : value;
+  const valid = pct > 0 && pct < 100;
+  const effectivePct = valid ? pct : 0;
+  return { applies: valid, pct: effectivePct, amount: (subtotal * effectivePct) / 100, subtotal, valid };
 }
 
 export function groupLabel(name) {
@@ -65,7 +86,7 @@ export function groupLabel(name) {
 }
 
 // Grupos del presupuesto en el orden en que aparecen sus conceptos, con su importe.
-export function listFormGroups(lineItems) {
+export function listFormGroups(lineItems, discountPct = 0) {
   const groups = [];
   (lineItems || []).forEach((row) => {
     const name = String(row.group || '').trim();
@@ -74,23 +95,23 @@ export function listFormGroups(lineItems) {
       group = { name, amount: 0, count: 0 };
       groups.push(group);
     }
-    group.amount += computeLineItemAmount(row);
+    group.amount += computeLineItemAmount(row, discountPct);
     group.count += 1;
   });
   return groups;
 }
 
 // Anticipo previsto por grupo: importe del grupo × su % de anticipo.
-export function computeGroupAdvanceTotal(lineItems, groupAdvancePcts) {
-  return listFormGroups(lineItems).reduce(
+export function computeGroupAdvanceTotal(lineItems, groupAdvancePcts, discountPct = 0) {
+  return listFormGroups(lineItems, discountPct).reduce(
     (sum, group) => sum + (group.amount * (Number((groupAdvancePcts || {})[group.name]) || 0)) / 100,
     0,
   );
 }
 
-export function computeBudgetFormTotals(lineItems, advanceAmount, groupAdvancePcts) {
-  const totalContractedAmount = (lineItems || []).reduce((sum, row) => sum + computeLineItemAmount(row), 0);
-  const groupAdvance = computeGroupAdvanceTotal(lineItems, groupAdvancePcts);
+export function computeBudgetFormTotals(lineItems, advanceAmount, groupAdvancePcts, discountPct = 0) {
+  const totalContractedAmount = (lineItems || []).reduce((sum, row) => sum + computeLineItemAmount(row, discountPct), 0);
+  const groupAdvance = computeGroupAdvanceTotal(lineItems, groupAdvancePcts, discountPct);
   const advance = groupAdvance > 0 ? groupAdvance : Number(advanceAmount) || 0;
   const advancePct = totalContractedAmount > 0 ? (advance / totalContractedAmount) * 100 : 0;
   return { totalContractedAmount, advancePct, advanceAmount: advance, usesGroupAdvance: groupAdvance > 0 };
@@ -109,6 +130,9 @@ export function emptyBudgetForm(projectId) {
     notes: '',
     retentionPct: '0',
     advanceAmortizationEnabled: true,
+    discountEnabled: false,
+    discountMode: 'pct',
+    discountValue: '',
     advanceAmount: '0',
     groupAdvancePcts: {},
     isActive: true,
@@ -281,7 +305,8 @@ export function buildAuthorizedBatchHtml(batch, budgetsById = {}, projectName = 
   const parts = batch.parts || [];
   const sections = parts.map((part) => {
     const budget = budgetsById[part.estimationBudgetId] || {};
-    return `<div class="budget">Presupuesto: ${escapeHtml(budget.name || part.budgetName || '')}</div>
+    const discountNote = Number(budget.discountPct) > 0 ? ` <small>(precios con ${formatPct(budget.discountPct)} de descuento)</small>` : '';
+    return `<div class="budget">Presupuesto: ${escapeHtml(budget.name || part.budgetName || '')}${discountNote}</div>
 ${sheetSectionHtml(part, budget)}`;
   }).join('');
   const summary = (parts.length > 1 || Number(batch.advanceGivenAmount) > 0) ? `<div class="summary"><h2>Resumen de la estimación</h2><div class="totals">
