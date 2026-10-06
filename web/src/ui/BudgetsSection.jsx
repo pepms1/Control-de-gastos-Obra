@@ -113,7 +113,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
       groups.get(groupKey).items.push(row);
     });
     return Array.from(groups.values())
-      .map((group) => ({ ...group, totals: summarizeBudgets(group.items) }))
+      .map((group) => ({ ...group, totals: summarizeBudgets(group.items, { bySupplier: true }) }))
       .sort((a, b) => a.supplierName.localeCompare(b.supplierName, 'es'));
   }, [rows]);
 
@@ -970,9 +970,6 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                                     <th>Presupuesto</th>
                                     <th>Conceptos</th>
                                     <th>Contratado</th>
-                                    {isReviewer && <th>Pagado</th>}
-                                    {isReviewer && <th>Saldo</th>}
-                                    {isReviewer && <th>% pagado</th>}
                                     <th>% avance estimado</th>
                                     <th>Estimaciones</th>
                                     {isReviewer && <th>Estado</th>}
@@ -1005,12 +1002,15 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                                             <div className="small" style={{ color: '#92400e' }}>incluye {formatCurrency(row.extraAmount)} en extras</div>
                                           )}
                                         </td>
-                                        {isReviewer && <td>{formatCurrency(row.paidAmount)}</td>}
-                                        {isReviewer && <td style={{ color: rowTotals.balance < 0 ? '#b91c1c' : undefined }}>{formatCurrency(rowTotals.balance)}</td>}
-                                        {isReviewer && <td><span className={`budget-badge budget-progress ${childStatus.className}`}>{formatPct(rowTotals.paidPct)}</span></td>}
                                         <td>{formatPct(rowTotals.progressPct)}</td>
                                         <td>{row.estimationsCount}</td>
-                                        {isReviewer && <td><span className={`budget-badge budget-status ${childStatus.className}`}>{childStatus.label}</span></td>}
+                                        {isReviewer && (
+                                          <td>
+                                            <span className={`budget-badge budget-status ${row.isActive === false ? 'in-budget' : row.isComplete ? 'paid' : 'in-budget'}`}>
+                                              {row.isActive === false ? 'Inactivo' : row.isComplete ? 'Al 100 %' : row.approvalStatus === 'PENDIENTE' ? 'Por autorizar' : 'Activo'}
+                                            </span>
+                                          </td>
+                                        )}
                                         <td>
                                           <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
                                             <button
@@ -1210,8 +1210,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                 {discounted && <div><strong>Descuento ({formatPct(budget.discountPct)}):</strong> −{formatCurrency(budget.discountAmount)}</div>}
                 <div><strong>Contratado:</strong> {formatCurrency(budget.totalContractedAmount)}</div>
                 {Number(budget.extraAmount) > 0 && <div><strong>Extras:</strong> {formatCurrency(budget.extraAmount)}</div>}
-                {isReviewer && <div><strong>Pagado:</strong> {formatCurrency(budget.paidAmount)} ({formatPct(totals.paidPct)})</div>}
-                {isReviewer && <div><strong>Saldo:</strong> {formatCurrency(totals.balance)}</div>}
+                {isReviewer && <div title="Solo los pagos asignados a este presupuesto; el pagado del proveedor está en sus KPI"><strong>Pagado asignado:</strong> {formatCurrency(budget.paidAmount)}</div>}
                 <div><strong>Avance estimado:</strong> {formatPct(totals.progressPct)}</div>
               </div>
               <div style={{ overflowX: 'auto', maxHeight: 420, overflowY: 'auto' }}>
