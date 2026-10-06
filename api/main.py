@@ -12078,6 +12078,171 @@ def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False, 
     return items, warnings
 
 
+# ---- Presupuesto pegado como texto (p. ej. un mensaje de WhatsApp del proveedor) ----
+
+_TEXT_UNITS = (
+    r"m2|m²|mt2|mts2|mts?\.?|m3|m³|ml|metros?(?:\s+(?:lineales?|cuadrados?|cubicos?|cúbicos?))?|"
+    r"pzas?\.?|pz|piezas?|lotes?|jgos?\.?|juegos?|kgs?|kilos?|ton|toneladas?|salidas?|servicios?|visitas?|"
+    r"d[ií]as?|jornales?|horas?|hrs?|rollos?|sacos?|bultos?|litros?|lts?|cubetas?|unidades?|u|gl|galones?|"
+    r"tramos?|piso|pisos|cajas?|paquetes?|viajes?|puntos?|aplicaci[oó]n(?:es)?|tablas?|hojas?|placas?"
+)
+_NUM = r"\d[\d,]*(?:\.\d+)?"
+_TEXT_LINE_QTY_UNIT_PRICE = re.compile(
+    rf"^(?P<d>.+?)[\s:,\-–]+(?P<q>{_NUM})\s*(?P<u>{_TEXT_UNITS})\b\.?\s*"
+    rf"(?P<mark>x|×|@|a|por|\*|c/u|a\s+\$)?\s*\$?\s*(?P<p>{_NUM})\s*(?:c/u|cada\s+uno|p\.?u\.?)?\s*"
+    rf"(?:=\s*\$?\s*(?P<a>{_NUM}))?\s*(?:\+\s*iva)?\s*$",
+    re.IGNORECASE,
+)
+_TEXT_LINE_QTY_UNIT_FIRST = re.compile(
+    rf"^(?P<q>{_NUM})\s*(?P<u>{_TEXT_UNITS})\b\.?\s+(?:de\s+)?(?P<d>.+?)[\s:,\-–x×@]+\$?\s*(?P<p>{_NUM})\s*(?:c/u|cada\s+uno)?\s*$",
+    re.IGNORECASE,
+)
+_TEXT_LINE_LUMP = re.compile(
+    rf"^(?P<d>[^\d$].*?[^\d$\s])\s*[:\-–=]?\s*\$\s*(?P<a>{_NUM})\s*(?:\+\s*iva|mxn|pesos)?\s*$",
+    re.IGNORECASE,
+)
+_TEXT_WHATSAPP_PREFIX = re.compile(
+    r"^\s*(?:\[\d{1,2}[:.]\d{2}[^\]]*\]\s*[^:]{1,40}:\s*|\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}[^-]*-\s*[^:]{1,40}:\s*)"
+)
+_TEXT_SKIP_LINE = re.compile(r"^(?:sub\s*total|total|iva|i\.v\.a\.?|anticipo|retenci[oó]n|descuento|nota|ojo|vigencia|forma de pago)\b", re.IGNORECASE)
+
+
+def parse_concepto_text(text: str):
+    """Conceptos desde texto libre (mensaje de WhatsApp, correo, notas).
+
+    Entiende renglones como «Colocación de mármol 45 m2 x $350 = $15,750»,
+    «45 m2 colocación de mármol $350», «Tubería: $6,000» (monto global → cantidad 1)
+    y encabezados de grupo en MAYÚSCULAS o terminados en «:». Si el texto viene
+    de una tabla (tabuladores, «|» o columnas separadas por espacios), se lee
+    como tabla.
+    """
+    warnings: list[str] = []
+    raw_lines = [line for line in str(text or "").replace("\r", "\n").split("\n")]
+
+    # ¿Pegado desde una tabla? (Excel/Word al copiar y pegar deja tabuladores.)
+    tabular = [re.split(r"\t+|\s*\|\s*|\s{3,}", line.strip()) for line in raw_lines if line.strip()]
+    if tabular and sum(1 for row in tabular if len(row) >= 3) >= max(2, len(tabular) // 2):
+        items, table_warnings = parse_concepto_rows_from_table(tabular)
+        if items:
+            return items, table_warnings
+
+    items: list[dict] = []
+    current_group = ""
+    skipped: list[str] = []
+    ambiguous: list[str] = []
+    mismatches: list[str] = []
+    document_total = None
+
+    for raw in raw_lines:
+        line = _TEXT_WHATSAPP_PREFIX.sub("", raw)
+        line = re.sub(r"[*_~`]+", "", line)
+        line = re.sub(r"^\s*(?:\d{1,3}[.)]\s+|[-•·▪●○▫►>]+\s*)", "", line)
+        line = re.sub(r"[ \t\u00a0]+", " ", line).strip()
+        if not line:
+            continue
+        if re.match(r"^(?:total|gran total)\b", line, re.IGNORECASE):
+            numbers = re.findall(_NUM, line)
+            if numbers:
+                try:
+                    document_total = parse_concepto_number(numbers[-1])
+                except ValueError:
+                    pass
+            continue
+        if _TEXT_SKIP_LINE.match(line):
+            continue
+
+        item = None
+        match = _TEXT_LINE_QTY_UNIT_PRICE.match(line)
+        if match:
+            try:
+                quantity = parse_concepto_number(match.group("q"))
+                price = parse_concepto_number(match.group("p"))
+                amount = parse_concepto_number(match.group("a")) if match.group("a") else None
+            except ValueError:
+                quantity = None
+            if quantity and quantity > 0:
+                if amount is not None and not match.group("mark") and abs(quantity * price - amount) > 1 and abs(price - amount) < 0.01:
+                    price = round(amount / quantity, 4)
+                elif match.group("mark") is None and amount is None and not re.search(r"c/u|cada\s+uno|p\.?u", line, re.IGNORECASE) and "$" not in line:
+                    ambiguous.append(match.group("d").strip())
+                item = {"description": match.group("d").strip(" :,-–"), "unit": match.group("u"), "quantity": quantity, "unitPrice": price}
+                if amount is not None and abs(quantity * price - amount) > 1:
+                    mismatches.append(match.group("d").strip())
+        if item is None:
+            match = _TEXT_LINE_QTY_UNIT_FIRST.match(line)
+            if match:
+                try:
+                    quantity = parse_concepto_number(match.group("q"))
+                    price = parse_concepto_number(match.group("p"))
+                except ValueError:
+                    quantity = None
+                if quantity and quantity > 0:
+                    item = {"description": match.group("d").strip(" :,-–"), "unit": match.group("u"), "quantity": quantity, "unitPrice": price}
+        if item is None:
+            match = _TEXT_LINE_LUMP.match(line)
+            if match:
+                try:
+                    amount = parse_concepto_number(match.group("a"))
+                except ValueError:
+                    amount = None
+                if amount and amount > 0:
+                    item = {"description": match.group("d").strip(" :,-–"), "unit": "lote", "quantity": 1.0, "unitPrice": amount}
+
+        if item and item["description"]:
+            item["unit"] = re.sub(r"\.$", "", str(item["unit"]).strip())
+            if current_group:
+                item["group"] = current_group
+            items.append(item)
+            continue
+
+        heading = line.rstrip(":").strip()
+        is_upper = heading == heading.upper() and re.search(r"[A-ZÁÉÍÓÚÑ]", heading) and not re.search(r"\d", heading)
+        if is_upper or (line.endswith(":") and len(heading.split()) <= 3 and not re.search(r"\d", heading)):
+            current_group = normalize_group_name(heading.capitalize() if is_upper else heading)
+        else:
+            skipped.append(line[:50])
+
+    if skipped:
+        shown = "; ".join(skipped[:3])
+        warnings.append(f"Se omitieron {len(skipped)} renglón(es) que no parecen concepto (saludos, notas o texto sin precio): {shown}{'…' if len(skipped) > 3 else ''}")
+    if ambiguous:
+        shown = "; ".join(ambiguous[:4])
+        warnings.append(
+            f"En {len(ambiguous)} renglón(es) no se indicó si el monto es precio unitario o total ({shown}); se tomó como precio unitario. Revísalos."
+        )
+    if mismatches:
+        warnings.append(f"El importe escrito no coincide con cantidad × precio en: {'; '.join(mismatches[:4])}. Se usó cantidad × precio.")
+    if document_total is not None and items:
+        calculated_total = round(sum(i["quantity"] * i["unitPrice"] for i in items), 2)
+        if abs(document_total - calculated_total) > 1:
+            warnings.append(
+                f"El total del texto ({formatear_moneda_mx(document_total)}) no coincide con la suma de los conceptos "
+                f"({formatear_moneda_mx(calculated_total)})."
+            )
+    if items:
+        warnings.append("Conceptos extraídos de texto libre: revisa descripción, unidad, cantidad y precio antes de guardar.")
+    return items, warnings
+
+
+@app.post("/api/estimation-budgets/import-text")
+def import_estimation_conceptos_text(payload: dict, user: dict = Depends(require_estimation_capture)):
+    text = str((payload or {}).get("text") or "")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Pega el texto del presupuesto")
+    if len(text) > 60000:
+        raise HTTPException(status_code=400, detail="El texto es demasiado largo (máximo 60,000 caracteres)")
+    items, warnings = parse_concepto_text(text)
+    if not items:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No se pudo extraer ningún concepto del texto. Cada renglón debe llevar descripción y precio, por ejemplo: "
+                "«Colocación de mármol 45 m2 x $350» o «Tubería: $6,000»."
+            ),
+        )
+    return {"items": items, "warnings": warnings, "sourceType": "texto"}
+
+
 def formatear_moneda_mx(value) -> str:
     return f"${float(value):,.2f}"
 

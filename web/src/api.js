@@ -411,6 +411,12 @@ export const api = {
       method: 'DELETE',
     }),
 
+  importEstimationConceptosText: (text) =>
+    backendReq('/api/estimation-budgets/import-text', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+
   importEstimationConceptos: (file) => {
     const formData = new FormData();
     formData.append('file', file);
