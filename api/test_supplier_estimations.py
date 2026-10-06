@@ -534,3 +534,16 @@ class PlannedAdvanceInMultiBudgetSupplierTests(phase1.EstimationsPhase1Tests):
             user=SUPERADMIN,
         )
         self.assertEqual(nxt['parts'][0]['advanceAmortizationAmount'], 1000.0)  # 20 % de $5,000
+
+
+    def test_marking_planned_advance_as_delivered_amortizes_it(self):
+        saved = main.update_estimation_budget(self.c['id'], {'advanceDelivered': True}, user=ADMIN)
+        self.assertEqual(saved['advanceDeliveredAmount'], 2000.0)
+        batch = self._estimate_all()
+        amort = {p['budgetName']: p['advanceAmortizationAmount'] for p in batch['parts']}
+        self.assertEqual(amort['C'], 1000.0)
+
+    def test_unmarking_delivered_advance(self):
+        main.update_estimation_budget(self.c['id'], {'advanceDelivered': True}, user=ADMIN)
+        saved = main.update_estimation_budget(self.c['id'], {'advanceDelivered': False}, user=ADMIN)
+        self.assertEqual(saved['advanceDeliveredAmount'], 0.0)
