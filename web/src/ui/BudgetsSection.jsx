@@ -56,6 +56,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
 
   const [showForm, setShowForm] = useState(false);
   const [editingBudgetRow, setEditingBudgetRow] = useState(null);
+  const canMarkAdvanceDelivered = isReviewer && Boolean(editingBudgetRow) && Number(editingBudgetRow?.estimationsCount) === 0;
   const [form, setForm] = useState(emptyBudgetForm(selectedProjectId));
   const [importingConceptos, setImportingConceptos] = useState(false);
   const [importWarnings, setImportWarnings] = useState([]);
@@ -292,6 +293,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
       notes: row.notes || '',
       retentionPct: String(row.retentionPct ?? 0),
       advanceAmortizationEnabled: Boolean(row.advanceAmortizationEnabled),
+      advanceDelivered: Boolean(row.openingSetAt) && Number(row.openingAdvanceAmount) > 0,
       advanceAmount: String(row.advanceAmount ?? 0),
       advanceMode: row.advanceMode === 'pct' ? 'pct' : 'amount',
       advancePctInput: row.advanceMode === 'pct' ? String(row.advancePctInput ?? '') : '',
@@ -513,6 +515,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
           advanceAmount,
           ...advancePayload,
+          ...(canMarkAdvanceDelivered ? { advanceDelivered: Boolean(form.advanceDelivered) } : {}),
           groupAdvancePcts,
           ...discountPayload,
           lineItems: lineItemsPayload,
@@ -1435,6 +1438,16 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                   ? <>= {formatCurrency(formTotals.advanceAmount)}</>
                   : <>= {formatPct(formTotals.advancePct)} del presupuesto</>}
               </div>
+              {canMarkAdvanceDelivered && (
+                <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(form.advanceDelivered)}
+                    onChange={(e) => setForm((prev) => ({ ...prev, advanceDelivered: e.target.checked, advanceAmortizationEnabled: e.target.checked ? true : prev.advanceAmortizationEnabled }))}
+                  />
+                  Este anticipo ya fue entregado
+                </label>
+              )}
               <div className="small" style={{ color: 'var(--gray-600)', maxWidth: 260 }}>
                 Solo define cuánto se amortiza en cada estimación. Con varios presupuestos del proveedor se amortiza únicamente el anticipo que
                 realmente se entregue (pago marcado como anticipo, o «Anticipo a entregar» en la estimación).

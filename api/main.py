@@ -11766,6 +11766,29 @@ def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dic
         updates["totalContractedAmount"] = totals["totalContractedAmount"]
         updates["advancePct"] = totals["advancePct"]
 
+    if "advanceDelivered" in payload:
+        # «Este anticipo ya fue entregado»: lo registra como anticipo entregado (saldo inicial)
+        # sin pasar por el panel de apertura. Solo antes de la primera estimacion.
+        if not is_admin_or_superadmin_user(user):
+            raise HTTPException(status_code=403, detail="Solo un administrador puede marcar el anticipo como entregado")
+        if db.estimations.count_documents({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}) > 0:
+            raise HTTPException(status_code=409, detail="El anticipo solo puede marcarse como entregado antes de la primera estimación")
+        if payload.get("advanceDelivered"):
+            if advance_amount <= 0:
+                raise HTTPException(status_code=400, detail="Captura el monto del anticipo antes de marcarlo como entregado")
+            updates["openingAdvanceAmount"] = round(advance_amount, 2)
+            updates["openingManualAdvanceAmount"] = round(advance_amount, 2)
+            updates["openingAdvanceTransactionIds"] = []
+            updates["openingSetAt"] = datetime.now(timezone.utc).isoformat()
+            updates["openingSetBy"] = normalize_non_empty_string(user.get("username")) or "system"
+            updates["advanceAmortizationEnabled"] = True
+        else:
+            updates["openingAdvanceAmount"] = 0
+            updates["openingManualAdvanceAmount"] = 0
+            updates["openingAdvanceTransactionIds"] = []
+            if not (existing.get("openingPriorPaymentTransactionIds") or float(existing.get("openingManualPriorPaidAmount") or 0)):
+                updates["openingSetAt"] = None
+
     if not updates:
         return serialize_estimation_budget(existing, include_payments=is_admin_or_superadmin_user(user))
 
