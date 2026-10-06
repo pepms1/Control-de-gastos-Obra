@@ -547,3 +547,10 @@ class PlannedAdvanceInMultiBudgetSupplierTests(phase1.EstimationsPhase1Tests):
         main.update_estimation_budget(self.c['id'], {'advanceDelivered': True}, user=ADMIN)
         saved = main.update_estimation_budget(self.c['id'], {'advanceDelivered': False}, user=ADMIN)
         self.assertEqual(saved['advanceDeliveredAmount'], 0.0)
+
+    def test_changing_a_delivered_advance_amount_updates_what_is_delivered(self):
+        main.update_estimation_budget(self.c['id'], {'advanceDelivered': True}, user=ADMIN)
+        saved = main.update_estimation_budget(self.c['id'], {'advanceAmount': 500, 'advanceDelivered': True}, user=ADMIN)
+        self.assertEqual(saved['advanceDeliveredAmount'], 500.0)
+        saved = main.update_estimation_budget(self.c['id'], {'advanceMode': 'pct', 'advancePct': 20, 'advanceDelivered': True}, user=ADMIN)
+        self.assertEqual(saved['advanceDeliveredAmount'], round(saved['totalContractedAmount'] * 0.2, 2))
