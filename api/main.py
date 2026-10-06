@@ -11335,6 +11335,48 @@ def set_estimation_supplier_payments(payload: dict, user: dict = Depends(require
     return {"ok": True, "excludedCount": len(requested), "paidAmount": compute_supplier_paid_amount(project_id, supplier_key)}
 
 
+def _assign_payments_to_budget(estimation_budget: dict, transaction_ids: list[str], user: dict) -> None:
+    """Liga pagos del proveedor a un presupuesto (asignacion manual) y los quita de la lista de desasignados."""
+    if not transaction_ids:
+        return
+    budget_id = str(estimation_budget.get("_id") or "")
+    project_id = str(estimation_budget.get("projectId") or "")
+    supplier_key = str(estimation_budget.get("supplierKey") or "")
+    existing = {
+        str(row.get("transactionId") or "")
+        for row in db.estimationPaymentLinks.find({"estimationBudgetId": budget_id}, {"transactionId": 1})
+    }
+    now_iso = datetime.now(timezone.utc).isoformat()
+    created_by = normalize_non_empty_string(user.get("username")) or "system"
+    for tx_id in transaction_ids:
+        if tx_id in existing:
+            continue
+        try:
+            db.estimationPaymentLinks.insert_one(
+                {
+                    "estimationBudgetId": budget_id,
+                    "transactionId": tx_id,
+                    "projectId": project_id,
+                    "supplierKey": supplier_key,
+                    "createdBy": created_by,
+                    "createdAt": now_iso,
+                    "updatedAt": now_iso,
+                }
+            )
+        except DuplicateKeyError:
+            raise HTTPException(status_code=409, detail="Alguno de los pagos se asignó al mismo tiempo a otro presupuesto")
+    settings = getattr(db, "supplierPaymentSettings", None)
+    if settings is not None:
+        doc = settings.find_one({"projectId": project_id, "supplierKey": supplier_key})
+        excluded = _normalize_transaction_id_values((doc or {}).get("excludedTransactionIds") or [])
+        remaining = [tx for tx in excluded if tx not in set(transaction_ids)]
+        if doc and len(remaining) != len(excluded):
+            settings.update_one(
+                {"projectId": project_id, "supplierKey": supplier_key},
+                {"$set": {"excludedTransactionIds": remaining, "updatedAt": now_iso}},
+            )
+
+
 @app.put("/api/estimation-budgets/{estimation_budget_id}/opening-balance")
 def set_estimation_budget_opening_balance(
     estimation_budget_id: str,
@@ -11374,14 +11416,13 @@ def set_estimation_budget_opening_balance(
             detail={"message": "Some transactions are not valid for this estimation budget", "transactionIds": invalid_ids},
         )
     for tx_id in advance_ids + prior_ids:
-        row = by_id[tx_id]
-        if row.get("isAssignedToOtherBudget"):
+        if by_id[tx_id].get("isAssignedToOtherBudget"):
             raise HTTPException(status_code=409, detail="Alguno de los pagos ya está asignado a otro presupuesto")
-        if requires_assignment and not row.get("isAssignedToCurrentBudget"):
-            raise HTTPException(
-                status_code=400,
-                detail="El proveedor tiene varios presupuestos activos: asigna primero los pagos a este presupuesto con «Asignar pagos»",
-            )
+    if requires_assignment:
+        # Con varios presupuestos activos, elegir un pago como anticipo / pago a cuenta lo asigna
+        # a este presupuesto (no hace falta asignarlo antes con «Asignar pagos»). Un pago que se
+        # habia desasignado del proveedor vuelve a contar.
+        _assign_payments_to_budget(estimation_budget, advance_ids + prior_ids, user)
 
     advance_total = round(sum(float(by_id[tx_id].get("amountWithTax") or 0) for tx_id in advance_ids) + manual_advance, 2)
     prior_total = round(sum(float(by_id[tx_id].get("amountWithTax") or 0) for tx_id in prior_ids) + manual_prior, 2)

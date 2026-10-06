@@ -86,8 +86,9 @@ export function OpeningBalancePanel({ budget, onSaved, onClose }) {
       ) : (
         <>
           {requiresAssignment && (
-            <div className="small" style={{ color: '#92400e' }}>
-              Este proveedor tiene varios presupuestos activos: solo puedes elegir pagos ya asignados a este presupuesto (usa «Asignar pagos» en Presupuestos). Los montos manuales sí funcionan.
+            <div className="small" style={{ color: 'var(--gray-600)' }}>
+              Este proveedor tiene varios presupuestos activos: los pagos que marques aquí quedan <strong>asignados a este presupuesto</strong>. Solo se bloquean los que ya
+              están asignados a otro presupuesto.
             </div>
           )}
           <div style={{ overflowX: 'auto', maxHeight: 260, overflowY: 'auto' }}>
@@ -102,7 +103,7 @@ export function OpeningBalancePanel({ budget, onSaved, onClose }) {
               </thead>
               <tbody>
                 {transactions.map((tx) => {
-                  const blocked = tx.isAssignedToOtherBudget || (requiresAssignment && !tx.isAssignedToCurrentBudget);
+                  const blocked = Boolean(tx.isAssignedToOtherBudget);
                   return (
                     <tr key={tx.id} style={blocked ? { opacity: 0.5 } : undefined}>
                       <td>{formatDate(tx.date)}</td>

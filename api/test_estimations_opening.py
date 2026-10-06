@@ -156,17 +156,20 @@ class EstimationsOpeningBalanceTests(phase1.EstimationsPhase1Tests):
             self._set_opening({'priorPaymentTransactionIds': [tx_id]})
         self.assertEqual(ctx.exception.status_code, 409)
 
-    def test_multiple_active_budgets_require_payments_assigned_first(self):
+    def test_with_several_budgets_choosing_a_payment_assigns_it_to_this_budget(self):
         tx_id, = self._add_payments(1000)
-        self._call(self._create_budget, self.fake_db, name='Segundo contrato mismo proveedor')
+        second = self._call(self._create_budget, self.fake_db, name='Segundo contrato mismo proveedor')
+        # no hace falta «Asignar pagos» antes: elegirlo como anticipo lo asigna a este presupuesto
+        saved = self._set_opening({'advanceTransactionIds': [tx_id]})
+        self.assertEqual(saved['openingAdvanceAmount'], 1000)
+        links = self.fake_db.estimationPaymentLinks.find({'transactionId': tx_id})
+        self.assertEqual([link['estimationBudgetId'] for link in links], [self.bid])
+        # y ya no se puede usar en otro presupuesto
         with self.assertRaises(HTTPException) as ctx:
-            self._set_opening({'priorPaymentTransactionIds': [tx_id]})
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn('Asignar pagos', ctx.exception.detail)
-
-        self._call(main.replace_estimation_budget_transaction_links, self.bid, {'selectedTransactionIds': [tx_id]}, user=SUPERADMIN)
-        saved = self._set_opening({'priorPaymentTransactionIds': [tx_id]})
-        self.assertEqual(saved['openingPriorPaidAmount'], 1000)
+            self._call(
+                main.set_estimation_budget_opening_balance, second['id'], {'advanceTransactionIds': [tx_id]}, user=SUPERADMIN
+            )
+        self.assertEqual(ctx.exception.status_code, 409)
 
     # ---- guards ----
 
