@@ -494,6 +494,32 @@ export const api = {
   authorizeEstimationBudget: (id) =>
     backendReq(`/api/estimation-budgets/${id}/authorize`, { method: 'POST', body: JSON.stringify({}) }),
 
+  supplierEstimations: (supplierKey, projectId) => {
+    const qs = new URLSearchParams({ supplierKey, ...(projectId ? { projectId } : {}) }).toString();
+    return backendReq(`/api/supplier-estimations?${qs}`);
+  },
+
+  createSupplierEstimation: (payload) =>
+    backendReq('/api/supplier-estimations', { method: 'POST', body: JSON.stringify(payload) }),
+
+  updateSupplierEstimation: (batchId, payload) =>
+    backendReq(`/api/supplier-estimations/${batchId}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+
+  deleteSupplierEstimation: (batchId) =>
+    backendReq(`/api/supplier-estimations/${batchId}`, { method: 'DELETE' }),
+
+  submitSupplierEstimation: (batchId) =>
+    backendReq(`/api/supplier-estimations/${batchId}/submit`, { method: 'POST', body: JSON.stringify({}) }),
+
+  returnSupplierEstimation: (batchId, payload) =>
+    backendReq(`/api/supplier-estimations/${batchId}/return`, { method: 'POST', body: JSON.stringify(payload) }),
+
+  approveSupplierEstimation: (batchId, payload) =>
+    backendReq(`/api/supplier-estimations/${batchId}/approve`, { method: 'POST', body: JSON.stringify(payload) }),
+
+  setSupplierEstimationFolio: (batchId, folio) =>
+    backendReq(`/api/supplier-estimations/${batchId}/folio`, { method: 'POST', body: JSON.stringify({ folio }) }),
+
   setEstimationFolio: (estimationBudgetId, estimationId, folio) =>
     backendReq(`/api/estimation-budgets/${estimationBudgetId}/estimations/${estimationId}/folio`, {
       method: 'POST',

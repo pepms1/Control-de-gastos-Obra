@@ -172,7 +172,8 @@ const escapeHtml = (value) => String(value ?? '')
 
 // Hoja de autorización lista para imprimir / guardar como PDF (sin dependencias).
 // Solo incluye la hoja de estimación hacia abajo; el monto autorizado y quién autorizó van en grande.
-export function buildAuthorizedSheetHtml(estimation, budget = {}, projectName = '') {
+// Hoja de estimación (por grupo o por concepto) de UN presupuesto, con sus totales.
+function sheetSectionHtml(estimation, budget = {}) {
   const sheet = estimation.groupBreakdown || [];
   const sum = (key) => sheet.reduce((total, row) => total + (Number(row[key]) || 0), 0);
   const totalBudget = sum('budgetAmount');
@@ -181,7 +182,6 @@ export function buildAuthorizedSheetHtml(estimation, budget = {}, projectName = 
   const paidToDate = (Number(estimation.priorPaidApplied) || 0) + advanceGiven;
   const money = formatCurrency;
   const hasGroups = sheet.some((row) => row.group);
-  const requested = estimation.requestedAmount != null ? Number(estimation.requestedAmount) : null;
 
   const extraRows = (row) => (row.isExtra ? extraConceptsOfGroup(row.group, estimation, budget) : []).map((c) => `<tr class="sub">
     <td>&nbsp;&nbsp;↳ ${escapeHtml(c.description)}${c.unit ? ` (${escapeHtml(c.quantity)} ${escapeHtml(c.unit)})` : ''}</td>
@@ -214,11 +214,16 @@ export function buildAuthorizedSheetHtml(estimation, budget = {}, projectName = 
     ['saldo total (a liberar)', money(estimation.totalToPay)],
   ].filter(Boolean).map(([label, value]) => `<div>${label} <strong>${value}</strong></div>`).join('');
 
-  return `<!doctype html><html lang="es"><head><meta charset="utf-8">
-<title>Estimación ${escapeHtml(estimation.folio)} autorizada</title>
-<style>
+  return `<h2>Hoja de estimación${hasGroups ? ' por grupo (acumulado a la fecha)' : ''}</h2>
+${hasGroups ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Anticipo</th><th>%</th><th>Avance $</th><th>Avance %</th><th>Amortización</th><th>Saldo</th></tr></thead><tbody>${rows}
+<tr class="tot"><td>Total</td><td class="n">${money(totalBudget)}</td><td class="n">${money(sum('advanceAmount'))}</td><td></td><td class="n">${money(sum('cumulativeAmount'))}</td><td class="n">${formatPct(totalBudget > 0 ? (sum('cumulativeAmount') / totalBudget) * 100 : 0)}</td><td class="n">${money(sum('cumulativeAmortization'))}</td><td class="n">${money(sum('netAmount'))}</td></tr></tbody></table>`
+: `<table><thead><tr><th>Concepto</th><th>Unidad</th><th>Avance previo</th><th>Avance acumulado</th><th>Importe periodo</th></tr></thead><tbody>${conceptRows}</tbody></table>`}
+<div class="totals">${totals}</div>`;
+}
+
+const PDF_STYLE = `
   body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:28px;font-size:12px}
-    .obra{font-size:20px;font-weight:700;margin-bottom:6px}
+  .obra{font-size:20px;font-weight:700;margin-bottom:6px}
   h1{font-size:18px;margin:0 0 2px} .sub{color:#555;margin-bottom:14px}
   .auth{border:2px solid #166534;background:#f0fdf4;border-radius:8px;padding:14px 18px;margin:12px 0 18px}
   .auth .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#166534}
@@ -227,41 +232,91 @@ export function buildAuthorizedSheetHtml(estimation, budget = {}, projectName = 
   table{width:100%;border-collapse:collapse;margin:8px 0} th,td{border:1px solid #ccc;padding:4px 6px;text-align:left}
   th{background:#f3f4f6} td.n{text-align:right} tr.tot td{font-weight:700;background:#fafafa} tr.sub td{font-size:11px;color:#444;background:#fcfcfc}
   h2{font-size:13px;margin:16px 0 4px} .totals{text-align:right;line-height:1.6;margin-top:6px}
+  .budget{font-size:15px;font-weight:700;margin:22px 0 0;border-bottom:2px solid #111;padding-bottom:2px}
+  .summary{border-top:2px solid #111;margin-top:18px;padding-top:6px}
   .sign{display:flex;gap:40px;margin-top:48px;page-break-inside:avoid}
   .sign div{flex:1;text-align:center}
   .sign .line{border-top:1px solid #111;height:70px;margin-bottom:4px}
   .sign small{color:#555}
-  @media print{body{margin:12mm}}
-</style></head><body>
-${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
-<h1>Estimación #${escapeHtml(estimation.folio)} · ${escapeHtml(budget.supplierNameSnapshot || estimation.supplierName || '')}</h1>
-<div class="sub">${escapeHtml(budget.name || estimation.budgetName || '')} · Periodo ${formatDate(estimation.periodStart)} – ${formatDate(estimation.periodEnd)}</div>
-<div class="auth">
+  @media print{body{margin:12mm}}`;
+
+function authorizationBoxHtml(estimation) {
+  const money = formatCurrency;
+  const requested = estimation.requestedAmount != null ? Number(estimation.requestedAmount) : null;
+  return `<div class="auth">
   <div class="lbl">Monto autorizado</div>
   <div class="amt">${money(estimation.authorizedAmount)}</div>
   <div class="who">Autorizó: ${escapeHtml(estimation.approvedBy || '—')} · ${formatDate(estimation.approvedAt)}</div>
   ${requested !== null ? `<div>Solicitado por el contratista: ${money(requested)}</div>` : ''}
   <div>Avance calculado (a liberar): ${money(estimation.totalToPay)}</div>
   ${estimation.authorizationNote ? `<div>Motivo: ${escapeHtml(estimation.authorizationNote)}</div>` : ''}
-</div>
-<h2>Hoja de estimación${hasGroups ? ' por grupo (acumulado a la fecha)' : ''}</h2>
-${hasGroups ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Anticipo</th><th>%</th><th>Avance $</th><th>Avance %</th><th>Amortización</th><th>Saldo</th></tr></thead><tbody>${rows}
-<tr class="tot"><td>Total</td><td class="n">${money(totalBudget)}</td><td class="n">${money(sum('advanceAmount'))}</td><td></td><td class="n">${money(sum('cumulativeAmount'))}</td><td class="n">${formatPct(totalBudget > 0 ? (sum('cumulativeAmount') / totalBudget) * 100 : 0)}</td><td class="n">${money(sum('cumulativeAmortization'))}</td><td class="n">${money(sum('netAmount'))}</td></tr></tbody></table>`
-: `<table><thead><tr><th>Concepto</th><th>Unidad</th><th>Avance previo</th><th>Avance acumulado</th><th>Importe periodo</th></tr></thead><tbody>${conceptRows}</tbody></table>`}
-<div class="totals">${totals}</div>
-<div class="sign">
+</div>`;
+}
+
+function signatureHtml(estimation) {
+  return `<div class="sign">
   <div><div class="line"></div>Firma de autorización<br><small>${escapeHtml(estimation.approvedBy || '')}</small></div>
-</div>
+</div>`;
+}
+
+// Hoja de autorización de UN presupuesto (estimaciones anteriores al flujo por proveedor).
+export function buildAuthorizedSheetHtml(estimation, budget = {}, projectName = '') {
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8">
+<title>Estimación ${escapeHtml(estimation.folio)} autorizada</title>
+<style>${PDF_STYLE}</style></head><body>
+${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
+<h1>Estimación #${escapeHtml(estimation.folio)} · ${escapeHtml(budget.supplierNameSnapshot || estimation.supplierName || '')}</h1>
+<div class="sub">${escapeHtml(budget.name || estimation.budgetName || '')} · Periodo ${formatDate(estimation.periodStart)} – ${formatDate(estimation.periodEnd)}</div>
+${authorizationBoxHtml(estimation)}
+${sheetSectionHtml(estimation, budget)}
+${signatureHtml(estimation)}
 </body></html>`;
 }
 
-export function openAuthorizedSheet(estimation, budget, projectName = '') {
+// Hoja de autorización de la estimación del PROVEEDOR: una hoja por presupuesto (departamento)
+// y el monto autorizado total arriba.
+export function buildAuthorizedBatchHtml(batch, budgetsById = {}, projectName = '') {
+  const money = formatCurrency;
+  const parts = batch.parts || [];
+  const sections = parts.map((part) => {
+    const budget = budgetsById[part.estimationBudgetId] || {};
+    return `<div class="budget">Presupuesto: ${escapeHtml(budget.name || part.budgetName || '')}</div>
+${sheetSectionHtml(part, budget)}`;
+  }).join('');
+  const summary = parts.length > 1 ? `<div class="summary"><h2>Resumen de la estimación</h2><div class="totals">
+  <div>subtotal del periodo <strong>${money(batch.periodSubtotal)}</strong></div>
+  <div>retención − <strong>${money(batch.retentionAmount)}</strong></div>
+  ${Number(batch.advanceAmortizationAmount) > 0 ? `<div>amortización de anticipos − <strong>${money(batch.advanceAmortizationAmount)}</strong></div>` : ''}
+  ${Number(batch.priorPaidApplied) > 0 ? `<div>pagos previos − <strong>${money(batch.priorPaidApplied)}</strong></div>` : ''}
+  <div>total a liberar <strong>${money(batch.totalToPay)}</strong></div></div></div>` : '';
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8">
+<title>Estimación ${escapeHtml(batch.folio)} autorizada</title>
+<style>${PDF_STYLE}</style></head><body>
+${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
+<h1>Estimación #${escapeHtml(batch.folio)} · ${escapeHtml(batch.supplierName || '')}</h1>
+<div class="sub">${parts.length > 1 ? `${parts.length} presupuestos · ` : `${escapeHtml(batch.budgetName || '')} · `}Periodo ${formatDate(batch.periodStart)} – ${formatDate(batch.periodEnd)}</div>
+${authorizationBoxHtml(batch)}
+${sections}
+${summary}
+${signatureHtml(batch)}
+</body></html>`;
+}
+
+function openPrintWindow(html) {
   const win = window.open('', '_blank');
   if (!win) return false;
   win.document.open();
-  win.document.write(buildAuthorizedSheetHtml(estimation, budget, projectName));
+  win.document.write(html);
   win.document.close();
   win.focus();
   setTimeout(() => win.print(), 300);
   return true;
+}
+
+export function openAuthorizedSheet(estimation, budget, projectName = '') {
+  return openPrintWindow(buildAuthorizedSheetHtml(estimation, budget, projectName));
+}
+
+export function openAuthorizedBatchSheet(batch, budgetsById, projectName = '') {
+  return openPrintWindow(buildAuthorizedBatchHtml(batch, budgetsById, projectName));
 }
