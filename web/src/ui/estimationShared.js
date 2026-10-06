@@ -109,10 +109,16 @@ export function computeGroupAdvanceTotal(lineItems, groupAdvancePcts, discountPc
   );
 }
 
-export function computeBudgetFormTotals(lineItems, advanceAmount, groupAdvancePcts, discountPct = 0) {
+// El anticipo (solo sirve para amortizar) se captura en $ o como % del presupuesto: advanceInput = { mode, pct }.
+export function computeBudgetFormTotals(lineItems, advanceAmount, groupAdvancePcts, discountPct = 0, advanceInput = null) {
   const totalContractedAmount = (lineItems || []).reduce((sum, row) => sum + computeLineItemAmount(row, discountPct), 0);
   const groupAdvance = computeGroupAdvanceTotal(lineItems, groupAdvancePcts, discountPct);
-  const advance = groupAdvance > 0 ? groupAdvance : Number(advanceAmount) || 0;
+  const byPct = advanceInput?.mode === 'pct';
+  const advance = groupAdvance > 0
+    ? groupAdvance
+    : byPct
+      ? (totalContractedAmount * Math.min(Math.max(Number(advanceInput.pct) || 0, 0), 100)) / 100
+      : Number(advanceAmount) || 0;
   const advancePct = totalContractedAmount > 0 ? (advance / totalContractedAmount) * 100 : 0;
   return { totalContractedAmount, advancePct, advanceAmount: advance, usesGroupAdvance: groupAdvance > 0 };
 }
@@ -130,6 +136,8 @@ export function emptyBudgetForm(projectId) {
     notes: '',
     retentionPct: '0',
     advanceAmortizationEnabled: true,
+    advanceMode: 'amount',
+    advancePctInput: '',
     discountEnabled: false,
     discountMode: 'pct',
     discountValue: '',

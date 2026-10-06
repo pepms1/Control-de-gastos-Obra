@@ -130,8 +130,8 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
   );
   const discountPct = formDiscount.applies ? formDiscount.pct : 0;
   const formTotals = useMemo(
-    () => computeBudgetFormTotals(form.lineItems, form.advanceAmount, form.groupAdvancePcts, discountPct),
-    [form.lineItems, form.advanceAmount, form.groupAdvancePcts, discountPct],
+    () => computeBudgetFormTotals(form.lineItems, form.advanceAmount, form.groupAdvancePcts, discountPct, { mode: form.advanceMode, pct: form.advancePctInput }),
+    [form.lineItems, form.advanceAmount, form.groupAdvancePcts, discountPct, form.advanceMode, form.advancePctInput],
   );
 
   function toggleSupplierExpand(groupKey) {
@@ -293,6 +293,8 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
       retentionPct: String(row.retentionPct ?? 0),
       advanceAmortizationEnabled: Boolean(row.advanceAmortizationEnabled),
       advanceAmount: String(row.advanceAmount ?? 0),
+      advanceMode: row.advanceMode === 'pct' ? 'pct' : 'amount',
+      advancePctInput: row.advanceMode === 'pct' ? String(row.advancePctInput ?? '') : '',
       discountEnabled: Boolean(row.discountMode),
       discountMode: row.discountMode === 'amount' ? 'amount' : 'pct',
       discountValue: row.discountMode === 'amount' ? String(row.discountAmount ?? '') : row.discountMode === 'pct' ? String(row.discountPct ?? '') : '',
@@ -494,6 +496,9 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
         setSaving(false);
         return;
       }
+      const advancePayload = form.advanceMode === 'pct' && !formTotals.usesGroupAdvance
+        ? { advanceMode: 'pct', advancePct: Number(form.advancePctInput) || 0 }
+        : { advanceMode: 'amount' };
       const discountPayload = form.discountEnabled && formDiscount.applies
         ? { discountMode: form.discountMode, ...(form.discountMode === 'amount' ? { discountAmount: Number(form.discountValue) } : { discountPct: Number(form.discountValue) }) }
         : { discountMode: null };
@@ -507,6 +512,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           retentionPct: Number(form.retentionPct) || 0,
           advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
           advanceAmount,
+          ...advancePayload,
           groupAdvancePcts,
           ...discountPayload,
           lineItems: lineItemsPayload,
@@ -525,6 +531,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           retentionPct: Number(form.retentionPct) || 0,
           advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
           advanceAmount,
+          ...advancePayload,
           groupAdvancePcts,
           ...discountPayload,
           lineItems: lineItemsPayload,
@@ -1386,15 +1393,49 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
               Amortizar anticipo
             </label>
             <div>
-              <label>Monto de anticipo</label>
-              <input
-                value={formTotals.usesGroupAdvance ? formTotals.advanceAmount.toFixed(2) : form.advanceAmount}
-                onChange={(e) => setForm((prev) => ({ ...prev, advanceAmount: e.target.value }))}
-                placeholder="0.00"
-                style={{ width: 120 }}
-                disabled={formTotals.usesGroupAdvance}
-                title={formTotals.usesGroupAdvance ? 'Sale de los % de anticipo por grupo' : undefined}
-              />
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                Anticipo (para amortizar)
+                <span className="small" style={{ display: 'inline-flex', gap: 8, fontWeight: 400 }}>
+                  <label style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
+                    <input type="radio" name="advance-mode" checked={form.advanceMode !== 'pct'} disabled={formTotals.usesGroupAdvance}
+                      onChange={() => setForm((prev) => ({ ...prev, advanceMode: 'amount', advanceAmount: formTotals.advanceAmount ? formTotals.advanceAmount.toFixed(2) : prev.advanceAmount }))} />
+                    $
+                  </label>
+                  <label style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
+                    <input type="radio" name="advance-mode" checked={form.advanceMode === 'pct'} disabled={formTotals.usesGroupAdvance}
+                      onChange={() => setForm((prev) => ({ ...prev, advanceMode: 'pct', advancePctInput: formTotals.advancePct ? String(Math.round(formTotals.advancePct * 100) / 100) : prev.advancePctInput }))} />
+                    %
+                  </label>
+                </span>
+              </label>
+              {form.advanceMode === 'pct' && !formTotals.usesGroupAdvance ? (
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.01"
+                  value={form.advancePctInput}
+                  onChange={(e) => setForm((prev) => ({ ...prev, advancePctInput: e.target.value }))}
+                  placeholder="0"
+                  style={{ width: 120 }}
+                  aria-label="Anticipo en porcentaje"
+                />
+              ) : (
+                <input
+                  value={formTotals.usesGroupAdvance ? formTotals.advanceAmount.toFixed(2) : form.advanceAmount}
+                  onChange={(e) => setForm((prev) => ({ ...prev, advanceAmount: e.target.value }))}
+                  placeholder="0.00"
+                  style={{ width: 120 }}
+                  disabled={formTotals.usesGroupAdvance}
+                  title={formTotals.usesGroupAdvance ? 'Sale de los % de anticipo por grupo' : undefined}
+                  aria-label="Anticipo en cantidad"
+                />
+              )}
+              <div className="small" style={{ color: 'var(--gray-600)' }}>
+                {form.advanceMode === 'pct' && !formTotals.usesGroupAdvance
+                  ? <>= {formatCurrency(formTotals.advanceAmount)}</>
+                  : <>= {formatPct(formTotals.advancePct)} del presupuesto</>}
+              </div>
             </div>
             <div>
               <label>Nota (opcional)</label>
