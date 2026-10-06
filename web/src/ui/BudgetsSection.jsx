@@ -1435,6 +1435,10 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                   ? <>= {formatCurrency(formTotals.advanceAmount)}</>
                   : <>= {formatPct(formTotals.advancePct)} del presupuesto</>}
               </div>
+              <div className="small" style={{ color: 'var(--gray-600)', maxWidth: 260 }}>
+                Solo define cuánto se amortiza en cada estimación. Con varios presupuestos del proveedor se amortiza únicamente el anticipo que
+                realmente se entregue (pago marcado como anticipo, o «Anticipo a entregar» en la estimación).
+              </div>
             </div>
             <div>
               <label>Nota (opcional)</label>

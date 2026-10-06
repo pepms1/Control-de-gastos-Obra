@@ -10240,17 +10240,30 @@ def compute_previous_cumulative_quantities(estimation_budget_id: str, exclude_es
     return totals
 
 
+def budget_opening_advance_delivered(estimation_budget: dict) -> float:
+    """Anticipo ya entregado que se registro con el saldo inicial (pagos marcados como anticipo)."""
+    if estimation_budget.get("openingSetAt") or estimation_budget.get("openingFrozen"):
+        return round(float(estimation_budget.get("openingAdvanceAmount") or 0), 2)
+    return 0.0
+
+
 def compute_remaining_advance_balance(estimation_budget: dict, exclude_estimation_id: str | None = None) -> float:
     advance_amount = float(estimation_budget.get("advanceAmount") or 0)
     estimation_budget_id = str(estimation_budget.get("_id") or "")
     query: dict = {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
     if exclude_estimation_id:
         query["_id"] = {"$ne": oid(exclude_estimation_id)}
-    amortized = sum(
-        float(row.get("advanceAmortizationAmount") or 0)
-        for row in db.estimations.find(query, {"advanceAmortizationAmount": 1})
-    )
-    return round(max(advance_amount - amortized, 0), 2)
+    rows = list(db.estimations.find(query, {"advanceAmortizationAmount": 1, "advanceGivenAmount": 1, "workflowStatus": 1}))
+    amortized = sum(float(row.get("advanceAmortizationAmount") or 0) for row in rows)
+    remaining = max(advance_amount - amortized, 0)
+    # Proveedor con varios presupuestos: el anticipo capturado en el presupuesto es solo el plan; se
+    # amortiza unicamente lo que de verdad se entrego (pagos marcados como anticipo o entregado en una
+    # estimacion aprobada).
+    if supplier_uses_prior_pool(str(estimation_budget.get("projectId") or ""), str(estimation_budget.get("supplierKey") or "")):
+        given = sum(float(row.get("advanceGivenAmount") or 0) for row in rows if estimation_workflow_status(row) == ESTIMATION_STATUS_APPROVED)
+        delivered = budget_opening_advance_delivered(estimation_budget) + given
+        remaining = min(remaining, max(delivered - amortized, 0))
+    return round(remaining, 2)
 
 
 def get_effective_opening_prior_paid(estimation_budget: dict, exclude_estimation_id: str | None = None) -> tuple[float, str]:
@@ -10337,8 +10350,8 @@ def compute_supplier_prior_pool_remaining(
     advance_outside = 0.0
     opening_total = 0.0
     for budget in budgets:
-        planned = float(budget.get("advanceAmount") or 0) if budget.get("advanceAmortizationEnabled") else 0.0
-        advance_outside += max(planned - advance_via.get(str(budget.get("_id")), 0.0), 0.0)
+        # Solo el anticipo realmente entregado fuera de una estimacion (el previsto no se da por pagado).
+        advance_outside += budget_opening_advance_delivered(budget) if budget.get("advanceAmortizationEnabled") else 0.0
         opening_total += get_effective_opening_prior_paid(budget)[0]
     return round(max(paid - advance_outside - opening_total - authorized - pool_approved - pool_open_other - float(extra_used or 0), 0), 2)
 
@@ -11044,6 +11057,13 @@ def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dic
     payload["totalRetainedToDate"] = round(sum(float(r.get("retentionAmount") or 0) for r in rows), 2)
     amortized = round(sum(float(r.get("advanceAmortizationAmount") or 0) for r in rows), 2)
     payload["remainingAdvanceBalance"] = round(max(float(payload.get("advanceAmount") or 0) - amortized, 0), 2)
+    if supplier_uses_prior_pool(project_id, supplier_key):
+        given_approved = sum(
+            float(r.get("advanceGivenAmount") or 0) for r in rows if estimation_workflow_status(r) == ESTIMATION_STATUS_APPROVED
+        )
+        delivered_advance = budget_opening_advance_delivered(doc) + given_approved
+        payload["advanceDeliveredAmount"] = round(delivered_advance, 2)
+        payload["remainingAdvanceBalance"] = round(min(payload["remainingAdvanceBalance"], max(delivered_advance - amortized, 0)), 2)
     history = compute_previous_cumulative_quantities(estimation_budget_id)
     payload["conceptoIdsWithHistory"] = [concepto_id for concepto_id, qty in history.items() if qty > 0]
     if include_payments:
