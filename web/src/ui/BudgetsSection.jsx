@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { PasteTextImport } from './PasteTextImport.jsx';
 import { OpeningBalancePanel } from './OpeningBalancePanel.jsx';
 import { SupplierPaymentsPanel } from './SupplierPaymentsPanel.jsx';
+import { UnitSelect } from './UnitSelect.jsx';
 import { ExtrasPanel } from './ExtrasPanel.jsx';
 import {
   buildCanonicalSupplierKey,
@@ -18,6 +19,7 @@ import {
   formatPct,
   generateId,
   isBlankConceptoRow,
+  normalizeUnit,
   summarizeBudgets,
 } from './estimationShared.js';
 
@@ -412,7 +414,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
     const importedRows = (Array.isArray(result?.items) ? result.items : []).map((item) => ({
       id: generateId(),
       description: item.description || '',
-      unit: item.unit || '',
+      unit: normalizeUnit(item.unit),
       quantity: String(item.quantity ?? ''),
       unitPrice: String(item.unitPrice ?? ''),
       group: item.group || '',
@@ -914,16 +916,16 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                 />
                 <button
                   type="button"
-                  className="secondary"
+                  className="btn-outline"
                   onClick={() => importFileInputRef.current?.click()}
                   disabled={importingConceptos}
                 >
                   {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
                 </button>
-                <button type="button" className="secondary" onClick={() => setShowPasteText((prev) => !prev)}>
+                <button type="button" className="btn-outline" onClick={() => setShowPasteText((prev) => !prev)}>
                   📋 Pegar texto
                 </button>
-                <button type="button" className="secondary" onClick={addConceptoRow}>+ Agregar concepto</button>
+                <button type="button" onClick={addConceptoRow}>+ Agregar concepto</button>
               </div>
             </div>
             {showPasteText && (
@@ -940,7 +942,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
             )}
             <div
               className="row"
-              style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-100)', borderRadius: 6, padding: 8, marginBottom: 6 }}
+              style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: 10, margin: '12px 0 8px' }}
             >
               <div>
                 <label>Agrupar los conceptos marcados en</label>
@@ -952,10 +954,10 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                   style={{ width: 200 }}
                 />
               </div>
-              <button type="button" className="secondary" onClick={applyBulkGroup}>Asignar grupo</button>
+              <button type="button" className="btn-outline" onClick={applyBulkGroup}>Asignar grupo</button>
               <button
                 type="button"
-                className="secondary"
+                className="btn-outline"
                 onClick={() => setSelectedConceptoIds(
                   selectedConceptoIds.size === form.lineItems.length ? new Set() : new Set(form.lineItems.map((row) => row.id)),
                 )}
@@ -966,7 +968,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
               <input ref={groupFileInputRef} type="file" accept=".xlsx,.csv,.pdf,.docx" onChange={handleGroupFromFile} style={{ display: 'none' }} />
               <button
                 type="button"
-                className="secondary"
+                className="btn-outline"
                 onClick={() => groupFileInputRef.current?.click()}
                 disabled={groupingFromFile}
                 title="Lee un Excel/Word con los grupos y se los pone a los conceptos que ya existen, sin agregar ni quitar conceptos"
@@ -1024,12 +1026,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                           )}
                         </td>
                         <td>
-                          <input
-                            value={row.unit}
-                            onChange={(e) => updateConceptoRow(index, { unit: e.target.value })}
-                            placeholder="m2, pza, lote..."
-                            style={{ width: 90 }}
-                          />
+                          <UnitSelect value={row.unit} onChange={(unit) => updateConceptoRow(index, { unit })} width={130} />
                         </td>
                         <td>
                           <input
