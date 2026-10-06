@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { ExtrasPanel } from './ExtrasPanel.jsx';
 import { CaptureBlock } from './CaptureBlock.jsx';
 import { OpeningBalancePanel } from './OpeningBalancePanel.jsx';
+import { SupplierPaymentsPanel } from './SupplierPaymentsPanel.jsx';
 import { EstimationBatchView, StatusBadge } from './EstimationBatchView.jsx';
 import { formatCurrency, formatDate, formatPct, openAuthorizedBatchSheet } from './estimationShared.js';
 import { previousCumulativeForBudget, todayIsoDate } from './estimationCapture.js';
@@ -32,6 +33,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   const [detailLoading, setDetailLoading] = useState(false);
   const [extrasBudgetId, setExtrasBudgetId] = useState(null);
   const [openingBudgetId, setOpeningBudgetId] = useState(null);
+  const [showSupplierPayments, setShowSupplierPayments] = useState(false);
 
   // Formulario de estimación
   const [showForm, setShowForm] = useState(false);
@@ -108,7 +110,10 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       return {
         ...supplier,
         contracted,
-        paid: supplier.budgets.reduce((sum, b) => sum + (Number(b.paidAmount) || 0), 0),
+        // Pagado al proveedor: todos sus pagos (menos los desasignados).
+        paid: supplier.budgets.some((b) => b.supplierPaidAmount != null)
+          ? Number(supplier.budgets.find((b) => b.supplierPaidAmount != null).supplierPaidAmount) || 0
+          : supplier.budgets.reduce((sum, b) => sum + (Number(b.paidAmount) || 0), 0),
         progressPct: contracted > 0 ? (progress / contracted) * 100 : 0,
         completeCount: supplier.budgets.filter((b) => b.isComplete).length,
         pendingCount: supplier.budgets.filter((b) => b.approvalStatus === 'PENDIENTE').length,
@@ -123,7 +128,6 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
           acc.totalContractedAmount += Number(row.totalContractedAmount) || 0;
           acc.totalRetainedToDate += Number(row.totalRetainedToDate) || 0;
           acc.remainingAdvanceBalance += Number(row.remainingAdvanceBalance) || 0;
-          acc.paidAmount += Number(row.paidAmount) || 0;
           acc.approvedProgressAmount += Number(row.approvedProgressAmount) || 0;
           return acc;
         },
@@ -131,6 +135,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       ),
     [rows],
   );
+  listTotals.paidAmount = suppliers.reduce((sum, supplier) => sum + supplier.paid, 0);
   const listProgressPct = listTotals.totalContractedAmount > 0 ? (listTotals.approvedProgressAmount / listTotals.totalContractedAmount) * 100 : 0;
   const listPaidPct = listTotals.totalContractedAmount > 0 ? (listTotals.paidAmount / listTotals.totalContractedAmount) * 100 : 0;
   const activeBudgetsCount = rows.filter((row) => row.isActive !== false).length;
@@ -165,6 +170,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     setViewingBatch(null);
     setExtrasBudgetId(null);
     setOpeningBudgetId(null);
+    setShowSupplierPayments(false);
     const loaded = await loadSupplier(supplierKey);
     if (loaded && viewBatchId) {
       const batch = loaded.batches.find((b) => b.id === viewBatchId);
@@ -429,7 +435,9 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   const extrasBudget = supplierBudgets.find((budget) => budget.id === extrasBudgetId) || null;
   const supplierContracted = supplierBudgets.reduce((sum, b) => sum + (Number(b.totalContractedAmount) || 0), 0);
   const supplierProgressAmount = supplierBudgets.reduce((sum, b) => sum + (Number(b.approvedProgressAmount) || 0), 0);
-  const supplierPaid = supplierBudgets.reduce((sum, b) => sum + (Number(b.paidAmount) || 0), 0);
+  const supplierPaid = supplierBudgets.some((b) => b.supplierPaidAmount != null)
+    ? Number(supplierBudgets.find((b) => b.supplierPaidAmount != null).supplierPaidAmount) || 0
+    : supplierBudgets.reduce((sum, b) => sum + (Number(b.paidAmount) || 0), 0);
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -668,9 +676,9 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 </div></div>
                 {isReviewer && (
                   <div className="kpi-card"><div>
-                    <div className="kpi-label">Pagado</div>
+                    <div className="kpi-label">Pagado a la fecha</div>
                     <div className="kpi-value">{formatCurrency(supplierPaid)}</div>
-                    <div className="kpi-sub">saldo: {formatCurrency(supplierContracted - supplierPaid)}</div>
+                    <div className="kpi-sub">todos los pagos del proveedor · saldo: {formatCurrency(supplierContracted - supplierPaid)}</div>
                   </div></div>
                 )}
                 <div className="kpi-card"><div>
@@ -694,12 +702,31 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                 <div className="card-header">
                   <strong>Presupuestos de {supplierName}</strong>
                   <div style={{ flex: 1 }} />
+                  {isReviewer && (
+                    <button type="button" className="secondary" onClick={() => setShowSupplierPayments((open) => !open)} title="Ver y desasignar los pagos del proveedor">
+                      Pagos del proveedor
+                    </button>
+                  )}
                   {isReviewer && onOpenBudgets && (
                     <button type="button" className="secondary" onClick={onOpenBudgets} title="Editar presupuestos, asignar pagos o registrar el saldo inicial">
                       Administrar en Presupuestos
                     </button>
                   )}
                 </div>
+                {showSupplierPayments && isReviewer && (
+                  <div style={{ padding: 12 }}>
+                    <SupplierPaymentsPanel
+                      supplierKey={selectedSupplierKey}
+                      supplierName={supplierName}
+                      projectId={selectedProjectId}
+                      onClose={() => setShowSupplierPayments(false)}
+                      onSaved={async () => {
+                        setShowSupplierPayments(false);
+                        await refreshAll();
+                      }}
+                    />
+                  </div>
+                )}
                 <div style={{ overflowX: 'auto' }}>
                   <table>
                     <thead>

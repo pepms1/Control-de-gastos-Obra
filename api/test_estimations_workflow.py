@@ -522,7 +522,7 @@ class EstimationAutoPaidTests(EstimationsWorkflowTests):
 
     def _list_with_paid(self, paid):
         with patch.object(main, 'db', self.fake_db), patch.object(
-            main, 'compute_estimation_budget_paid_amount', return_value=paid
+            main, 'compute_supplier_paid_amount', return_value=paid
         ):
             return main.list_estimations(self.budget['id'], user=ADMIN)
 
