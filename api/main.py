@@ -10103,14 +10103,29 @@ def compute_estimation_budget_totals(line_items: list[dict], advance_amount: flo
 
 
 def compute_next_estimation_folio(estimation_budget_id: str) -> int:
-    """Consecutivo: el folio mas alto + 1 (asi, si a una estimacion se le puso un
-    numero manual, las siguientes continuan a partir de ese)."""
-    rows = list(
-        db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}})
-        .sort("folio", -1)
-        .limit(1)
-    )
-    highest = int(rows[0].get("folio") or 0) if rows else 0
+    """Consecutivo POR PROVEEDOR (independiente del presupuesto y de otros proveedores):
+    el folio mas alto + 1, asi que si a una estimacion se le puso un numero manual las
+    siguientes continuan a partir de ese."""
+    budget = db.estimationBudgets.find_one({"_id": oid(estimation_budget_id)})
+    if budget:
+        return compute_next_supplier_estimation_folio(str(budget.get("projectId") or ""), str(budget.get("supplierKey") or ""))
+    return 1
+
+
+def _supplier_budget_ids(project_id: str, supplier_key: str) -> list[str]:
+    return [
+        str(row.get("_id"))
+        for row in db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplier_key})
+    ]
+
+
+def compute_next_supplier_estimation_folio(project_id: str, supplier_key: str) -> int:
+    budget_ids = _supplier_budget_ids(project_id, supplier_key)
+    if not budget_ids:
+        return 1
+    highest = 0
+    for row in db.estimations.find({"estimationBudgetId": {"$in": budget_ids}, "isDeleted": {"$ne": True}}):
+        highest = max(highest, int(row.get("folio") or 0))
     return highest + 1
 
 
@@ -10740,6 +10755,7 @@ def _budget_material_snapshot(line_items, advance_amount, group_advance_pcts, re
 def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dict:
     payload = serialize_raw_doc(doc)
     payload["approvalStatus"] = budget_approval_status(doc)
+    payload["isComplete"] = budget_is_complete(doc)
     estimation_budget_id = str(payload.get("id") or "")
     project_id = str(payload.get("projectId") or "")
     supplier_key = str(payload.get("supplierKey") or "")
@@ -11445,51 +11461,74 @@ def _require_positive_progress(estimation: dict) -> None:
 
 
 def reconcile_budget_estimation_payments(estimation_budget: dict | None) -> None:
-    """Marca PAGADA, sola, cada estimacion aprobada cuyo monto autorizado ya
-    quedo cubierto por los pagos del proveedor asignados al presupuesto.
-
-    Pagado acumulado >= anticipo + saldo inicial + autorizado acumulado (en
-    orden de folio). Solo toca las que marco el sistema (paidAuto): una marca
-    manual vieja se respeta, y si se quita un pago, una marca automatica se
-    revierte a POR_PAGAR."""
+    """Compatibilidad: la conciliacion de pagos es por proveedor (ver abajo)."""
     if not estimation_budget:
         return
-    budget_id = str(estimation_budget.get("_id") or "")
+    reconcile_supplier_estimation_payments(
+        str(estimation_budget.get("projectId") or ""), str(estimation_budget.get("supplierKey") or "")
+    )
+
+
+def reconcile_supplier_estimation_payments(project_id: str, supplier_key: str) -> None:
+    """Marca PAGADA, sola, cada estimacion aprobada del proveedor cuyo monto autorizado
+    ya quedo cubierto por los pagos del proveedor asignados a sus presupuestos.
+
+    Pagado acumulado >= anticipos + saldos iniciales + autorizado acumulado (en orden
+    de folio, todas las estimaciones del proveedor). Solo toca las que marco el
+    sistema (paidAuto): una marca manual vieja se respeta, y si se quita un pago, una
+    marca automatica se revierte a POR_PAGAR."""
+    budgets = list(db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplier_key}))
+    if not budgets:
+        return
+    budget_ids = [str(budget.get("_id")) for budget in budgets]
     rows = [
         row
-        for row in db.estimations.find({"estimationBudgetId": budget_id, "isDeleted": {"$ne": True}})
+        for row in db.estimations.find({"estimationBudgetId": {"$in": budget_ids}, "isDeleted": {"$ne": True}})
         if estimation_workflow_status(row) == ESTIMATION_STATUS_APPROVED
     ]
     if not rows:
         return
-    rows.sort(key=lambda row: int(row.get("folio") or 0))
-    paid_amount = compute_estimation_budget_paid_amount(
-        str(estimation_budget.get("projectId") or ""),
-        str(estimation_budget.get("supplierKey") or ""),
-        budget_id,
-        estimation_budget_is_active=bool(estimation_budget.get("isActive", True)),
-        excluded_transaction_ids=estimation_budget.get("excludedTransactionIds"),
-    )
-    opening, _mode = get_effective_opening_prior_paid(estimation_budget)
-    advance = float(estimation_budget.get("advanceAmount") or 0) if estimation_budget.get("advanceAmortizationEnabled") else 0.0
-    cumulative = advance + opening
-    now_iso = datetime.now(timezone.utc).isoformat()
+    batches: dict[str, list[dict]] = {}
     for row in rows:
-        cumulative += float(row.get("authorizedAmount") or 0)
+        batches.setdefault(estimation_batch_id(row), []).append(row)
+    ordered = sorted(
+        batches.values(),
+        key=lambda parts: (int(parts[0].get("folio") or 0), str(parts[0].get("approvedAt") or "")),
+    )
+    paid_amount = sum(
+        compute_estimation_budget_paid_amount(
+            project_id,
+            supplier_key,
+            str(budget.get("_id")),
+            estimation_budget_is_active=bool(budget.get("isActive", True)),
+            excluded_transaction_ids=budget.get("excludedTransactionIds"),
+        )
+        for budget in budgets
+    )
+    cumulative = 0.0
+    for budget in budgets:
+        opening, _mode = get_effective_opening_prior_paid(budget)
+        advance = float(budget.get("advanceAmount") or 0) if budget.get("advanceAmortizationEnabled") else 0.0
+        cumulative += advance + opening
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for parts in ordered:
+        cumulative += sum(float(part.get("authorizedAmount") or 0) for part in parts)
         covered = paid_amount + 0.5 >= cumulative
-        status = row.get("paymentStatus") or ESTIMATION_PAYMENT_PENDING
-        if covered and status != ESTIMATION_PAYMENT_PAID:
-            db.estimations.update_one(
-                {"_id": row["_id"]},
-                {"$set": {"paymentStatus": ESTIMATION_PAYMENT_PAID, "paidAuto": True, "paidMarkedBy": "sistema",
-                          "paidMarkedAt": now_iso, "updatedAt": now_iso}},
-            )
-        elif not covered and status == ESTIMATION_PAYMENT_PAID and row.get("paidAuto"):
-            db.estimations.update_one(
-                {"_id": row["_id"]},
-                {"$set": {"paymentStatus": ESTIMATION_PAYMENT_PENDING, "paidAuto": False, "updatedAt": now_iso},
-                 "$unset": {"paidMarkedBy": "", "paidMarkedAt": ""}},
-            )
+        status = parts[0].get("paymentStatus") or ESTIMATION_PAYMENT_PENDING
+        auto = bool(parts[0].get("paidAuto"))
+        for part in parts:
+            if covered and status != ESTIMATION_PAYMENT_PAID:
+                db.estimations.update_one(
+                    {"_id": part["_id"]},
+                    {"$set": {"paymentStatus": ESTIMATION_PAYMENT_PAID, "paidAuto": True, "paidMarkedBy": "sistema",
+                              "paidMarkedAt": now_iso, "updatedAt": now_iso}},
+                )
+            elif not covered and status == ESTIMATION_PAYMENT_PAID and auto:
+                db.estimations.update_one(
+                    {"_id": part["_id"]},
+                    {"$set": {"paymentStatus": ESTIMATION_PAYMENT_PENDING, "paidAuto": False, "updatedAt": now_iso},
+                     "$unset": {"paidMarkedBy": "", "paidMarkedAt": ""}},
+                )
 
 
 @app.get("/api/estimation-budgets/{estimation_budget_id}/estimations")
@@ -11615,6 +11654,8 @@ def set_estimation_folio(
     desde el folio mas alto."""
     _get_estimation_budget_or_404(estimation_budget_id, user)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    if existing.get("batchId"):
+        return set_supplier_estimation_folio(str(existing["batchId"]), payload, user=user)
     raw = (payload or {}).get("folio")
     try:
         new_folio = int(str(raw).strip())
@@ -11647,6 +11688,8 @@ def set_estimation_folio(
 def delete_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_estimation_capture)):
     _get_estimation_budget_or_404(estimation_budget_id, user)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    if existing.get("batchId"):
+        return delete_supplier_estimation(str(existing["batchId"]), user=user)
     workflow = estimation_workflow_status(existing)
     if workflow == ESTIMATION_STATUS_LEGACY and not is_admin_or_superadmin_user(user):
         raise HTTPException(status_code=403, detail="ADMIN or SUPERADMIN role required")
@@ -11666,6 +11709,8 @@ def delete_estimation(estimation_budget_id: str, estimation_id: str, user: dict 
 def submit_estimation(estimation_budget_id: str, estimation_id: str, user: dict = Depends(require_estimation_capture)):
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    if existing.get("batchId"):
+        return submit_supplier_estimation(str(existing["batchId"]), user=user)
     _require_estimation_status(existing, (ESTIMATION_STATUS_DRAFT,), "submit")
     _require_budget_authorized(estimation_budget)
     existing = refresh_open_estimation_money(existing, estimation_budget)
@@ -11692,6 +11737,8 @@ def return_estimation_to_draft(
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
     _require_approval_assignment(user, estimation_budget)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    if existing.get("batchId"):
+        return return_supplier_estimation(str(existing["batchId"]), payload, user=user)
     _require_estimation_status(existing, (ESTIMATION_STATUS_SUBMITTED,), "return")
     reason = normalize_non_empty_string((payload or {}).get("reason"))
     if not reason:
@@ -11719,6 +11766,8 @@ def approve_estimation(
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
     _require_approval_assignment(user, estimation_budget)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    if existing.get("batchId"):
+        return approve_supplier_estimation(str(existing["batchId"]), payload, user=user)
     _require_estimation_status(existing, (ESTIMATION_STATUS_SUBMITTED,), "approve")
     existing = refresh_open_estimation_money(existing, estimation_budget)
     freeze_auto_opening_if_needed(estimation_budget, existing)
@@ -11778,6 +11827,8 @@ def mark_estimation_paid(
 ):
     _get_estimation_budget_or_404(estimation_budget_id, user)
     existing = _get_estimation_or_404(estimation_budget_id, estimation_id)
+    if existing.get("batchId"):
+        return mark_supplier_estimation_paid(str(existing["batchId"]), payload, user=user)
     _require_estimation_status(existing, (ESTIMATION_STATUS_APPROVED,), "mark as paid")
     if existing.get("paymentStatus") == ESTIMATION_PAYMENT_PAID:
         raise HTTPException(status_code=409, detail="La estimación ya está marcada como pagada")
@@ -11804,17 +11855,22 @@ def estimations_pending_summary(user: dict = Depends(require_admin_or_superadmin
     rows = list(
         db.estimations.find(
             {"isDeleted": {"$ne": True}, "workflowStatus": ESTIMATION_STATUS_SUBMITTED},
-            {"projectId": 1, "submittedAt": 1, "submittedBy": 1, "folio": 1},
+            {"projectId": 1, "submittedAt": 1, "submittedBy": 1, "folio": 1, "batchId": 1},
         )
     )
     by_project: dict[str, int] = {}
     submitted_by: set[str] = set()
     oldest = None
     total = 0
+    seen_batches: set[str] = set()
     for row in rows:
         project_id = str(row.get("projectId") or "")
         if not can_access_project(user, project_id) or not can_approve_estimations(user, project_id):
             continue
+        batch_key = estimation_batch_id(row)
+        if batch_key in seen_batches:
+            continue
+        seen_batches.add(batch_key)
         total += 1
         by_project[project_id] = by_project.get(project_id, 0) + 1
         if row.get("submittedBy"):
@@ -11863,22 +11919,529 @@ def list_estimations_queue(
         query["paymentStatus"] = payment_filter.upper()
 
     if ESTIMATION_STATUS_APPROVED in statuses:
-        for budget_row in db.estimationBudgets.find({"projectId": project_id, "isDeleted": {"$ne": True}}):
-            reconcile_budget_estimation_payments(budget_row)
+        supplier_keys = {
+            str(budget_row.get("supplierKey") or "")
+            for budget_row in db.estimationBudgets.find({"projectId": project_id})
+        }
+        for supplier_key in supplier_keys:
+            reconcile_supplier_estimation_payments(project_id, supplier_key)
     rows = list(db.estimations.find(query).sort("updatedAt", -1))
-    budget_cache: dict[str, dict | None] = {}
+    seen: set[str] = set()
     items = []
     for row in rows:
-        budget_id = str(row.get("estimationBudgetId") or "")
-        if budget_id not in budget_cache:
-            budget_cache[budget_id] = db.estimationBudgets.find_one({"_id": oid(budget_id)})
-        budget = budget_cache[budget_id] or {}
-        payload = serialize_estimation(refresh_open_estimation_money(row, budget_cache[budget_id]))
-        payload["budgetName"] = budget.get("name") or ""
-        payload["supplierName"] = budget.get("supplierNameSnapshot") or budget.get("supplierKey") or ""
-        payload["currency"] = budget.get("currency") or "MXN"
-        items.append(payload)
+        batch_key = estimation_batch_id(row)
+        if batch_key in seen:
+            continue
+        seen.add(batch_key)
+        parts = get_estimation_batch_parts(batch_key) or [row]
+        items.append(_batch_header(parts, _load_budgets_for(parts)))
     return {"items": items}
+
+
+# ---- Estimacion por proveedor (varios presupuestos en una misma estimacion) ----
+#
+# Una estimacion es del PROVEEDOR: puede llevar avance de cualquiera de sus
+# presupuestos (p. ej. uno por departamento) que aun no esten al 100 %. Cada
+# presupuesto conserva su propia matematica (retencion, anticipo, saldo inicial)
+# en un documento "parte" de `estimations`; las partes de una misma estimacion
+# comparten `batchId` y folio, y se capturan, envian, autorizan y pagan juntas.
+# Un documento sin batchId es una estimacion de un solo presupuesto (batchId = su _id).
+
+
+def estimation_batch_id(doc: dict) -> str:
+    return str((doc or {}).get("batchId") or (doc or {}).get("_id") or "")
+
+
+def get_estimation_batch_parts(batch_id: str) -> list[dict]:
+    parts = list(db.estimations.find({"batchId": batch_id, "isDeleted": {"$ne": True}}))
+    if not parts:
+        try:
+            single = db.estimations.find_one({"_id": oid(batch_id), "isDeleted": {"$ne": True}})
+        except HTTPException:
+            single = None
+        if single and not single.get("batchId"):
+            parts = [single]
+    parts.sort(key=lambda row: (str(row.get("createdAt") or ""), str(row.get("_id"))))
+    return parts
+
+
+def budget_is_complete(estimation_budget: dict) -> bool:
+    """Presupuesto con TODOS sus conceptos al 100 % (contando lo ya estimado, aunque
+    la estimacion siga abierta): ya no hay nada que estimar en el."""
+    concepts = estimation_budget.get("lineItems") or []
+    if not concepts:
+        return False
+    cumulative = compute_previous_cumulative_quantities(str(estimation_budget.get("_id") or ""))
+    return all(
+        float(cumulative.get(str(c.get("id") or ""), 0) or 0) + 1e-6 >= float(c.get("quantity") or 0)
+        for c in concepts
+    )
+
+
+def _batch_header(parts: list[dict], budgets_by_id: dict[str, dict]) -> dict:
+    """Estimacion del proveedor: encabezado + partes (una por presupuesto)."""
+    lead = parts[0]
+    status = estimation_workflow_status(lead)
+    refreshed = [refresh_open_estimation_money(part, budgets_by_id.get(str(part.get("estimationBudgetId") or ""))) for part in parts]
+
+    def total(key):
+        return round(sum(float(part.get(key) or 0) for part in refreshed), 2)
+
+    first_budget = budgets_by_id.get(str(lead.get("estimationBudgetId") or "")) or {}
+    requested_raw = lead.get("requestedAmount")
+    requested = round(float(requested_raw), 2) if requested_raw is not None else None
+    header = {
+        "id": estimation_batch_id(lead),
+        "batchId": estimation_batch_id(lead),
+        "projectId": str(lead.get("projectId") or ""),
+        "supplierKey": str(first_budget.get("supplierKey") or ""),
+        "supplierName": first_budget.get("supplierNameSnapshot") or first_budget.get("supplierKey") or "",
+        "folio": int(lead.get("folio") or 0),
+        "periodStart": lead.get("periodStart"),
+        "periodEnd": lead.get("periodEnd"),
+        "notes": lead.get("notes") or "",
+        "workflowStatus": status,
+        "paymentStatus": lead.get("paymentStatus"),
+        "requestedAmount": requested,
+        "periodSubtotal": total("periodSubtotal"),
+        "retentionAmount": total("retentionAmount"),
+        "advanceAmortizationAmount": total("advanceAmortizationAmount"),
+        "priorPaidApplied": total("priorPaidApplied"),
+        "totalToPay": total("totalToPay"),
+        "createdBy": lead.get("createdBy"),
+        "createdAt": lead.get("createdAt"),
+        "updatedAt": max((str(part.get("updatedAt") or "") for part in refreshed), default=""),
+        "submittedBy": lead.get("submittedBy"),
+        "submittedAt": lead.get("submittedAt"),
+        "returnReason": lead.get("returnReason"),
+        "returnedBy": lead.get("returnedBy"),
+        "returnedAt": lead.get("returnedAt"),
+        "currency": first_budget.get("currency") or "MXN",
+        "budgetName": ", ".join(
+            str((budgets_by_id.get(str(part.get("estimationBudgetId") or "")) or {}).get("name") or "") for part in refreshed
+        ),
+        "estimationBudgetId": str(lead.get("estimationBudgetId") or ""),
+        "parts": [],
+    }
+    if status == ESTIMATION_STATUS_APPROVED:
+        authorized = total("authorizedAmount")
+        header.update({
+            "authorizedAmount": authorized,
+            "authorizedDifference": round(authorized - header["totalToPay"], 2),
+            "authorizedVsRequested": round(authorized - requested, 2) if requested is not None else None,
+            "authorizationNote": lead.get("authorizationNote") or "",
+            "approvedBy": lead.get("approvedBy"),
+            "approvedAt": lead.get("approvedAt"),
+            "paidMarkedBy": lead.get("paidMarkedBy"),
+            "paidMarkedAt": lead.get("paidMarkedAt"),
+        })
+    for part in refreshed:
+        budget = budgets_by_id.get(str(part.get("estimationBudgetId") or "")) or {}
+        payload = serialize_estimation(part)
+        payload["budgetName"] = budget.get("name") or ""
+        header["parts"].append(payload)
+    return header
+
+
+def _load_budgets_for(parts: list[dict]) -> dict[str, dict]:
+    cache: dict[str, dict] = {}
+    for part in parts:
+        budget_id = str(part.get("estimationBudgetId") or "")
+        if budget_id and budget_id not in cache:
+            cache[budget_id] = db.estimationBudgets.find_one({"_id": oid(budget_id)}) or {}
+    return cache
+
+
+def serialize_supplier_estimation(batch_id: str) -> dict:
+    parts = get_estimation_batch_parts(batch_id)
+    if not parts:
+        raise HTTPException(status_code=404, detail="Estimation not found")
+    return _batch_header(parts, _load_budgets_for(parts))
+
+
+def _require_batch_access(user: dict, parts: list[dict]) -> dict:
+    if not parts:
+        raise HTTPException(status_code=404, detail="Estimation not found")
+    budgets = _load_budgets_for(parts)
+    for budget in budgets.values():
+        if not budget or not can_access_project(user, str(budget.get("projectId") or "")):
+            raise HTTPException(status_code=403, detail="Project access denied")
+    return budgets
+
+
+def _get_batch_or_404(batch_id: str, user: dict) -> tuple[list[dict], dict[str, dict]]:
+    parts = get_estimation_batch_parts(batch_id)
+    return parts, _require_batch_access(user, parts)
+
+
+def get_open_supplier_batch_id(project_id: str, supplier_key: str, exclude_batch_id: str | None = None) -> str | None:
+    budget_ids = _supplier_budget_ids(project_id, supplier_key)
+    if not budget_ids:
+        return None
+    for row in db.estimations.find({"estimationBudgetId": {"$in": budget_ids}, "isDeleted": {"$ne": True}}):
+        if estimation_workflow_status(row) in ESTIMATION_OPEN_STATUSES:
+            batch_id = estimation_batch_id(row)
+            if exclude_batch_id and batch_id == exclude_batch_id:
+                continue
+            return batch_id
+    return None
+
+
+def _build_supplier_estimation_parts(user: dict, payload: dict, existing_parts: list[dict] | None = None):
+    """Valida y calcula las partes de una estimacion del proveedor (sin escribir)."""
+    supplier_key = normalize_non_empty_string((payload or {}).get("supplierKey")) or ""
+    if existing_parts:
+        first = db.estimationBudgets.find_one({"_id": oid(str(existing_parts[0].get("estimationBudgetId") or ""))}) or {}
+        project_id = str(first.get("projectId") or "")
+        supplier_key = str(first.get("supplierKey") or supplier_key)
+    else:
+        project_id = resolve_project_id((payload or {}).get("projectId"))
+    if not supplier_key:
+        raise HTTPException(status_code=400, detail="supplierKey is required")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+    period_start = normalize_non_empty_string((payload or {}).get("periodStart"))
+    period_end = normalize_non_empty_string((payload or {}).get("periodEnd"))
+    if not period_start or not period_end:
+        raise HTTPException(status_code=400, detail="periodStart and periodEnd are required")
+    raw_parts = (payload or {}).get("parts")
+    if not isinstance(raw_parts, list) or not raw_parts:
+        raise HTTPException(status_code=400, detail="Selecciona al menos un presupuesto para estimar")
+
+    old_by_budget = {str(part.get("estimationBudgetId") or ""): part for part in (existing_parts or [])}
+    seen: set[str] = set()
+    built: list[tuple[dict, dict, str | None]] = []
+    for raw in raw_parts:
+        budget_id = normalize_non_empty_string((raw or {}).get("estimationBudgetId")) or ""
+        if not budget_id or budget_id in seen:
+            raise HTTPException(status_code=400, detail="Cada presupuesto debe aparecer una sola vez en la estimación")
+        seen.add(budget_id)
+        budget = _get_estimation_budget_or_404(budget_id, user)
+        if str(budget.get("projectId") or "") != project_id or str(budget.get("supplierKey") or "") != supplier_key:
+            raise HTTPException(status_code=400, detail="Todos los presupuestos deben ser del mismo proveedor y de la misma obra")
+        if not budget.get("isActive", True):
+            raise HTTPException(status_code=409, detail="Cannot create an estimación for an inactive estimation budget")
+        _require_budget_authorized(budget)
+        old = old_by_budget.get(budget_id)
+        if not old and budget_is_complete(budget):
+            raise HTTPException(status_code=409, detail=f"El presupuesto «{budget.get('name')}» ya está al 100 %: no hay nada más que estimar")
+        exclude_id = str(old.get("_id")) if old else None
+        content = build_estimation_content(budget, raw or {}, exclude_estimation_id=exclude_id)
+        built.append((budget, content, exclude_id))
+    return project_id, supplier_key, period_start, period_end, built
+
+
+def _save_supplier_estimation(user: dict, payload: dict, batch_id: str | None = None) -> dict:
+    existing_parts = get_estimation_batch_parts(batch_id) if batch_id else None
+    if batch_id:
+        _require_batch_access(user, existing_parts or [])
+        if estimation_workflow_status(existing_parts[0]) not in (ESTIMATION_STATUS_DRAFT,):
+            raise HTTPException(status_code=409, detail="La estimación está en revisión o cerrada; devuélvela a borrador para editarla")
+    project_id, supplier_key, period_start, period_end, built = _build_supplier_estimation_parts(user, payload, existing_parts)
+
+    open_batch = get_open_supplier_batch_id(project_id, supplier_key, exclude_batch_id=batch_id)
+    if open_batch:
+        open_parts = get_estimation_batch_parts(open_batch)
+        folio = open_parts[0].get("folio") if open_parts else ""
+        raise HTTPException(
+            status_code=409,
+            detail=f"La estimación #{folio} del proveedor sigue abierta ({estimation_workflow_status(open_parts[0])}); ciérrala antes de crear otra",
+        )
+    submit_now = bool((payload or {}).get("submit"))
+    positive = [item for item in built if float(item[1].get("periodSubtotal") or 0) > 0]
+    if submit_now and not positive:
+        raise HTTPException(status_code=400, detail="La estimación no tiene avance capturado")
+    # Presupuestos elegidos sin avance no generan parte (salvo borradores vacios).
+    chosen = positive if positive else built
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    username = normalize_non_empty_string(user.get("username")) or "system"
+    requested = parse_requested_amount((payload or {}).get("requestedAmount"))
+    notes = normalize_non_empty_string((payload or {}).get("notes")) or ""
+    if existing_parts:
+        folio = int(existing_parts[0].get("folio") or 0)
+        batch = estimation_batch_id(existing_parts[0])
+        created_by = existing_parts[0].get("createdBy") or username
+        created_at = existing_parts[0].get("createdAt") or now_iso
+        for old in existing_parts:
+            db.estimations.update_one({"_id": old["_id"]}, {"$set": {"isDeleted": True, "updatedAt": now_iso}})
+    else:
+        folio = compute_next_supplier_estimation_folio(project_id, supplier_key)
+        batch = None
+        created_by, created_at = username, now_iso
+    inserted_ids = []
+    for index, (budget, content, _exclude) in enumerate(chosen):
+        doc = {
+            "estimationBudgetId": str(budget.get("_id")),
+            "projectId": project_id,
+            "supplierKey": supplier_key,
+            "folio": folio,
+            "periodStart": period_start,
+            "periodEnd": period_end,
+            "notes": notes,
+            "requestedAmount": requested if index == 0 else None,
+            "workflowStatus": ESTIMATION_STATUS_SUBMITTED if submit_now else ESTIMATION_STATUS_DRAFT,
+            **content,
+            "isDeleted": False,
+            "createdBy": created_by,
+            "createdAt": created_at,
+            "updatedAt": now_iso,
+        }
+        if batch:
+            doc["batchId"] = batch
+        if submit_now:
+            doc["submittedBy"] = username
+            doc["submittedAt"] = now_iso
+        inserted_ids.append(db.estimations.insert_one(doc).inserted_id)
+        if not batch:
+            batch = str(inserted_ids[0])
+            db.estimations.update_one({"_id": inserted_ids[0]}, {"$set": {"batchId": batch}})
+    return serialize_supplier_estimation(batch)
+
+
+@app.get("/api/supplier-estimations")
+def list_supplier_estimations(
+    supplierKey: str,
+    projectId: str | None = None,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_estimation_capture),
+):
+    project_id = resolve_project_id(projectId or get_active_project_id(request))
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+    reconcile_supplier_estimation_payments(project_id, supplierKey)
+    budget_ids = _supplier_budget_ids(project_id, supplierKey)
+    rows = list(db.estimations.find({"estimationBudgetId": {"$in": budget_ids}, "isDeleted": {"$ne": True}})) if budget_ids else []
+    batches: dict[str, list[dict]] = {}
+    for row in rows:
+        batches.setdefault(estimation_batch_id(row), []).append(row)
+    budgets = {str(b.get("_id")): b for b in db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplierKey})}
+    headers = []
+    for parts in batches.values():
+        parts.sort(key=lambda row: (str(row.get("createdAt") or ""), str(row.get("_id"))))
+        headers.append(_batch_header(parts, budgets))
+    headers.sort(key=lambda h: (int(h.get("folio") or 0), str(h.get("createdAt") or "")))
+    return headers
+
+
+@app.get("/api/supplier-estimations/queue")
+def list_supplier_estimations_queue(
+    projectId: str | None = None,
+    status: str | None = None,
+    paymentStatus: str | None = None,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_estimation_capture),
+):
+    """Bandeja entre proveedores: por revisar o aprobadas por pagar (una fila por estimacion)."""
+    data = list_estimations_queue(projectId=projectId, status=status, paymentStatus=paymentStatus, request=request, user=user)
+    return data
+
+
+@app.get("/api/supplier-estimations/{batch_id}")
+def get_supplier_estimation(batch_id: str, user: dict = Depends(require_estimation_capture)):
+    _get_batch_or_404(batch_id, user)
+    return serialize_supplier_estimation(batch_id)
+
+
+@app.post("/api/supplier-estimations", status_code=201)
+def create_supplier_estimation(payload: dict, user: dict = Depends(require_estimation_capture)):
+    return _save_supplier_estimation(user, payload or {})
+
+
+@app.patch("/api/supplier-estimations/{batch_id}")
+def update_supplier_estimation(batch_id: str, payload: dict, user: dict = Depends(require_estimation_capture)):
+    return _save_supplier_estimation(user, payload or {}, batch_id=batch_id)
+
+
+@app.delete("/api/supplier-estimations/{batch_id}")
+def delete_supplier_estimation(batch_id: str, user: dict = Depends(require_estimation_capture)):
+    parts, _budgets = _get_batch_or_404(batch_id, user)
+    if estimation_workflow_status(parts[0]) != ESTIMATION_STATUS_DRAFT:
+        raise HTTPException(status_code=409, detail="Solo se pueden eliminar estimaciones en borrador")
+    # Solo la ultima estimacion del proveedor (el avance acumulado depende de las anteriores).
+    first_budget = _budgets.get(str(parts[0].get("estimationBudgetId") or "")) or {}
+    next_folio = compute_next_supplier_estimation_folio(str(first_budget.get("projectId") or ""), str(first_budget.get("supplierKey") or ""))
+    if int(parts[0].get("folio") or 0) != next_folio - 1:
+        raise HTTPException(status_code=409, detail="Only the latest estimación can be deleted")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for part in parts:
+        db.estimations.update_one({"_id": part["_id"]}, {"$set": {"isDeleted": True, "updatedAt": now_iso}})
+    return {"ok": True}
+
+
+@app.post("/api/supplier-estimations/{batch_id}/submit")
+def submit_supplier_estimation(batch_id: str, user: dict = Depends(require_estimation_capture)):
+    parts, budgets = _get_batch_or_404(batch_id, user)
+    _require_estimation_status(parts[0], (ESTIMATION_STATUS_DRAFT,), "submit")
+    for budget in budgets.values():
+        _require_budget_authorized(budget)
+    refreshed = [refresh_open_estimation_money(part, budgets.get(str(part.get("estimationBudgetId") or ""))) for part in parts]
+    if not any(float(part.get("periodSubtotal") or 0) > 0 for part in refreshed):
+        raise HTTPException(status_code=400, detail="La estimación no tiene avance capturado")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for part in parts:
+        db.estimations.update_one(
+            {"_id": part["_id"]},
+            {"$set": {
+                "workflowStatus": ESTIMATION_STATUS_SUBMITTED,
+                "submittedBy": normalize_non_empty_string(user.get("username")) or "system",
+                "submittedAt": now_iso,
+                "updatedAt": now_iso,
+            }},
+        )
+    return serialize_supplier_estimation(batch_id)
+
+
+@app.post("/api/supplier-estimations/{batch_id}/return")
+def return_supplier_estimation(batch_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    parts, budgets = _get_batch_or_404(batch_id, user)
+    for budget in budgets.values():
+        _require_approval_assignment(user, budget)
+    _require_estimation_status(parts[0], (ESTIMATION_STATUS_SUBMITTED,), "return")
+    reason = normalize_non_empty_string((payload or {}).get("reason"))
+    if not reason:
+        raise HTTPException(status_code=400, detail="reason is required to return an estimación")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for part in parts:
+        db.estimations.update_one(
+            {"_id": part["_id"]},
+            {"$set": {
+                "workflowStatus": ESTIMATION_STATUS_DRAFT,
+                "returnReason": reason,
+                "returnedBy": normalize_non_empty_string(user.get("username")) or "system",
+                "returnedAt": now_iso,
+                "updatedAt": now_iso,
+            }},
+        )
+    return serialize_supplier_estimation(batch_id)
+
+
+@app.post("/api/supplier-estimations/{batch_id}/approve")
+def approve_supplier_estimation(batch_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    parts, budgets = _get_batch_or_404(batch_id, user)
+    for budget in budgets.values():
+        _require_approval_assignment(user, budget)
+    _require_estimation_status(parts[0], (ESTIMATION_STATUS_SUBMITTED,), "approve")
+    parts = [refresh_open_estimation_money(part, budgets.get(str(part.get("estimationBudgetId") or ""))) for part in parts]
+    for part in parts:
+        freeze_auto_opening_if_needed(budgets.get(str(part.get("estimationBudgetId") or "")) or {}, part)
+
+    calculated = round(sum(float(part.get("totalToPay") or 0) for part in parts), 2)
+    requested_raw = parts[0].get("requestedAmount")
+    requested = round(float(requested_raw), 2) if requested_raw is not None else None
+    baseline = requested if requested is not None else calculated
+    raw_authorized = (payload or {}).get("authorizedAmount")
+    if raw_authorized in (None, ""):
+        authorized = baseline
+    else:
+        try:
+            authorized = round(parse_decimal(raw_authorized), 2)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="authorizedAmount is invalid")
+        if authorized < 0:
+            raise HTTPException(status_code=400, detail="authorizedAmount must be greater than or equal to 0")
+    if requested is not None and authorized > requested + 0.004:
+        raise HTTPException(status_code=400, detail="El monto autorizado no puede exceder lo solicitado por el contratista")
+    note = normalize_non_empty_string((payload or {}).get("authorizationNote")) or ""
+    difference = round(authorized - calculated, 2)
+    needs_note = abs(authorized - baseline) >= 0.01 or authorized - calculated >= 0.01
+    if needs_note and not note:
+        raise HTTPException(
+            status_code=400,
+            detail="authorizationNote is required when the authorized amount is below the requested amount or above the calculated total",
+        )
+
+    # El monto total autorizado se reparte entre los presupuestos en proporcion a lo calculado.
+    weights = [max(float(part.get("totalToPay") or 0), 0.0) for part in parts]
+    weight_sum = sum(weights)
+    shares: list[float] = []
+    allocated = 0.0
+    for index, weight in enumerate(weights):
+        if index == len(parts) - 1:
+            share = round(authorized - allocated, 2)
+        elif weight_sum > 0:
+            share = round(authorized * weight / weight_sum, 2)
+        else:
+            share = round(authorized / len(parts), 2)
+        allocated += share
+        shares.append(share)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    username = normalize_non_empty_string(user.get("username")) or "system"
+    for part, share in zip(parts, shares):
+        db.estimations.update_one(
+            {"_id": part["_id"]},
+            {"$set": {
+                "workflowStatus": ESTIMATION_STATUS_APPROVED,
+                "authorizedAmount": share,
+                "authorizedDifference": round(share - float(part.get("totalToPay") or 0), 2),
+                "authorizedVsRequested": round(authorized - requested, 2) if requested is not None else None,
+                "authorizationNote": note,
+                "approvedBy": username,
+                "approvedAt": now_iso,
+                "paymentStatus": ESTIMATION_PAYMENT_PENDING,
+                "updatedAt": now_iso,
+            }},
+        )
+    first_budget = budgets.get(str(parts[0].get("estimationBudgetId") or "")) or {}
+    reconcile_supplier_estimation_payments(str(first_budget.get("projectId") or ""), str(first_budget.get("supplierKey") or ""))
+    return serialize_supplier_estimation(batch_id)
+
+
+@app.post("/api/supplier-estimations/{batch_id}/mark-paid")
+def mark_supplier_estimation_paid(batch_id: str, payload: dict | None = None, user: dict = Depends(require_admin_or_superadmin)):
+    parts, _budgets = _get_batch_or_404(batch_id, user)
+    _require_estimation_status(parts[0], (ESTIMATION_STATUS_APPROVED,), "mark as paid")
+    if parts[0].get("paymentStatus") == ESTIMATION_PAYMENT_PAID:
+        raise HTTPException(status_code=409, detail="La estimación ya está marcada como pagada")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for part in parts:
+        db.estimations.update_one(
+            {"_id": part["_id"]},
+            {"$set": {
+                "paymentStatus": ESTIMATION_PAYMENT_PAID,
+                "paidMarkedBy": normalize_non_empty_string(user.get("username")) or "system",
+                "paidMarkedAt": now_iso,
+                "paidNote": normalize_non_empty_string((payload or {}).get("note")) or "",
+                "updatedAt": now_iso,
+            }},
+        )
+    return serialize_supplier_estimation(batch_id)
+
+
+@app.post("/api/supplier-estimations/{batch_id}/folio")
+def set_supplier_estimation_folio(batch_id: str, payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    """Cambia el numero de la estimacion del proveedor: unico dentro del proveedor y
+    respetando el orden (mayor que la anterior, menor que la siguiente)."""
+    parts, budgets = _get_batch_or_404(batch_id, user)
+    raw = (payload or {}).get("folio")
+    try:
+        new_folio = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="folio debe ser un número entero")
+    if new_folio < 1:
+        raise HTTPException(status_code=400, detail="folio debe ser mayor o igual a 1")
+    first_budget = budgets.get(str(parts[0].get("estimationBudgetId") or "")) or {}
+    budget_ids = _supplier_budget_ids(str(first_budget.get("projectId") or ""), str(first_budget.get("supplierKey") or ""))
+    others: dict[str, int] = {}
+    for row in db.estimations.find({"estimationBudgetId": {"$in": budget_ids}, "isDeleted": {"$ne": True}}):
+        other_batch = estimation_batch_id(row)
+        if other_batch != batch_id:
+            others[other_batch] = int(row.get("folio") or 0)
+    folios = list(others.values())
+    if new_folio in folios:
+        raise HTTPException(status_code=409, detail=f"Ya existe la estimación #{new_folio} de este proveedor")
+    current = int(parts[0].get("folio") or 0)
+    before = [f for f in folios if f < current]
+    after = [f for f in folios if f > current]
+    if before and new_folio <= max(before):
+        raise HTTPException(status_code=409, detail=f"El número debe ser mayor que el de la estimación anterior (#{max(before)})")
+    if after and new_folio >= min(after):
+        raise HTTPException(status_code=409, detail=f"El número debe ser menor que el de la estimación siguiente (#{min(after)})")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for part in parts:
+        db.estimations.update_one({"_id": part["_id"]}, {"$set": {"folio": new_folio, "updatedAt": now_iso}})
+    return serialize_supplier_estimation(batch_id)
 
 
 # ---- Import de conceptos (Excel/CSV/PDF) para presupuestos de Estimaciones ----
