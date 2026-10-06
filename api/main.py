@@ -10115,6 +10115,22 @@ def apply_budget_discount(line_items: list[dict], pct: float) -> list[dict]:
     return result
 
 
+def resolve_advance_input(mode_raw, pct_raw) -> tuple[str, float | None]:
+    """El anticipo puede capturarse en cantidad ($) o como % del presupuesto (solo sirve para amortizar)."""
+    mode = (normalize_non_empty_string(mode_raw) or "amount").lower()
+    if mode not in ("amount", "pct"):
+        raise HTTPException(status_code=400, detail="advanceMode must be amount or pct")
+    if mode == "amount":
+        return "amount", None
+    try:
+        pct = parse_precise_decimal(pct_raw if pct_raw not in (None, "") else 0)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="advancePct is invalid")
+    if not 0 <= pct <= 100:
+        raise HTTPException(status_code=400, detail="El anticipo debe estar entre 0 % y 100 %")
+    return "pct", round(pct, 6)
+
+
 def resolve_retention_pct(value) -> float:
     if value is None:
         return 0.0
@@ -10846,6 +10862,8 @@ def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dic
     payload = serialize_raw_doc(doc)
     payload["approvalStatus"] = budget_approval_status(doc)
     payload["isComplete"] = budget_is_complete(doc)
+    payload["advanceMode"] = doc.get("advanceMode") or "amount"
+    payload["advancePctInput"] = doc.get("advancePctInput")
     payload["discountMode"] = doc.get("discountMode") or None
     payload["discountPct"] = round(float(doc.get("discountPct") or 0), 6)
     payload["discountAmount"] = round(float(doc.get("discountAmount") or 0), 2)
@@ -11001,10 +11019,13 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
     )
     line_items = apply_budget_discount(line_items, discount_pct)
     group_advance_pcts = normalize_group_advance_pcts((payload or {}).get("groupAdvancePcts"))
+    advance_mode, advance_pct_input = resolve_advance_input((payload or {}).get("advanceMode"), (payload or {}).get("advancePct"))
     if group_advance_pcts:
         # El anticipo previsto sale de los grupos; ya no se captura un monto aparte.
         advance_amount = compute_group_advance_total(line_items, group_advance_pcts)
         advance_amortization_enabled = True
+    elif advance_mode == "pct":
+        advance_amount = round(sum(float(i.get("amount") or 0) for i in line_items) * advance_pct_input / 100, 2)
     totals = compute_estimation_budget_totals(line_items, advance_amount)
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -11022,6 +11043,8 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
         "retentionPct": retention_pct,
         "advanceAmortizationEnabled": advance_amortization_enabled,
         "advanceAmount": advance_amount,
+        "advanceMode": advance_mode,
+        "advancePctInput": advance_pct_input,
         "groupAdvancePcts": group_advance_pcts,
         "lineItems": line_items,
         "discountMode": discount_mode,
@@ -11587,7 +11610,32 @@ def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dic
             advance_amount = compute_group_advance_total(line_items, group_advance_pcts)
             updates["advanceAmount"] = advance_amount
 
-    if "lineItems" in payload or "advanceAmount" in payload or "groupAdvancePcts" in payload or discount_touched:
+    # Anticipo capturado como % del presupuesto: sigue al total cuando cambian conceptos o descuento.
+    advance_keys_in_payload = any(key in payload for key in ("advanceMode", "advancePct", "advanceAmount"))
+    if "advanceMode" in payload or "advancePct" in payload:
+        advance_mode, advance_pct_input = resolve_advance_input(
+            payload.get("advanceMode", existing.get("advanceMode")), payload.get("advancePct", existing.get("advancePctInput"))
+        )
+        updates["advanceMode"] = advance_mode
+        updates["advancePctInput"] = advance_pct_input
+    elif "advanceAmount" in payload:
+        advance_mode, advance_pct_input = "amount", None
+        updates["advanceMode"] = "amount"
+        updates["advancePctInput"] = None
+    else:
+        advance_mode, advance_pct_input = (existing.get("advanceMode") or "amount"), existing.get("advancePctInput")
+    if (
+        advance_mode == "pct"
+        and advance_pct_input is not None
+        and not group_advance_pcts
+        and not existing.get("openingSetAt")
+        and (advance_keys_in_payload or "lineItems" in payload or discount_touched)
+    ):
+        advance_amount = round(sum(float(i.get("amount") or 0) for i in line_items) * float(advance_pct_input) / 100, 2)
+        updates["advanceAmount"] = advance_amount
+        advance_keys_in_payload = True
+
+    if "lineItems" in payload or advance_keys_in_payload or "groupAdvancePcts" in payload or discount_touched:
         totals = compute_estimation_budget_totals(line_items, advance_amount)
         updates["totalContractedAmount"] = totals["totalContractedAmount"]
         updates["advancePct"] = totals["advancePct"]
@@ -12700,6 +12748,8 @@ def register_delivered_advance(estimation_budget_id: str) -> None:
         {"_id": budget["_id"]},
         {"$set": {
             "advanceAmount": delivered,
+            "advanceMode": "amount",
+            "advancePctInput": None,
             "advancePct": totals["advancePct"],
             "advanceAmortizationEnabled": True,
             "updatedAt": datetime.now(timezone.utc).isoformat(),

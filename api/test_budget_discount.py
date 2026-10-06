@@ -26,7 +26,9 @@ class BudgetDiscountTests(phase1.EstimationsPhase1Tests):
 
     def _create(self, user=None, **overrides):
         overrides.setdefault('lineItems', [{'description': 'Yeso', 'unit': 'm2', 'quantity': 10, 'unitPrice': 100}])
-        payload = self._base_budget_payload(advanceAmortizationEnabled=False, advanceAmount=0, retentionPct=0, **overrides)
+        base = {'advanceAmortizationEnabled': False, 'advanceAmount': 0, 'retentionPct': 0}
+        base.update(overrides)
+        payload = self._base_budget_payload(**base)
         with patch.object(main, 'db', self.fake_db):
             return main.create_estimation_budget(payload, SimpleNamespace(headers={}, query_params={}), user=user or ADMIN)
 
@@ -128,3 +130,42 @@ class BudgetDiscountTests(phase1.EstimationsPhase1Tests):
         self.assertEqual(budget['approvalStatus'], 'AUTORIZADO')
         changed = self._update(budget, {'discountMode': 'pct', 'discountPct': 12}, user=self.capturist)
         self.assertEqual(changed['approvalStatus'], 'PENDIENTE')
+
+
+class BudgetAdvanceInputTests(BudgetDiscountTests):
+    """El anticipo se captura en $ o en % del presupuesto (solo sirve para amortizar)."""
+
+    def test_advance_as_percentage_of_the_total(self):
+        budget = self._create(advanceAmortizationEnabled=True, advanceMode='pct', advancePct=20)
+        self.assertEqual((budget['advanceMode'], budget['advancePctInput']), ('pct', 20.0))
+        self.assertEqual(budget['advanceAmount'], 200.0)
+        self.assertEqual(budget['advancePct'], 20.0)
+
+    def test_percentage_advance_is_computed_on_the_discounted_total(self):
+        budget = self._create(advanceAmortizationEnabled=True, advanceMode='pct', advancePct=10, discountMode='pct', discountPct=10)
+        self.assertEqual(budget['totalContractedAmount'], 900.0)
+        self.assertEqual(budget['advanceAmount'], 90.0)
+
+    def test_percentage_advance_follows_the_total_when_concepts_or_discount_change(self):
+        budget = self._create(advanceAmortizationEnabled=True, advanceMode='pct', advancePct=20)
+        items = [dict(budget['lineItems'][0], unitPrice=200)]
+        edited = self._update(budget, {'lineItems': items})
+        self.assertEqual(edited['advanceAmount'], 400.0)
+        discounted = self._update(budget, {'discountMode': 'pct', 'discountPct': 50})
+        self.assertEqual(discounted['advanceAmount'], 200.0)  # 20 % de $1,000
+
+    def test_switching_modes_and_plain_amount_still_work(self):
+        plain = self._create(advanceAmortizationEnabled=True, advanceAmount=150)
+        self.assertEqual((plain['advanceMode'], plain['advanceAmount'], plain['advancePct']), ('amount', 150.0, 15.0))
+        to_pct = self._update(plain, {'advanceMode': 'pct', 'advancePct': 30})
+        self.assertEqual((to_pct['advanceMode'], to_pct['advanceAmount']), ('pct', 300.0))
+        back = self._update(plain, {'advanceMode': 'amount', 'advanceAmount': 120})
+        self.assertEqual((back['advanceMode'], back['advanceAmount'], back['advancePctInput']), ('amount', 120.0, None))
+
+    def test_invalid_percentage_is_rejected(self):
+        for bad in (-1, 101, 'x'):
+            with self.assertRaises(HTTPException) as ctx:
+                self._create(advanceAmortizationEnabled=True, advanceMode='pct', advancePct=bad)
+            self.assertEqual(ctx.exception.status_code, 400)
+        with self.assertRaises(HTTPException):
+            self._create(advanceMode='raro')
