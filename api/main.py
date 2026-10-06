@@ -12098,13 +12098,151 @@ _TEXT_LINE_QTY_UNIT_FIRST = re.compile(
     re.IGNORECASE,
 )
 _TEXT_LINE_LUMP = re.compile(
-    rf"^(?P<d>[^\d$].*?[^\d$\s])\s*[:\-–=]?\s*\$\s*(?P<a>{_NUM})\s*(?:\+\s*iva|mxn|pesos)?\s*$",
+    rf"^(?P<d>[^\d$][^$]*?[^\d$\s])\s*[:\-–=]?\s*\$\s*(?P<a>{_NUM})\s*(?:\+\s*iva|mxn|pesos)?\s*$",
     re.IGNORECASE,
 )
 _TEXT_WHATSAPP_PREFIX = re.compile(
     r"^\s*(?:\[\d{1,2}[:.]\d{2}[^\]]*\]\s*[^:]{1,40}:\s*|\d{1,2}/\d{1,2}/\d{2,4},?\s+\d{1,2}:\d{2}[^-]*-\s*[^:]{1,40}:\s*)"
 )
 _TEXT_SKIP_LINE = re.compile(r"^(?:sub\s*total|total|iva|i\.v\.a\.?|anticipo|retenci[oó]n|descuento|nota|ojo|vigencia|forma de pago)\b", re.IGNORECASE)
+
+
+_TEXT_TOTAL = re.compile(rf"\btotal\s*:?\s*\$?\s*(?P<a>{_NUM})", re.IGNORECASE)
+_TEXT_MONEY = re.compile(rf"\$\s*(?P<p>{_NUM})(?:\s*(?P<u>(?:{_TEXT_UNITS})\b\.?))?", re.IGNORECASE)
+_TEXT_QTY = re.compile(rf"(?<![\dxX/+.,×\-–$])(?P<q>{_NUM})\s*(?P<u>(?:{_TEXT_UNITS})\b\.?)", re.IGNORECASE)
+
+
+def _text_line_facts(line: str) -> dict:
+    """Separa un renglón en texto libre y sus datos numéricos (total, precio, cantidad)."""
+    facts: dict = {"total": None, "price": None, "punit": "", "qty": None, "qunit": ""}
+    work = line
+    match = _TEXT_TOTAL.search(work)
+    if match:
+        try:
+            facts["total"] = parse_concepto_number(match.group("a"))
+        except ValueError:
+            pass
+        work = work[: match.start()] + " " + work[match.end():]
+    monies = list(_TEXT_MONEY.finditer(work))
+    for idx, money in enumerate(monies):
+        try:
+            value = parse_concepto_number(money.group("p"))
+        except ValueError:
+            continue
+        if facts["price"] is None:
+            facts["price"] = value
+            facts["punit"] = (money.group("u") or "").strip(" .")
+        elif facts["total"] is None:
+            facts["total"] = value
+    work = _TEXT_MONEY.sub(" ", work)
+    qty_matches = list(_TEXT_QTY.finditer(work))
+    if qty_matches:
+        last = qty_matches[-1]
+        try:
+            facts["qty"] = parse_concepto_number(last.group("q"))
+            facts["qunit"] = last.group("u").strip(" .")
+        except ValueError:
+            pass
+        work = work[: last.start()] + " " + work[last.end():]
+    text = re.sub(r"\s+", " ", work).strip(" .:,-–")
+    facts["text"] = text if len(re.findall(r"[A-Za-zÁÉÍÓÚÑáéíóúñ]", text)) >= 3 else ""
+    return facts
+
+
+def parse_concepto_text_blocks(raw_lines: list):
+    """Presupuestos escritos en varios renglones por concepto, p. ej.:
+
+        Suministro de tapas 68x68  $ 2,800 pz
+        3 pz
+        total $ 8,400
+
+    La descripción, el precio unitario, la cantidad y el total pueden venir en
+    renglones distintos y en cualquier orden; el concepto se cierra con su
+    «total» o al empezar el siguiente texto."""
+    warnings: list[str] = []
+    items: list[dict] = []
+    skipped: list[str] = []
+    mismatches: list[str] = []
+    document_total = None
+    draft: dict | None = None
+
+    def has_numbers(d):
+        return d is not None and any(d.get(k) is not None for k in ("qty", "price", "total"))
+
+    def finalize(d):
+        if d is None or not d.get("desc"):
+            return
+        qty, price, total = d.get("qty"), d.get("price"), d.get("total")
+        unit = d.get("qunit") or d.get("punit") or ""
+        if qty and price:
+            if total is not None and abs(qty * price - total) > 1:
+                mismatches.append(d["desc"][:40])
+        elif qty and total is not None:
+            price = round(total / qty, 4)
+        elif price and total is not None:
+            qty = round(total / price, 4)
+            if abs(qty - round(qty)) > 0.0001:
+                warnings.append(f"«{d['desc'][:40]}»: la cantidad salió {qty:g} (total ÷ precio); revísala.")
+        elif total is not None:
+            qty, price, unit = 1.0, total, unit or "lote"
+        else:
+            skipped.append(d["desc"][:50])
+            return
+        if not qty or price is None:
+            skipped.append(d["desc"][:50])
+            return
+        items.append({"description": d["desc"], "unit": unit, "quantity": float(qty), "unitPrice": float(price)})
+
+    for raw in raw_lines:
+        line = re.sub(r"[*_~`]+", "", _TEXT_WHATSAPP_PREFIX.sub("", raw))
+        line = re.sub(r"[ \t\u00a0]+", " ", line).strip()
+        if not line:
+            continue
+        facts = _text_line_facts(line)
+        has_facts = any(facts[k] is not None for k in ("total", "price", "qty"))
+        only_total = facts["total"] is not None and facts["price"] is None and facts["qty"] is None and not facts["text"]
+
+        if facts["text"]:
+            # Texto nuevo: cierra el concepto en curso y abre otro.
+            if has_numbers(draft):
+                finalize(draft)
+            draft = {"desc": facts["text"], "qty": facts["qty"], "qunit": facts["qunit"], "price": facts["price"],
+                     "punit": facts["punit"], "total": facts["total"]}
+            if facts["total"] is not None and (facts["price"] is not None or facts["qty"] is not None):
+                finalize(draft)
+                draft = None
+            continue
+        if not has_facts:
+            continue
+        if re.match(r"^\s*(?:iva|i\.v\.a|anticipo|retenci)", line, re.IGNORECASE):
+            continue
+        if draft is None or not draft.get("desc"):
+            # Números sin concepto abierto: el total general del documento.
+            amount = facts["total"] if facts["total"] is not None else facts["price"]
+            if amount is not None:
+                document_total = amount
+            continue
+        for key in ("qty", "qunit", "price", "punit", "total"):
+            if facts[key] not in (None, "") and draft.get(key) in (None, ""):
+                draft[key] = facts[key]
+        if facts["total"] is not None and (draft.get("price") is not None or draft.get("qty") is not None):
+            finalize(draft)
+            draft = None
+    if has_numbers(draft):
+        finalize(draft)
+
+    if skipped:
+        warnings.append(f"Se omitieron {len(skipped)} renglón(es) sin precio o cantidad claros: {'; '.join(skipped[:3])}{'…' if len(skipped) > 3 else ''}")
+    if mismatches:
+        warnings.append(f"El total escrito no coincide con cantidad × precio en: {'; '.join(mismatches[:4])}. Se usó cantidad × precio.")
+    if document_total is not None and items:
+        calculated_total = round(sum(i["quantity"] * i["unitPrice"] for i in items), 2)
+        if abs(document_total - calculated_total) > 1:
+            warnings.append(
+                f"El total general del texto ({formatear_moneda_mx(document_total)}) no coincide con la suma de los conceptos "
+                f"({formatear_moneda_mx(calculated_total)})."
+            )
+    return items, warnings
 
 
 def parse_concepto_text(text: str):
@@ -12219,6 +12357,9 @@ def parse_concepto_text(text: str):
                 f"El total del texto ({formatear_moneda_mx(document_total)}) no coincide con la suma de los conceptos "
                 f"({formatear_moneda_mx(calculated_total)})."
             )
+    if not items:
+        # Presupuestos de varios renglones por concepto (descripción, cantidad y total sueltos).
+        items, warnings = parse_concepto_text_blocks(raw_lines)
     if items:
         warnings.append("Conceptos extraídos de texto libre: revisa descripción, unidad, cantidad y precio antes de guardar.")
     return items, warnings
