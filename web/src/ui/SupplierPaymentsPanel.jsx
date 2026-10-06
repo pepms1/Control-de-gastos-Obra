@@ -97,6 +97,10 @@ export function SupplierPaymentsPanel({ supplierKey, supplierName, projectId, on
               </tbody>
             </table>
           </div>
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" className="btn-outline" onClick={() => setExcluded(new Set())} disabled={!excluded.size}>Incluir todos</button>
+            <button type="button" className="btn-outline" onClick={() => setExcluded(new Set(items.map((row) => row.id)))} disabled={excluded.size === items.length}>Desasignar todos</button>
+          </div>
           <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
             <div><strong>Pagado a la fecha:</strong> {formatCurrency(totals.included)}</div>
             <div><strong>Desasignado:</strong> {formatCurrency(totals.out)}</div>

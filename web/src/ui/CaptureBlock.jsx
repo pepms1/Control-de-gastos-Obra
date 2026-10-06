@@ -11,7 +11,7 @@ import {
 
 // Captura del avance de UN presupuesto dentro de la estimación del proveedor.
 // Avisa al padre (onChange) con lo que se enviaría al servidor y la vista previa de montos.
-export function CaptureBlock({ budget, previousCumulative, savedPart = null, isReviewer = false, onOpenOpening, onChange, onRemove }) {
+export function CaptureBlock({ budget, previousCumulative, savedPart = null, isReviewer = false, poolApplied = 0, onOpenOpening, onChange, onRemove }) {
   const [form, setForm] = useState(() => buildCaptureForm(budget, previousCumulative, savedPart));
   // Anticipo que se entrega con esta estimación (sin tener que ir al presupuesto).
   const [advance, setAdvance] = useState(savedPart?.advanceGivenAmount ? String(savedPart.advanceGivenAmount) : '');
@@ -24,7 +24,7 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
       ? (Number(budget.remainingAdvanceBalance) || 0) + (Number(savedPart.advanceAmortizationAmount) || 0)
       : undefined;
     const remainingOpening = savedPart
-      ? (Number(budget.remainingOpeningPaidBalance) || 0) + (Number(savedPart.priorPaidApplied) || 0)
+      ? (Number(budget.remainingOpeningPaidBalance) || 0) + ((Number(savedPart.priorPaidApplied) || 0) - (Number(savedPart.priorPoolApplied) || 0))
       : undefined;
     const groupPcts = Object.fromEntries((form.groups || []).map((group) => [group.name, group.pctExact]));
     return computeEstimationPreview(budget, form.lineItems, remainingAdvance, form.captureMode, form.globalProgressPct, remainingOpening, groupPcts);
@@ -349,8 +349,9 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
         Subtotal {formatCurrency(preview.periodSubtotal)} · retención −{formatCurrency(preview.retentionAmount)}
         {preview.advanceAmortizationAmount > 0 && <> · anticipo −{formatCurrency(preview.advanceAmortizationAmount)}</>}
         {preview.priorPaidApplied > 0 && <> · pagos previos −{formatCurrency(preview.priorPaidApplied)}</>}
+        {poolApplied > 0 && <> · pagos al proveedor −{formatCurrency(poolApplied)}</>}
         {advanceAmount > 0 && <> · anticipo a entregar +{formatCurrency(advanceAmount)}</>}
-        {' '}= <strong>{formatCurrency(preview.totalToPay + advanceAmount)}</strong>
+        {' '}= <strong>{formatCurrency(preview.totalToPay + advanceAmount - poolApplied)}</strong>
       </div>
     </div>
   );

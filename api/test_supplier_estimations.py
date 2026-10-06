@@ -335,23 +335,92 @@ class SupplierPaidTests(phase1.EstimationsPhase1Tests):
             )
         self.assertEqual(ctx.exception.status_code, 400)
 
-    def test_estimation_is_marked_paid_from_the_supplier_pool(self):
-        part = {'estimationBudgetId': self.depto1['id'], 'captureMode': 'global', 'globalProgressPct': 50}
+    def _estimate(self, *budgets_pcts, advance=None):
+        parts = [
+            {'estimationBudgetId': budget['id'], 'captureMode': 'global', 'globalProgressPct': pct}
+            for budget, pct in budgets_pcts
+        ]
         batch = main.create_supplier_estimation(
-            {'projectId': self.project_id, 'supplierKey': self.key, 'periodStart': '2026-02-01', 'periodEnd': '2026-02-07', 'parts': [part]},
+            {'projectId': self.project_id, 'supplierKey': self.key, 'periodStart': '2026-02-01', 'periodEnd': '2026-02-07', 'parts': parts},
             user=SUPERADMIN,
         )
         main.submit_supplier_estimation(batch['id'], user=SUPERADMIN)
-        approved = main.approve_supplier_estimation(batch['id'], {}, user=ADMIN)
-        self.assertEqual(approved['authorizedAmount'], 4500.0)
-        # los pagos del proveedor (5,000) cubren los 4,500 aunque no estén asignados a un presupuesto
-        self.assertEqual(main.get_supplier_estimation(batch['id'], user=ADMIN)['paymentStatus'], 'PAGADA')
+        return main.approve_supplier_estimation(batch['id'], {}, user=ADMIN)
+
+    def test_everything_paid_to_the_supplier_is_discounted_from_what_is_released(self):
+        # Pagado al proveedor: $5,000 sin asignar a ningún presupuesto. Avance 50 % de $10,000
+        # con 10 % de retención = $4,500 netos, que ya están cubiertos por lo pagado.
+        approved = self._estimate((self.depto1, 50))
+        part = approved['parts'][0]
+        self.assertEqual(part['priorPaidApplied'], 4500.0)
+        self.assertEqual(part['priorPoolApplied'], 4500.0)
+        self.assertEqual(approved['totalToPay'], 0.0)
+        self.assertEqual(approved['authorizedAmount'], 0.0)
+        # el sobrante ($500) se aplica a la siguiente estimación, aunque sea de otro presupuesto
+        second = self._estimate((self.depto2, 50))
+        self.assertEqual(second['priorPaidApplied'], 500.0)
+        self.assertEqual(second['totalToPay'], 4000.0)
+        # ya no queda nada por descontar
+        third = self._estimate((self.depto1, 80))  # +30 % = $3,000 - 10 % = $2,700
+        self.assertEqual(third['priorPaidApplied'], 0.0)
+        self.assertEqual(third['totalToPay'], 2700.0)
+
+    def test_the_pool_is_shared_across_the_parts_of_one_estimation(self):
+        batch = main.create_supplier_estimation(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'periodStart': '2026-02-01', 'periodEnd': '2026-02-07',
+             'parts': [{'estimationBudgetId': self.depto1['id'], 'captureMode': 'global', 'globalProgressPct': 50},
+                       {'estimationBudgetId': self.depto2['id'], 'captureMode': 'global', 'globalProgressPct': 50}]},
+            user=SUPERADMIN,
+        )
+        first, second = batch['parts']
+        self.assertEqual((first['priorPaidApplied'], second['priorPaidApplied']), (4500.0, 500.0))
+        self.assertEqual(batch['priorPaidApplied'], 5000.0)
+        self.assertEqual(batch['totalToPay'], 4000.0)
+        # editar el borrador no cuenta dos veces los mismos pagos
+        edited = main.update_supplier_estimation(
+            batch['id'],
+            {'periodStart': '2026-02-01', 'periodEnd': '2026-02-08',
+             'parts': [{'estimationBudgetId': self.depto1['id'], 'captureMode': 'global', 'globalProgressPct': 50},
+                       {'estimationBudgetId': self.depto2['id'], 'captureMode': 'global', 'globalProgressPct': 50}]},
+            user=SUPERADMIN,
+        )
+        self.assertEqual(edited['priorPaidApplied'], 5000.0)
+        self.assertEqual(edited['totalToPay'], 4000.0)
+        # y el listado vuelve a calcular lo mismo
+        self.assertEqual(main.get_supplier_estimation(batch['id'], user=ADMIN)['totalToPay'], 4000.0)
+
+    def test_payments_marked_as_advance_are_separated_from_the_pool(self):
+        # $4,500 de lo pagado se asigna como anticipo del depto 1: no es «pago a cuenta» del proveedor
+        main.set_estimation_budget_opening_balance(self.depto1['id'], {'advanceTransactionIds': [self.txs[0]['_id']]}, user=ADMIN)
+        budget = main.get_estimation_budget(self.depto2['id'], user=ADMIN)
+        self.assertTrue(budget['supplierUsesPriorPool'])
+        self.assertEqual(budget['supplierPriorPoolRemaining'], 500.0)
+        approved = self._estimate((self.depto2, 50))
+        self.assertEqual(approved['priorPaidApplied'], 500.0)
+        self.assertEqual(approved['totalToPay'], 4000.0)
+
+    def test_the_approved_estimation_is_marked_paid_when_the_supplier_payments_cover_it(self):
+        approved = self._estimate((self.depto1, 50))
+        self.assertEqual(approved['authorizedAmount'], 0.0)
+        self.assertEqual(main.get_supplier_estimation(approved['id'], user=ADMIN)['paymentStatus'], 'PAGADA')
+        # si se desasigna el pago grande, ya no está cubierta
         main.set_estimation_supplier_payments(
             {'projectId': self.project_id, 'supplierKey': self.key, 'excludedTransactionIds': [self.txs[0]['_id']]}, user=ADMIN
         )
         listed = main.list_supplier_estimations(self.key, self.project_id, user=ADMIN)
         self.assertEqual(listed[0]['paymentStatus'], 'POR_PAGAR')
 
+    def test_a_payment_for_an_authorized_amount_is_not_discounted_again(self):
+        # solo $200 + $300 pagados (se desasigna el pago de $4,500)
+        main.set_estimation_supplier_payments(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'excludedTransactionIds': [self.txs[0]['_id']]}, user=ADMIN
+        )
+        first = self._estimate((self.depto1, 50))  # $4,500 netos - $500 ya pagados = $4,000
+        self.assertEqual((first['priorPaidApplied'], first['authorizedAmount']), (500.0, 4000.0))
+        # llega el pago de $4,000 de esa estimación: no se descuenta de la siguiente
+        self.fake_db.transactions.docs.append(self._acero_transaction(4000))
+        second = self._estimate((self.depto2, 50))
+        self.assertEqual((second['priorPaidApplied'], second['totalToPay']), (0.0, 4500.0))
 
     def test_assigning_a_payment_as_advance_brings_back_an_unassigned_payment(self):
         # el pago se desasignó del proveedor...
@@ -367,3 +436,11 @@ class SupplierPaidTests(phase1.EstimationsPhase1Tests):
         self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 5000.0)
         links = self.fake_db.estimationPaymentLinks.find({'transactionId': self.txs[0]['_id']})
         self.assertEqual([link['estimationBudgetId'] for link in links], [self.depto2['id']])
+
+    def test_budget_level_exclusions_do_not_shrink_the_pool_of_a_multi_budget_supplier(self):
+        # restos del modo anterior: se «desasignaron» todos los pagos de un presupuesto
+        for budget_id in (self.depto1['id'], self.depto2['id']):
+            self.fake_db.estimationBudgets.update_one(
+                {'_id': ObjectId(budget_id)}, {'$set': {'excludedTransactionIds': [tx['_id'] for tx in self.txs]}}
+            )
+        self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 5000.0)

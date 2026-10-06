@@ -249,6 +249,24 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   }
 
   const activeResults = selectedBudgetIds.map((id) => blockResults[id]).filter(Boolean);
+  // Proveedor con varios presupuestos: lo pagado al proveedor que no es anticipo ni está asignado a un
+  // presupuesto se descuenta de lo que se libera, repartido en orden entre los presupuestos.
+  const poolByBudget = {};
+  let poolLeft = 0;
+  const poolSource = supplierBudgets[0];
+  if (poolSource?.supplierUsesPriorPool) {
+    poolLeft = (Number(poolSource.supplierPriorPoolRemaining) || 0)
+      + (editingBatch ? (editingBatch.parts || []).reduce((sum, part) => sum + (Number(part.priorPoolApplied) || 0), 0) : 0);
+    selectedBudgetIds.forEach((id) => {
+      const result = blockResults[id];
+      if (!result) return;
+      const netAfterBudget = result.preview.totalToPay - (result.preview.advanceGiven || 0);
+      const applied = Math.min(Math.max(netAfterBudget, 0), poolLeft);
+      poolByBudget[id] = applied;
+      poolLeft -= applied;
+    });
+  }
+  const poolTotal = Object.values(poolByBudget).reduce((sum, value) => sum + value, 0);
   const formTotals = activeResults.reduce(
     (acc, result) => ({
       advanceGiven: acc.advanceGiven + (result.preview.advanceGiven || 0),
@@ -260,6 +278,8 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     }),
     { advanceGiven: 0, periodSubtotal: 0, retentionAmount: 0, advanceAmortizationAmount: 0, priorPaidApplied: 0, totalToPay: 0 },
   );
+  formTotals.priorPaidApplied += poolTotal;
+  formTotals.totalToPay -= poolTotal;
 
   function handleBlockChange(result) {
     setBlockResults((prev) => ({ ...prev, [result.budgetId]: result }));
@@ -981,6 +1001,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         previousCumulative={previousCumulativeForBudget(budgetId, batches, editingBatch?.id || null)}
                         savedPart={savedPart}
                         isReviewer={isReviewer}
+                        poolApplied={poolByBudget[budgetId] || 0}
                         onOpenOpening={(id) => setOpeningBudgetId(id)}
                         onChange={handleBlockChange}
                         onRemove={() => toggleBudget(budgetId)}
@@ -1005,7 +1026,9 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       <div className="kpi-card"><div>
                         <div className="kpi-label">Pagos previos reconocidos</div>
                         <div className="kpi-value">−{formatCurrency(formTotals.priorPaidApplied)}</div>
-                        <div className="kpi-sub">ya pagado al contratista</div>
+                        <div className="kpi-sub">
+                          {poolTotal > 0 ? `incluye ${formatCurrency(poolTotal)} pagados al proveedor sin asignar` : 'ya pagado al contratista'}
+                        </div>
                       </div></div>
                       {formTotals.advanceGiven > 0 && (
                         <div className="kpi-card"><div>
