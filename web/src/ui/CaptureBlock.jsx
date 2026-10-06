@@ -11,8 +11,12 @@ import {
 
 // Captura del avance de UN presupuesto dentro de la estimación del proveedor.
 // Avisa al padre (onChange) con lo que se enviaría al servidor y la vista previa de montos.
-export function CaptureBlock({ budget, previousCumulative, savedPart = null, onChange, onRemove }) {
+export function CaptureBlock({ budget, previousCumulative, savedPart = null, isReviewer = false, onOpenOpening, onChange, onRemove }) {
   const [form, setForm] = useState(() => buildCaptureForm(budget, previousCumulative, savedPart));
+  // Anticipo que se entrega con esta estimación (sin tener que ir al presupuesto).
+  const [advance, setAdvance] = useState(savedPart?.advanceGivenAmount ? String(savedPart.advanceGivenAmount) : '');
+  const [advancePct, setAdvancePct] = useState('');
+  const advanceAmount = Math.max(Number(advance) || 0, 0);
   const groupsEnabled = hasNamedGroups(budget);
 
   const preview = useMemo(() => {
@@ -27,13 +31,28 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, onC
   }, [form, budget, savedPart]);
 
   useEffect(() => {
+    const hasProgress = preview.periodSubtotal > 0.0001;
+    let payload = buildCapturePayload(budget.id, form);
+    if (advanceAmount > 0) {
+      payload = hasProgress
+        ? { ...payload, advanceAmount }
+        : { estimationBudgetId: budget.id, advanceAmount, noProgress: true };
+    }
     onChange({
       budgetId: budget.id,
-      payload: buildCapturePayload(budget.id, form),
-      preview,
-      hasProgress: preview.periodSubtotal > 0.0001,
+      payload,
+      preview: { ...preview, advanceGiven: advanceAmount, totalToPay: preview.totalToPay + advanceAmount },
+      hasProgress,
+      hasValue: hasProgress || advanceAmount > 0,
     });
-  }, [form, preview]);
+  }, [form, preview, advanceAmount]);
+
+  function setAdvanceFromPct(value) {
+    setAdvancePct(value);
+    const pct = Number(value);
+    if (value === '' || !Number.isFinite(pct)) return;
+    setAdvance((((Number(budget.totalContractedAmount) || 0) * pct) / 100).toFixed(2));
+  }
 
   function updateLine(conceptoId, field, value) {
     setForm((prev) => ({
@@ -85,6 +104,31 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, onC
           </div>
         </div>
       )}
+
+      <div style={{ background: 'var(--gray-100)', borderRadius: 6, padding: 8, display: 'grid', gap: 6 }}>
+        <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div>
+            <label>Anticipo a entregar con esta estimación ($)</label>
+            <input type="number" min="0" step="0.01" value={advance} onChange={(e) => { setAdvance(e.target.value); setAdvancePct(''); }} placeholder="0.00" style={{ width: 180 }} />
+          </div>
+          <div>
+            <label>o % del presupuesto</label>
+            <input type="number" min="0" max="100" step="0.01" value={advancePct} onChange={(e) => setAdvanceFromPct(e.target.value)} style={{ width: 110 }} />
+          </div>
+          {isReviewer && Number(budget.estimationsCount) === 0 && onOpenOpening && (
+            <button type="button" className="secondary" onClick={() => onOpenOpening(budget.id)}>
+              Registrar anticipo / pagos ya entregados…
+            </button>
+          )}
+        </div>
+        <div className="small" style={{ color: 'var(--gray-600)' }}>
+          {Number(budget.advanceAmount) > 0 && budget.advanceAmortizationEnabled
+            ? <>Anticipo registrado: <strong>{formatCurrency(budget.advanceAmount)}</strong> · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}. </>
+            : <>Este presupuesto aún no tiene anticipo. </>}
+          Si esta estimación entrega anticipo, se autoriza y se paga como parte de la estimación y desde la aprobación se amortiza en las siguientes (sin retención).
+          Puedes entregar solo anticipo, sin avance.
+        </div>
+      </div>
 
       <div className="row" style={{ gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         <strong style={{ fontSize: 13 }}>¿Cómo capturas el avance?</strong>
@@ -305,7 +349,8 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, onC
         Subtotal {formatCurrency(preview.periodSubtotal)} · retención −{formatCurrency(preview.retentionAmount)}
         {preview.advanceAmortizationAmount > 0 && <> · anticipo −{formatCurrency(preview.advanceAmortizationAmount)}</>}
         {preview.priorPaidApplied > 0 && <> · pagos previos −{formatCurrency(preview.priorPaidApplied)}</>}
-        {' '}= <strong>{formatCurrency(preview.totalToPay)}</strong>
+        {advanceAmount > 0 && <> · anticipo a entregar +{formatCurrency(advanceAmount)}</>}
+        {' '}= <strong>{formatCurrency(preview.totalToPay + advanceAmount)}</strong>
       </div>
     </div>
   );

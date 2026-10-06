@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.js';
 import { ExtrasPanel } from './ExtrasPanel.jsx';
 import { CaptureBlock } from './CaptureBlock.jsx';
+import { OpeningBalancePanel } from './OpeningBalancePanel.jsx';
 import { EstimationBatchView, StatusBadge } from './EstimationBatchView.jsx';
 import { formatCurrency, formatDate, formatPct, openAuthorizedBatchSheet } from './estimationShared.js';
 import { previousCumulativeForBudget, todayIsoDate } from './estimationCapture.js';
@@ -30,6 +31,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   const [batches, setBatches] = useState([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [extrasBudgetId, setExtrasBudgetId] = useState(null);
+  const [openingBudgetId, setOpeningBudgetId] = useState(null);
 
   // Formulario de estimación
   const [showForm, setShowForm] = useState(false);
@@ -162,6 +164,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     setEditingBatch(null);
     setViewingBatch(null);
     setExtrasBudgetId(null);
+    setOpeningBudgetId(null);
     const loaded = await loadSupplier(supplierKey);
     if (loaded && viewBatchId) {
       const batch = loaded.batches.find((b) => b.id === viewBatchId);
@@ -241,13 +244,14 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   const activeResults = selectedBudgetIds.map((id) => blockResults[id]).filter(Boolean);
   const formTotals = activeResults.reduce(
     (acc, result) => ({
+      advanceGiven: acc.advanceGiven + (result.preview.advanceGiven || 0),
       periodSubtotal: acc.periodSubtotal + result.preview.periodSubtotal,
       retentionAmount: acc.retentionAmount + result.preview.retentionAmount,
       advanceAmortizationAmount: acc.advanceAmortizationAmount + result.preview.advanceAmortizationAmount,
       priorPaidApplied: acc.priorPaidApplied + result.preview.priorPaidApplied,
       totalToPay: acc.totalToPay + result.preview.totalToPay,
     }),
-    { periodSubtotal: 0, retentionAmount: 0, advanceAmortizationAmount: 0, priorPaidApplied: 0, totalToPay: 0 },
+    { advanceGiven: 0, periodSubtotal: 0, retentionAmount: 0, advanceAmortizationAmount: 0, priorPaidApplied: 0, totalToPay: 0 },
   );
 
   function handleBlockChange(result) {
@@ -257,13 +261,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   async function submitForm(event, { sendForReview = false } = {}) {
     event?.preventDefault?.();
     if (!formMeta) return;
-    const parts = activeResults.filter((result) => result.hasProgress).map((result) => result.payload);
+    const parts = activeResults.filter((result) => result.hasValue).map((result) => result.payload);
     if (!selectedBudgetIds.length) {
       setError('Elige al menos un presupuesto para estimar.');
       return;
     }
     if (!parts.length) {
-      setError('Captura el avance de al menos un presupuesto.');
+      setError('Captura el avance (o el anticipo) de al menos un presupuesto.');
       return;
     }
     setSaving(true);
@@ -724,9 +728,20 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                             </td>
                             {isReviewer && (
                               <td>
-                                <button type="button" className="secondary" onClick={() => setExtrasBudgetId(extrasBudgetId === budget.id ? null : budget.id)} title="Agregar conceptos extra o un presupuesto adicional">
-                                  + Extras
-                                </button>
+                                <div className="row" style={{ gap: 6, flexWrap: 'wrap' }}>
+                                  <button type="button" className="secondary" onClick={() => setExtrasBudgetId(extrasBudgetId === budget.id ? null : budget.id)} title="Agregar conceptos extra o un presupuesto adicional">
+                                    + Extras
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    disabled={Number(budget.estimationsCount) > 0}
+                                    onClick={() => setOpeningBudgetId(openingBudgetId === budget.id ? null : budget.id)}
+                                    title={Number(budget.estimationsCount) > 0 ? 'Solo antes de la primera estimación de este presupuesto' : 'Anticipo ya entregado y pagos previos (obra a medias)'}
+                                  >
+                                    Anticipo / pagos previos
+                                  </button>
+                                </div>
                               </td>
                             )}
                           </tr>
@@ -736,6 +751,17 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                   </table>
                 </div>
               </div>
+
+              {openingBudgetId && isReviewer && budgetsById[openingBudgetId] && (
+                <OpeningBalancePanel
+                  budget={budgetsById[openingBudgetId]}
+                  onClose={() => setOpeningBudgetId(null)}
+                  onSaved={async () => {
+                    setOpeningBudgetId(null);
+                    await refreshAll();
+                  }}
+                />
+              )}
 
               {extrasBudget && isReviewer && (
                 <ExtrasPanel
@@ -926,6 +952,8 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         budget={budget}
                         previousCumulative={previousCumulativeForBudget(budgetId, batches, editingBatch?.id || null)}
                         savedPart={savedPart}
+                        isReviewer={isReviewer}
+                        onOpenOpening={(id) => setOpeningBudgetId(id)}
                         onChange={handleBlockChange}
                         onRemove={() => toggleBudget(budgetId)}
                       />
@@ -951,10 +979,17 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         <div className="kpi-value">−{formatCurrency(formTotals.priorPaidApplied)}</div>
                         <div className="kpi-sub">ya pagado al contratista</div>
                       </div></div>
+                      {formTotals.advanceGiven > 0 && (
+                        <div className="kpi-card"><div>
+                          <div className="kpi-label">Anticipo a entregar</div>
+                          <div className="kpi-value">+{formatCurrency(formTotals.advanceGiven)}</div>
+                          <div className="kpi-sub">se registra como anticipo del presupuesto</div>
+                        </div></div>
+                      )}
                       <div className="kpi-card"><div>
                         <div className="kpi-label">A liberar (monto a autorizar)</div>
                         <div className="kpi-value">{formatCurrency(formTotals.totalToPay)}</div>
-                        <div className="kpi-sub">total de {activeResults.filter((r) => r.hasProgress).length} presupuesto(s)</div>
+                        <div className="kpi-sub">total de {activeResults.filter((r) => r.hasValue).length} presupuesto(s)</div>
                       </div></div>
                       <div className="kpi-card"><div>
                         <div className="kpi-label">Solicitado por el contratista</div>

@@ -195,3 +195,72 @@ class SupplierEstimationTests(phase1.EstimationsPhase1Tests):
             self._call(main.delete_supplier_estimation, first['id'], user=self.capturist)  # aprobada
         self.assertEqual(self._call(main.delete_supplier_estimation, second['id'], user=self.capturist), {'ok': True})
         self.assertEqual(len(self._call(main.list_supplier_estimations, self.supplier_key, self.project_id, user=ADMIN)), 1)
+
+
+class AdvanceInEstimationTests(SupplierEstimationTests):
+    """Anticipo entregado como parte de la estimación (sin ir al presupuesto)."""
+
+    def _advance(self, budget, amount, **extra):
+        return {'estimationBudgetId': budget['id'], 'advanceAmount': amount, 'noProgress': True, **extra}
+
+    def test_advance_only_part_is_authorized_paid_and_registered_as_the_budget_advance(self):
+        batch = self._create([self._advance(self.depto1, 3000)])
+        self.assertEqual(batch['periodSubtotal'], 0.0)
+        self.assertEqual(batch['retentionAmount'], 0.0)
+        self.assertEqual(batch['advanceGivenAmount'], 3000.0)
+        self.assertEqual(batch['totalToPay'], 3000.0)
+        approved = self._close(batch)
+        self.assertEqual(approved['authorizedAmount'], 3000.0)
+        budget = self._call(main.get_estimation_budget, self.depto1['id'], user=ADMIN)
+        self.assertEqual(budget['advanceAmount'], 3000.0)
+        self.assertTrue(budget['advanceAmortizationEnabled'])
+        self.assertEqual(budget['advanceGivenAmount'], 3000.0)
+        self.assertEqual(budget['remainingAdvanceBalance'], 3000.0)
+
+    def test_the_delivered_advance_is_amortized_in_the_next_progress_estimation(self):
+        self._close(self._create([self._advance(self.depto1, 3000)]))
+        nxt = self._create([self._part(self.depto1, 50)])
+        part = nxt['parts'][0]
+        # 30 % del avance de $5,000 = $1,500 de amortización; retención 10 % = $500
+        self.assertEqual(part['advanceAmortizationAmount'], 1500.0)
+        self.assertEqual(part['totalToPay'], 3000.0)
+
+    def test_progress_and_advance_in_the_same_estimation(self):
+        batch = self._create([
+            self._part(self.depto1, 50, advanceAmount=1000),
+            self._advance(self.depto2, 2000),
+        ])
+        self.assertEqual(batch['advanceGivenAmount'], 3000.0)
+        self.assertEqual(batch['totalToPay'], 4500.0 + 1000.0 + 2000.0)
+        self._call(main.submit_supplier_estimation, batch['id'], user=self.capturist)
+        listed = self._call(main.get_supplier_estimation, batch['id'], user=ADMIN)
+        self.assertEqual(listed['totalToPay'], 7500.0)  # el refresco no pierde el anticipo
+
+    def test_advance_payment_is_matched_inside_the_sequence(self):
+        batch = self._close(self._create([self._advance(self.depto1, 3000)]))
+
+        def listing(paid):
+            with patch.object(main, 'db', self.fake_db), patch.object(
+                main, 'compute_estimation_budget_paid_amount', side_effect=lambda *a, **k: paid.get(a[2], 0.0)
+            ):
+                return main.list_supplier_estimations(self.supplier_key, self.project_id, user=ADMIN)
+
+        self.assertEqual(listing({})[0]['paymentStatus'], 'POR_PAGAR')
+        self.assertEqual(listing({self.depto1['id']: 2999.0})[0]['paymentStatus'], 'POR_PAGAR')
+        self.assertEqual(listing({self.depto1['id']: 3000.0})[0]['paymentStatus'], 'PAGADA')
+        self.assertEqual(batch['authorizedAmount'], 3000.0)
+
+    def test_zero_or_invalid_advance_without_progress_is_rejected(self):
+        for bad in (0, '', None):
+            with self.assertRaises(HTTPException):
+                self._create([self._advance(self.depto1, bad)])
+        with self.assertRaises(HTTPException) as ctx:
+            self._create([self._advance(self.depto1, -5)])
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_advance_can_still_be_given_to_a_budget_at_100_percent_only_if_needed(self):
+        # un presupuesto completo sigue sin admitir avance, pero sí un anticipo
+        self._close(self._create([self._part(self.depto1, 100)]))
+        with self.assertRaises(HTTPException):
+            self._create([self._part(self.depto1, 100)])
+        self.assertEqual(self._create([self._advance(self.depto1, 500)])['advanceGivenAmount'], 500.0)

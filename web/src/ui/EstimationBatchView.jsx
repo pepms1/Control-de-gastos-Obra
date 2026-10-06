@@ -185,6 +185,7 @@ export function EstimationBatchView({
                 Subtotal {formatCurrency(part.periodSubtotal)} · retención −{formatCurrency(part.retentionAmount)}
                 {Number(part.advanceAmortizationAmount) > 0 && <> · anticipo −{formatCurrency(part.advanceAmortizationAmount)}</>}
                 {Number(part.priorPaidApplied) > 0 && <> · pagos previos −{formatCurrency(part.priorPaidApplied)}</>}
+                {Number(part.advanceGivenAmount) > 0 && <> · <strong>anticipo +{formatCurrency(part.advanceGivenAmount)}</strong></>}
                 {' '}= <strong>{formatCurrency(part.totalToPay)}</strong>
               </span>
             </div>
@@ -198,6 +199,7 @@ export function EstimationBatchView({
         <div><strong>Retención:</strong> {formatCurrency(batch.retentionAmount)}</div>
         <div><strong>Amortización anticipo:</strong> {formatCurrency(batch.advanceAmortizationAmount)}</div>
         {Number(batch.priorPaidApplied) > 0 && <div><strong>Pagos previos reconocidos:</strong> −{formatCurrency(batch.priorPaidApplied)}</div>}
+        {Number(batch.advanceGivenAmount) > 0 && <div><strong>Anticipo entregado:</strong> +{formatCurrency(batch.advanceGivenAmount)}</div>}
         <div><strong>Total calculado (a liberar):</strong> {formatCurrency(batch.totalToPay)}</div>
       </div>
 
