@@ -10050,6 +10050,71 @@ def validate_concepto_rows(raw_rows) -> list[dict]:
     return result
 
 
+# ---- Descuento del presupuesto ----
+#
+# El contratista puede dar un descuento global: en % o en una cantidad cerrada (que se
+# convierte al % equivalente). Los precios se guardan YA con descuento (`unitPrice`, lo que
+# usan estimaciones, anticipos y totales) y el precio original queda en `listUnitPrice`.
+# Los conceptos extra/adicionales no llevan descuento.
+
+DISCOUNT_MODES = ("pct", "amount")
+
+
+def _item_list_price(item: dict) -> float:
+    return float(item.get("listUnitPrice") if item.get("listUnitPrice") is not None else item.get("unitPrice") or 0)
+
+
+def _discount_base(line_items: list[dict]) -> float:
+    """Subtotal a precios de lista de los conceptos que llevan descuento."""
+    return round(
+        sum(float(i.get("quantity") or 0) * _item_list_price(i) for i in line_items if not i.get("isExtra")), 2
+    )
+
+
+def resolve_budget_discount(mode_raw, pct_raw, amount_raw, base_subtotal: float) -> tuple[str | None, float, float]:
+    """(modo, % resultante, monto del descuento). Con monto cerrado el % se calcula solo."""
+    mode = normalize_non_empty_string(mode_raw)
+    mode = mode.lower() if mode else None
+    if not mode:
+        return None, 0.0, 0.0
+    if mode not in DISCOUNT_MODES:
+        raise HTTPException(status_code=400, detail="discountMode must be pct or amount")
+    if base_subtotal <= 0:
+        raise HTTPException(status_code=400, detail="No hay conceptos sobre los que aplicar el descuento")
+    if mode == "pct":
+        try:
+            pct = parse_precise_decimal(pct_raw)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="discountPct is invalid")
+        if not 0 < pct < 100:
+            raise HTTPException(status_code=400, detail="El descuento debe ser mayor a 0 % y menor a 100 %")
+        return "pct", round(pct, 6), round(base_subtotal * pct / 100, 2)
+    try:
+        amount = round(parse_decimal(amount_raw), 2)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="discountAmount is invalid")
+    if amount <= 0 or amount >= base_subtotal:
+        raise HTTPException(status_code=400, detail="El descuento debe ser mayor a 0 y menor al subtotal del presupuesto")
+    return "amount", round(amount / base_subtotal * 100, 6), amount
+
+
+def apply_budget_discount(line_items: list[dict], pct: float) -> list[dict]:
+    """Devuelve los conceptos con el descuento aplicado (precio de lista en `listUnitPrice`)."""
+    result = []
+    for item in line_items:
+        row = dict(item)
+        list_price = _item_list_price(row)
+        row.pop("listUnitPrice", None)
+        if pct > 0 and not row.get("isExtra"):
+            row["listUnitPrice"] = list_price
+            row["unitPrice"] = round(list_price * (1 - pct / 100), 6)
+        else:
+            row["unitPrice"] = list_price
+        row["amount"] = round(float(row.get("quantity") or 0) * float(row["unitPrice"]), 2)
+        result.append(row)
+    return result
+
+
 def resolve_retention_pct(value) -> float:
     if value is None:
         return 0.0
@@ -10759,7 +10824,7 @@ def _require_budget_authorized(budget: dict) -> None:
         )
 
 
-def _budget_material_snapshot(line_items, advance_amount, group_advance_pcts, retention_pct, advance_enabled):
+def _budget_material_snapshot(line_items, advance_amount, group_advance_pcts, retention_pct, advance_enabled, discount_pct=0.0):
     """Lo que, al cambiar, exige reautorizar: conceptos, precios, volumenes, grupos,
     anticipo y retencion."""
     items = sorted(
@@ -10774,13 +10839,19 @@ def _budget_material_snapshot(line_items, advance_amount, group_advance_pcts, re
         for i in (line_items or [])
     )
     pcts = sorted((str(k), round(float(v or 0), 4)) for k, v in (normalize_group_advance_pcts(group_advance_pcts) or {}).items())
-    return (items, round(float(advance_amount or 0), 2), pcts, round(float(retention_pct or 0), 4), bool(advance_enabled))
+    return (items, round(float(advance_amount or 0), 2), pcts, round(float(retention_pct or 0), 4), bool(advance_enabled), round(float(discount_pct or 0), 6))
 
 
 def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dict:
     payload = serialize_raw_doc(doc)
     payload["approvalStatus"] = budget_approval_status(doc)
     payload["isComplete"] = budget_is_complete(doc)
+    payload["discountMode"] = doc.get("discountMode") or None
+    payload["discountPct"] = round(float(doc.get("discountPct") or 0), 6)
+    payload["discountAmount"] = round(float(doc.get("discountAmount") or 0), 2)
+    payload["listSubtotal"] = round(
+        float(doc.get("listSubtotal")) if doc.get("listSubtotal") is not None else _discount_base(doc.get("lineItems") or []), 2
+    )
     estimation_budget_id = str(payload.get("id") or "")
     project_id = str(payload.get("projectId") or "")
     supplier_key = str(payload.get("supplierKey") or "")
@@ -10924,6 +10995,11 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
     advance_amortization_enabled = bool((payload or {}).get("advanceAmortizationEnabled"))
     advance_amount = validate_budget_amount((payload or {}).get("advanceAmount") or 0)
     line_items = validate_concepto_rows((payload or {}).get("lineItems"))
+    list_subtotal = _discount_base(line_items)
+    discount_mode, discount_pct, discount_amount = resolve_budget_discount(
+        (payload or {}).get("discountMode"), (payload or {}).get("discountPct"), (payload or {}).get("discountAmount"), list_subtotal
+    )
+    line_items = apply_budget_discount(line_items, discount_pct)
     group_advance_pcts = normalize_group_advance_pcts((payload or {}).get("groupAdvancePcts"))
     if group_advance_pcts:
         # El anticipo previsto sale de los grupos; ya no se captura un monto aparte.
@@ -10948,6 +11024,10 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
         "advanceAmount": advance_amount,
         "groupAdvancePcts": group_advance_pcts,
         "lineItems": line_items,
+        "discountMode": discount_mode,
+        "discountPct": discount_pct,
+        "discountAmount": discount_amount,
+        "listSubtotal": list_subtotal,
         "totalContractedAmount": totals["totalContractedAmount"],
         "advancePct": totals["advancePct"],
         "createdBy": normalize_non_empty_string(user.get("username")) or "system",
@@ -11433,18 +11513,40 @@ def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dic
         line_items = new_line_items
         updates["lineItems"] = line_items
 
+    discount_touched = False
+    if "lineItems" in payload or any(key in payload for key in ("discountMode", "discountPct", "discountAmount")):
+        # Los conceptos del formulario llegan a precio de lista; sin conceptos nuevos se parte del precio de lista guardado.
+        base_items = [{**item, "unitPrice": _item_list_price(item)} for item in line_items]
+        for item in base_items:
+            item.pop("listUnitPrice", None)
+        if any(key in payload for key in ("discountMode", "discountPct", "discountAmount")):
+            mode_in, pct_in, amount_in = payload.get("discountMode"), payload.get("discountPct"), payload.get("discountAmount")
+        else:
+            mode_in, pct_in, amount_in = existing.get("discountMode"), existing.get("discountPct"), existing.get("discountAmount")
+        list_subtotal = _discount_base(base_items)
+        discount_mode, discount_pct, discount_amount = resolve_budget_discount(mode_in, pct_in, amount_in, list_subtotal)
+        line_items = apply_budget_discount(base_items, discount_pct)
+        updates.update({
+            "lineItems": line_items,
+            "discountMode": discount_mode,
+            "discountPct": discount_pct,
+            "discountAmount": discount_amount,
+            "listSubtotal": list_subtotal,
+        })
+        discount_touched = True
+
     group_advance_pcts = normalize_group_advance_pcts(existing.get("groupAdvancePcts"))
     if "groupAdvancePcts" in payload:
         group_advance_pcts = normalize_group_advance_pcts(payload.get("groupAdvancePcts"))
         updates["groupAdvancePcts"] = group_advance_pcts
-    if group_advance_pcts and ("groupAdvancePcts" in payload or "lineItems" in payload):
+    if group_advance_pcts and ("groupAdvancePcts" in payload or "lineItems" in payload or discount_touched):
         updates["advanceAmortizationEnabled"] = True
         # El anticipo entregado (saldo inicial) manda; si no hay, el previsto sale de los grupos.
         if not existing.get("openingSetAt"):
             advance_amount = compute_group_advance_total(line_items, group_advance_pcts)
             updates["advanceAmount"] = advance_amount
 
-    if "lineItems" in payload or "advanceAmount" in payload or "groupAdvancePcts" in payload:
+    if "lineItems" in payload or "advanceAmount" in payload or "groupAdvancePcts" in payload or discount_touched:
         totals = compute_estimation_budget_totals(line_items, advance_amount)
         updates["totalContractedAmount"] = totals["totalContractedAmount"]
         updates["advancePct"] = totals["advancePct"]
@@ -11456,12 +11558,13 @@ def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dic
     if not is_admin_or_superadmin_user(user) and budget_approval_status(existing) == BUDGET_APPROVAL_AUTHORIZED:
         before = _budget_material_snapshot(
             existing.get("lineItems"), existing.get("advanceAmount"), existing.get("groupAdvancePcts"),
-            existing.get("retentionPct"), existing.get("advanceAmortizationEnabled"),
+            existing.get("retentionPct"), existing.get("advanceAmortizationEnabled"), existing.get("discountPct"),
         )
         after = _budget_material_snapshot(
             line_items, advance_amount, group_advance_pcts,
             updates.get("retentionPct", existing.get("retentionPct")),
             updates.get("advanceAmortizationEnabled", existing.get("advanceAmortizationEnabled")),
+            updates.get("discountPct", existing.get("discountPct")),
         )
         if before != after:
             updates.update({
