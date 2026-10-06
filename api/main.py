@@ -10474,6 +10474,29 @@ def compute_supplier_expenses_excluding(project_id: str, supplier_key: str, excl
     return round(total, 2)
 
 
+def _supplier_payment_excluded_ids(project_id: str, supplier_key: str) -> set[str]:
+    """Pagos que el usuario DESASIGNO del proveedor (no cuentan como pagados a sus
+    presupuestos). Incluye los descartados antes en presupuestos individuales."""
+    excluded: set[str] = set()
+    settings = getattr(db, "supplierPaymentSettings", None)
+    if settings is not None:
+        doc = settings.find_one({"projectId": project_id, "supplierKey": supplier_key})
+        excluded |= set(_normalize_transaction_id_values((doc or {}).get("excludedTransactionIds") or []))
+    for budget in db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplier_key}):
+        excluded |= set(_normalize_transaction_id_values(budget.get("excludedTransactionIds") or []))
+    return excluded
+
+
+def compute_supplier_paid_amount(project_id: str, supplier_key: str) -> float:
+    """Pagado a la fecha al proveedor: TODOS sus pagos se asignan a sus presupuestos
+    por defecto, salvo los que el usuario desasigna."""
+    excluded = _supplier_payment_excluded_ids(project_id, supplier_key)
+    if excluded:
+        return compute_supplier_expenses_excluding(project_id, supplier_key, excluded)
+    totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=True)
+    return round(float(totals_by_bucket.get(supplier_key) or 0), 2)
+
+
 def compute_estimation_budget_paid_amount(
     project_id: str,
     supplier_key: str,
@@ -10837,6 +10860,8 @@ def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dic
             excluded_transaction_ids=payload.get("excludedTransactionIds"),
         )
         payload["remainingToPayAmount"] = round(float(payload.get("totalContractedAmount") or 0) - payload["paidAmount"], 2)
+        # Pagado al proveedor (todos sus pagos, menos los desasignados): KPI por proveedor.
+        payload["supplierPaidAmount"] = compute_supplier_paid_amount(project_id, supplier_key)
     return payload
 
 
@@ -11149,6 +11174,85 @@ def replace_estimation_budget_transaction_links(
         "selectedTransactionIds": selected_transaction_ids,
         "assignedCount": len(selected_transaction_ids),
     }
+
+
+def _list_supplier_payment_rows(project_id: str, supplier_key: str) -> list[dict]:
+    tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
+    movements = list(
+        db.transactions.find(
+            tx_query,
+            {
+                "_id": 1, "date": 1, "description": 1, "concept": 1, "amount": 1, "tax": 1,
+                "supplierId": 1, "supplier_id": 1, "vendor_id": 1, "supplierName": 1, "supplierCardCode": 1,
+                "businessPartner": 1, "proveedorNombre": 1, "beneficiario": 1,
+                "sap.cardCode": 1, "sap.businessPartner": 1,
+            },
+        )
+    )
+    trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
+    rows = []
+    for tx in movements:
+        if _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key) != supplier_key:
+            continue
+        rows.append({
+            "id": str(tx.get("_id") or ""),
+            "date": tx.get("date"),
+            "description": str(tx.get("description") or tx.get("concept") or "").strip(),
+            "amountWithTax": round(float(tx.get("amount") or 0), 2),
+        })
+    rows.sort(key=lambda item: str(item.get("date") or ""), reverse=True)
+    return rows
+
+
+@app.get("/api/estimation-suppliers/payments")
+def list_estimation_supplier_payments(
+    supplierKey: str,
+    projectId: str | None = None,
+    request: FastAPIRequest = None,
+    user: dict = Depends(require_admin_or_superadmin),
+):
+    """Pagos del proveedor: todos cuentan como pagados a sus presupuestos salvo los desasignados."""
+    project_id = resolve_project_id(projectId or get_active_project_id(request))
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+    excluded = _supplier_payment_excluded_ids(project_id, supplierKey)
+    rows = _list_supplier_payment_rows(project_id, supplierKey)
+    for row in rows:
+        row["isExcluded"] = row["id"] in excluded
+    included = round(sum(r["amountWithTax"] for r in rows if not r["isExcluded"]), 2)
+    return {
+        "items": rows,
+        "paidAmount": included,
+        "excludedAmount": round(sum(r["amountWithTax"] for r in rows if r["isExcluded"]), 2),
+    }
+
+
+@app.put("/api/estimation-suppliers/payments")
+def set_estimation_supplier_payments(payload: dict, user: dict = Depends(require_admin_or_superadmin)):
+    """Guarda los pagos desasignados del proveedor (el resto cuenta como pagado)."""
+    project_id = resolve_project_id((payload or {}).get("projectId"))
+    supplier_key = normalize_non_empty_string((payload or {}).get("supplierKey")) or ""
+    if not supplier_key:
+        raise HTTPException(status_code=400, detail="supplierKey is required")
+    if not can_access_project(user, project_id):
+        raise HTTPException(status_code=403, detail="Project access denied")
+    requested = _normalize_transaction_id_values((payload or {}).get("excludedTransactionIds") or [])
+    valid = {row["id"] for row in _list_supplier_payment_rows(project_id, supplier_key)}
+    invalid = [tx_id for tx_id in requested if tx_id not in valid]
+    if invalid:
+        raise HTTPException(status_code=400, detail={"message": "Some transactions do not belong to this supplier", "transactionIds": invalid})
+    # Las exclusiones por presupuesto (modo anterior) se reemplazan por esta lista del proveedor.
+    now_iso = datetime.now(timezone.utc).isoformat()
+    db.supplierPaymentSettings.update_one(
+        {"projectId": project_id, "supplierKey": supplier_key},
+        {"$set": {"excludedTransactionIds": requested, "updatedBy": normalize_non_empty_string(user.get("username")) or "system", "updatedAt": now_iso}},
+        upsert=True,
+    )
+    db.estimationBudgets.update_many(
+        {"projectId": project_id, "supplierKey": supplier_key},
+        {"$set": {"excludedTransactionIds": []}},
+    )
+    return {"ok": True, "excludedCount": len(requested), "paidAmount": compute_supplier_paid_amount(project_id, supplier_key)}
 
 
 @app.put("/api/estimation-budgets/{estimation_budget_id}/opening-balance")
@@ -11501,16 +11605,7 @@ def reconcile_supplier_estimation_payments(project_id: str, supplier_key: str) -
         batches.values(),
         key=lambda parts: (int(parts[0].get("folio") or 0), str(parts[0].get("approvedAt") or "")),
     )
-    paid_amount = sum(
-        compute_estimation_budget_paid_amount(
-            project_id,
-            supplier_key,
-            str(budget.get("_id")),
-            estimation_budget_is_active=bool(budget.get("isActive", True)),
-            excluded_transaction_ids=budget.get("excludedTransactionIds"),
-        )
-        for budget in budgets
-    )
+    paid_amount = compute_supplier_paid_amount(project_id, supplier_key)
     cumulative = 0.0
     advance_via_estimations: dict[str, float] = {}
     for row in rows:

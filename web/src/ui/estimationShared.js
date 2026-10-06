@@ -108,7 +108,7 @@ export function emptyBudgetForm(projectId) {
     currency: 'MXN',
     notes: '',
     retentionPct: '0',
-    advanceAmortizationEnabled: false,
+    advanceAmortizationEnabled: true,
     advanceAmount: '0',
     groupAdvancePcts: {},
     isActive: true,
@@ -321,4 +321,52 @@ export function openAuthorizedSheet(estimation, budget, projectName = '') {
 
 export function openAuthorizedBatchSheet(batch, budgetsById, projectName = '') {
   return openPrintWindow(buildAuthorizedBatchHtml(batch, budgetsById, projectName));
+}
+
+
+// Unidades más comunes en presupuestos de obra (valor guardado, etiqueta del desplegable).
+export const COMMON_UNITS = [
+  { value: 'm2', label: 'm² · metro cuadrado' },
+  { value: 'ml', label: 'ml · metro lineal' },
+  { value: 'm', label: 'm · metro' },
+  { value: 'm3', label: 'm³ · metro cúbico' },
+  { value: 'pza', label: 'pza · pieza' },
+  { value: 'lote', label: 'lote' },
+  { value: 'jgo', label: 'jgo · juego' },
+  { value: 'salida', label: 'salida' },
+  { value: 'punto', label: 'punto' },
+  { value: 'servicio', label: 'servicio' },
+  { value: 'kg', label: 'kg · kilogramo' },
+  { value: 'ton', label: 'ton · tonelada' },
+  { value: 'lt', label: 'lt · litro' },
+  { value: 'saco', label: 'saco' },
+  { value: 'caja', label: 'caja' },
+  { value: 'rollo', label: 'rollo' },
+  { value: 'viaje', label: 'viaje' },
+  { value: 'día', label: 'día · jornada' },
+  { value: 'hora', label: 'hora' },
+];
+
+const UNIT_ALIASES = {
+  'm²': 'm2', mt2: 'm2', mts2: 'm2', m2: 'm2',
+  'm³': 'm3', mt3: 'm3', mts3: 'm3', m3: 'm3',
+  ml: 'ml', mlineal: 'ml', 'mts lineales': 'ml', 'metro lineal': 'ml', 'metros lineales': 'ml',
+  m: 'm', mt: 'm', mts: 'm', metro: 'm', metros: 'm',
+  pza: 'pza', pzas: 'pza', pz: 'pza', pieza: 'pza', piezas: 'pza',
+  lote: 'lote', lotes: 'lote',
+  jgo: 'jgo', jgos: 'jgo', juego: 'jgo', juegos: 'jgo',
+  salida: 'salida', salidas: 'salida', punto: 'punto', puntos: 'punto',
+  servicio: 'servicio', servicios: 'servicio',
+  kg: 'kg', kgs: 'kg', kilo: 'kg', kilos: 'kg', ton: 'ton', tons: 'ton', tonelada: 'ton', toneladas: 'ton',
+  lt: 'lt', lts: 'lt', litro: 'lt', litros: 'lt',
+  saco: 'saco', sacos: 'saco', caja: 'caja', cajas: 'caja', rollo: 'rollo', rollos: 'rollo',
+  viaje: 'viaje', viajes: 'viaje', dia: 'día', dias: 'día', 'día': 'día', 'días': 'día', jornal: 'día', jornales: 'día',
+  hora: 'hora', horas: 'hora', hr: 'hora', hrs: 'hora',
+};
+
+// Unifica las unidades que vienen de archivos o de texto pegado («m2.», «PZAS», «m²»…) con las del desplegable.
+export function normalizeUnit(raw) {
+  const text = String(raw || '').trim().toLowerCase().replace(/\.+$/, '').trim();
+  if (!text) return '';
+  return UNIT_ALIASES[text] || String(raw).trim().replace(/\.+$/, '').trim();
 }

@@ -16,6 +16,7 @@ import main  # noqa: E402
 import test_estimations_phase1 as phase1  # noqa: E402
 
 ADMIN = {'role': 'ADMIN', 'username': 'boss'}
+SUPERADMIN = phase1.SUPERADMIN
 CAPTURIST = {'role': 'VIEWER', 'username': 'mps', 'canCaptureEstimations': True}
 
 
@@ -148,9 +149,9 @@ class SupplierEstimationTests(phase1.EstimationsPhase1Tests):
         self.assertEqual((first['authorizedAmount'], second['authorizedAmount']), (4500.0, 4500.0))
 
         def listing(paid_by_budget):
-            def fake_paid(project_id, supplier_key, budget_id, **kwargs):
-                return paid_by_budget.get(budget_id, 0.0)
-            with patch.object(main, 'db', self.fake_db), patch.object(main, 'compute_estimation_budget_paid_amount', side_effect=fake_paid):
+            with patch.object(main, 'db', self.fake_db), patch.object(
+                main, 'compute_supplier_paid_amount', return_value=sum(paid_by_budget.values())
+            ):
                 return main.list_supplier_estimations(self.supplier_key, self.project_id, user=ADMIN)
 
         self.assertEqual([b['paymentStatus'] for b in listing({})], ['POR_PAGAR', 'POR_PAGAR'])
@@ -241,7 +242,7 @@ class AdvanceInEstimationTests(SupplierEstimationTests):
 
         def listing(paid):
             with patch.object(main, 'db', self.fake_db), patch.object(
-                main, 'compute_estimation_budget_paid_amount', side_effect=lambda *a, **k: paid.get(a[2], 0.0)
+                main, 'compute_supplier_paid_amount', return_value=sum(paid.values())
             ):
                 return main.list_supplier_estimations(self.supplier_key, self.project_id, user=ADMIN)
 
@@ -264,3 +265,89 @@ class AdvanceInEstimationTests(SupplierEstimationTests):
         with self.assertRaises(HTTPException):
             self._create([self._part(self.depto1, 100)])
         self.assertEqual(self._create([self._advance(self.depto1, 500)])['advanceGivenAmount'], 500.0)
+
+
+class _SettingsCollection(phase1.FakeCollectionWithCursor):
+    def update_one(self, query, update, upsert=False):
+        if upsert and not self.find(query):
+            self.insert_one({**query, **update.get('$set', {})})
+            return
+        super().update_one(query, update)
+
+
+class SupplierPaidTests(phase1.EstimationsPhase1Tests):
+    """Pagado a la fecha del proveedor: todos sus pagos, salvo los desasignados."""
+
+    def setUp(self):
+        super().setUp()
+        self.txs = [
+            self._acero_transaction(4500),
+            self._acero_transaction(200),
+            self._acero_transaction(300),
+        ]
+        self.fake_db = self._fake_db(transactions=self.txs)
+        self.fake_db.supplierPaymentSettings = _SettingsCollection([])
+        base = dict(advanceAmortizationEnabled=False, advanceAmount=0, retentionPct=10)
+        self.patches = [
+            patch.object(main, 'db', self.fake_db),
+            patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q),
+            patch.object(main, 'build_transactions_query', return_value={}),
+        ]
+        for p in self.patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self.patches])
+        self.depto1 = self._create_budget(self.fake_db, name='Depto 201', **base)
+        self.depto2 = self._create_budget(self.fake_db, name='Depto 202', **base)
+        self.key = self.depto1['supplierKey']
+
+    def test_all_supplier_payments_count_by_default_even_with_several_budgets(self):
+        self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 5000.0)
+        budget = main.get_estimation_budget(self.depto1['id'], user=ADMIN)
+        self.assertEqual(budget['supplierPaidAmount'], 5000.0)
+        # con varios presupuestos activos el pagado POR presupuesto sigue siendo la asignación manual
+        self.assertEqual(budget['paidAmount'], 0.0)
+        listed = main.list_estimation_budgets(projectId=self.project_id, user=ADMIN)
+        self.assertEqual({row['supplierPaidAmount'] for row in listed}, {5000.0})
+
+    def test_unassigning_a_payment_removes_it_from_the_supplier_total(self):
+        listing = main.list_estimation_supplier_payments(self.key, self.project_id, user=ADMIN)
+        self.assertEqual(listing['paidAmount'], 5000.0)
+        self.assertFalse(any(row['isExcluded'] for row in listing['items']))
+        result = main.set_estimation_supplier_payments(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'excludedTransactionIds': [self.txs[0]['_id']]}, user=ADMIN
+        )
+        self.assertEqual(result['paidAmount'], 500.0)
+        listing = main.list_estimation_supplier_payments(self.key, self.project_id, user=ADMIN)
+        self.assertEqual((listing['paidAmount'], listing['excludedAmount']), (500.0, 4500.0))
+        self.assertEqual([row['isExcluded'] for row in listing['items'] if row['id'] == self.txs[0]['_id']], [True])
+        # volver a asignarlo
+        main.set_estimation_supplier_payments(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'excludedTransactionIds': []}, user=ADMIN
+        )
+        self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 5000.0)
+
+    def test_payments_of_other_suppliers_cannot_be_excluded_here(self):
+        other = self._acero_transaction(10, sap={'cardCode': 'P999', 'businessPartner': 'OTRO'})
+        self.fake_db.transactions.docs.append(other)
+        with self.assertRaises(HTTPException) as ctx:
+            main.set_estimation_supplier_payments(
+                {'projectId': self.project_id, 'supplierKey': self.key, 'excludedTransactionIds': [other['_id']]}, user=ADMIN
+            )
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_estimation_is_marked_paid_from_the_supplier_pool(self):
+        part = {'estimationBudgetId': self.depto1['id'], 'captureMode': 'global', 'globalProgressPct': 50}
+        batch = main.create_supplier_estimation(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'periodStart': '2026-02-01', 'periodEnd': '2026-02-07', 'parts': [part]},
+            user=SUPERADMIN,
+        )
+        main.submit_supplier_estimation(batch['id'], user=SUPERADMIN)
+        approved = main.approve_supplier_estimation(batch['id'], {}, user=ADMIN)
+        self.assertEqual(approved['authorizedAmount'], 4500.0)
+        # los pagos del proveedor (5,000) cubren los 4,500 aunque no estén asignados a un presupuesto
+        self.assertEqual(main.get_supplier_estimation(batch['id'], user=ADMIN)['paymentStatus'], 'PAGADA')
+        main.set_estimation_supplier_payments(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'excludedTransactionIds': [self.txs[0]['_id']]}, user=ADMIN
+        )
+        listed = main.list_supplier_estimations(self.key, self.project_id, user=ADMIN)
+        self.assertEqual(listed[0]['paymentStatus'], 'POR_PAGAR')

@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { PasteTextImport } from './PasteTextImport.jsx';
 import { OpeningBalancePanel } from './OpeningBalancePanel.jsx';
+import { SupplierPaymentsPanel } from './SupplierPaymentsPanel.jsx';
+import { UnitSelect } from './UnitSelect.jsx';
 import { ExtrasPanel } from './ExtrasPanel.jsx';
 import {
   buildCanonicalSupplierKey,
@@ -17,6 +19,7 @@ import {
   formatPct,
   generateId,
   isBlankConceptoRow,
+  normalizeUnit,
   summarizeBudgets,
 } from './estimationShared.js';
 
@@ -55,6 +58,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
   const [importingConceptos, setImportingConceptos] = useState(false);
   const [importWarnings, setImportWarnings] = useState([]);
   const [showPasteText, setShowPasteText] = useState(false);
+  const [paymentsSupplier, setPaymentsSupplier] = useState(null);
   const importFileInputRef = useRef(null);
   const groupFileInputRef = useRef(null);
   const [selectedConceptoIds, setSelectedConceptoIds] = useState(new Set());
@@ -410,7 +414,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
     const importedRows = (Array.isArray(result?.items) ? result.items : []).map((item) => ({
       id: generateId(),
       description: item.description || '',
-      unit: item.unit || '',
+      unit: normalizeUnit(item.unit),
       quantity: String(item.quantity ?? ''),
       unitPrice: String(item.unitPrice ?? ''),
       group: item.group || '',
@@ -688,7 +692,8 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
   const supplierKpis = (items) => {
     const sum = (key) => items.reduce((acc, row) => acc + (Number(row[key]) || 0), 0);
     const contracted = sum('totalContractedAmount');
-    const paid = sum('paidAmount');
+    // Pagado al proveedor: todos sus pagos (menos los desasignados), no solo los ligados a un presupuesto.
+    const paid = items.some((row) => row.supplierPaidAmount != null) ? Number(items.find((row) => row.supplierPaidAmount != null).supplierPaidAmount) || 0 : sum('paidAmount');
     const progress = sum('approvedProgressAmount');
     const delivered = items.reduce(
       (acc, row) => acc + ((row.openingMode === 'explicit' || row.openingMode === 'auto-frozen' ? Number(row.openingAdvanceAmount) || 0 : 0) + (Number(row.advanceGivenAmount) || 0)),
@@ -699,7 +704,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
     ];
     if (isReviewer) {
       list.push(
-        { label: 'Total pagado a la fecha', value: formatCurrency(paid), sub: `${formatPct(contracted > 0 ? (paid / contracted) * 100 : 0)} del contratado` },
+        { label: 'Total pagado a la fecha', value: formatCurrency(paid), sub: `${formatPct(contracted > 0 ? (paid / contracted) * 100 : 0)} del contratado · todos los pagos del proveedor` },
         { label: 'Saldo por pagar', value: formatCurrency(contracted - paid), sub: 'contratado − pagado', danger: contracted - paid < 0 },
       );
     }
@@ -911,16 +916,16 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                 />
                 <button
                   type="button"
-                  className="secondary"
+                  className="btn-outline"
                   onClick={() => importFileInputRef.current?.click()}
                   disabled={importingConceptos}
                 >
                   {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
                 </button>
-                <button type="button" className="secondary" onClick={() => setShowPasteText((prev) => !prev)}>
+                <button type="button" className="btn-outline" onClick={() => setShowPasteText((prev) => !prev)}>
                   📋 Pegar texto
                 </button>
-                <button type="button" className="secondary" onClick={addConceptoRow}>+ Agregar concepto</button>
+                <button type="button" onClick={addConceptoRow}>+ Agregar concepto</button>
               </div>
             </div>
             {showPasteText && (
@@ -937,7 +942,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
             )}
             <div
               className="row"
-              style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-100)', borderRadius: 6, padding: 8, marginBottom: 6 }}
+              style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: 10, margin: '12px 0 8px' }}
             >
               <div>
                 <label>Agrupar los conceptos marcados en</label>
@@ -949,10 +954,10 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                   style={{ width: 200 }}
                 />
               </div>
-              <button type="button" className="secondary" onClick={applyBulkGroup}>Asignar grupo</button>
+              <button type="button" className="btn-outline" onClick={applyBulkGroup}>Asignar grupo</button>
               <button
                 type="button"
-                className="secondary"
+                className="btn-outline"
                 onClick={() => setSelectedConceptoIds(
                   selectedConceptoIds.size === form.lineItems.length ? new Set() : new Set(form.lineItems.map((row) => row.id)),
                 )}
@@ -963,7 +968,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
               <input ref={groupFileInputRef} type="file" accept=".xlsx,.csv,.pdf,.docx" onChange={handleGroupFromFile} style={{ display: 'none' }} />
               <button
                 type="button"
-                className="secondary"
+                className="btn-outline"
                 onClick={() => groupFileInputRef.current?.click()}
                 disabled={groupingFromFile}
                 title="Lee un Excel/Word con los grupos y se los pone a los conceptos que ya existen, sin agregar ni quitar conceptos"
@@ -1021,12 +1026,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                           )}
                         </td>
                         <td>
-                          <input
-                            value={row.unit}
-                            onChange={(e) => updateConceptoRow(index, { unit: e.target.value })}
-                            placeholder="m2, pza, lote..."
-                            style={{ width: 90 }}
-                          />
+                          <UnitSelect value={row.unit} onChange={(unit) => updateConceptoRow(index, { unit })} width={130} />
                         </td>
                         <td>
                           <input
@@ -1248,6 +1248,31 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                                 </div>
                               ))}
                             </div>
+                            {isReviewer && (
+                              <div style={{ padding: '0 12px 8px', display: 'grid', gap: 8 }}>
+                                <div>
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() => setPaymentsSupplier(paymentsSupplier?.key === group.key ? null : { key: group.key, name: group.supplierName })}
+                                  >
+                                    Pagos del proveedor (desasignar)
+                                  </button>
+                                </div>
+                                {paymentsSupplier?.key === group.key && (
+                                  <SupplierPaymentsPanel
+                                    supplierKey={group.key}
+                                    supplierName={group.supplierName || group.key}
+                                    projectId={selectedProjectId}
+                                    onClose={() => setPaymentsSupplier(null)}
+                                    onSaved={async () => {
+                                      setPaymentsSupplier(null);
+                                      await loadBudgets();
+                                    }}
+                                  />
+                                )}
+                              </div>
+                            )}
                             <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
                               <table className="budgets-table budgets-table-nested">
                                 <thead>

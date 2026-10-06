@@ -1,7 +1,8 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { PasteTextImport } from './PasteTextImport.jsx';
-import { formatCurrency, generateId } from './estimationShared.js';
+import { UnitSelect } from './UnitSelect.jsx';
+import { formatCurrency, generateId, normalizeUnit } from './estimationShared.js';
 
 // Conceptos que no estaban en el presupuesto original. Se agregan a un grupo
 // propio ("Extras" o "Adicional N") con su avance y sin anticipo; no se toca
@@ -59,7 +60,7 @@ export function ExtrasPanel({ budget, onClose, onSaved }) {
     const imported = (Array.isArray(result?.items) ? result.items : []).map((item) => ({
       id: generateId(),
       description: item.description || '',
-      unit: item.unit || '',
+      unit: normalizeUnit(item.unit),
       quantity: String(item.quantity ?? ''),
       unitPrice: String(item.unitPrice ?? ''),
     }));
@@ -146,11 +147,11 @@ export function ExtrasPanel({ budget, onClose, onSaved }) {
         <label>Conceptos</label>
         <div className="row" style={{ gap: 6 }}>
           <input ref={fileInputRef} type="file" accept=".xlsx,.csv,.pdf,.docx" onChange={handleImport} style={{ display: 'none' }} />
-          <button type="button" className="secondary" onClick={() => fileInputRef.current?.click()} disabled={importing}>
+          <button type="button" className="btn-outline" onClick={() => fileInputRef.current?.click()} disabled={importing}>
             {importing ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
           </button>
-          <button type="button" className="secondary" onClick={() => setShowPasteText((prev) => !prev)}>📋 Pegar texto</button>
-          <button type="button" className="secondary" onClick={() => setRows((prev) => [...prev, emptyExtraRow()])}>+ Agregar concepto</button>
+          <button type="button" className="btn-outline" onClick={() => setShowPasteText((prev) => !prev)}>📋 Pegar texto</button>
+          <button type="button" onClick={() => setRows((prev) => [...prev, emptyExtraRow()])}>+ Agregar concepto</button>
         </div>
       </div>
       {showPasteText && (
@@ -178,7 +179,7 @@ export function ExtrasPanel({ budget, onClose, onSaved }) {
             {rows.map((row) => (
               <tr key={row.id}>
                 <td><input value={row.description} onChange={(e) => updateRow(row.id, { description: e.target.value })} /></td>
-                <td><input value={row.unit} onChange={(e) => updateRow(row.id, { unit: e.target.value })} style={{ width: 80 }} /></td>
+                <td><UnitSelect value={row.unit} onChange={(unit) => updateRow(row.id, { unit })} width={130} /></td>
                 <td>
                   <input type="number" min="0" step="0.01" value={row.quantity} onChange={(e) => updateRow(row.id, { quantity: e.target.value })} style={{ width: 90 }} />
                 </td>

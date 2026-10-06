@@ -494,6 +494,14 @@ export const api = {
   authorizeEstimationBudget: (id) =>
     backendReq(`/api/estimation-budgets/${id}/authorize`, { method: 'POST', body: JSON.stringify({}) }),
 
+  supplierPayments: (supplierKey, projectId) => {
+    const qs = new URLSearchParams({ supplierKey, ...(projectId ? { projectId } : {}) }).toString();
+    return backendReq(`/api/estimation-suppliers/payments?${qs}`);
+  },
+
+  saveSupplierPayments: (payload) =>
+    backendReq('/api/estimation-suppliers/payments', { method: 'PUT', body: JSON.stringify(payload) }),
+
   supplierEstimations: (supplierKey, projectId) => {
     const qs = new URLSearchParams({ supplierKey, ...(projectId ? { projectId } : {}) }).toString();
     return backendReq(`/api/supplier-estimations?${qs}`);
