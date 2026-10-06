@@ -11754,8 +11754,8 @@ def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dic
         advance_mode == "pct"
         and advance_pct_input is not None
         and not group_advance_pcts
-        and not existing.get("openingSetAt")
-        and (advance_keys_in_payload or "lineItems" in payload or discount_touched)
+        and (not existing.get("openingSetAt") or "advanceDelivered" in payload)
+        and (advance_keys_in_payload or "lineItems" in payload or discount_touched or "advanceDelivered" in payload)
     ):
         advance_amount = round(sum(float(i.get("amount") or 0) for i in line_items) * float(advance_pct_input) / 100, 2)
         updates["advanceAmount"] = advance_amount
