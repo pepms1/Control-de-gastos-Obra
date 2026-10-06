@@ -11943,7 +11943,7 @@ def parse_concepto_number(raw) -> float:
     return parse_decimal(raw)
 
 
-def detect_concepto_header_row(rows: list, max_scan_rows: int = 5):
+def detect_concepto_header_row(rows: list, max_scan_rows: int = 40):
     for row_idx, row in enumerate(rows[:max_scan_rows]):
         header_index: dict[str, int] = {}
         for col_idx, cell in enumerate(row or []):
@@ -12022,7 +12022,7 @@ def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False, 
     concepto_idx = header_index.get("concepto")
     for row in data_rows:
         description = normalize_non_empty_string(cell_value(row, "concepto"))
-        unit = normalize_non_empty_string(cell_value(row, "unidad")) or ""
+        unit = (normalize_non_empty_string(cell_value(row, "unidad")) or "").rstrip(".").strip()
         quantity = number_or_none(cell_value(row, "cantidad"))
         unit_price = number_or_none(cell_value(row, "preciounitario"))
 
