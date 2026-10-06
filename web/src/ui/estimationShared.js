@@ -149,7 +149,9 @@ export function emptyBudgetForm(projectId) {
 }
 
 // KPI de un conjunto de presupuestos (todos, los de un proveedor o uno solo).
-export function summarizeBudgets(budgetRows) {
+// Con { bySupplier: true } (filas de un mismo proveedor) el pagado es el del PROVEEDOR: todos sus pagos menos los
+// desasignados, no la suma de lo asignado a cada presupuesto.
+export function summarizeBudgets(budgetRows, { bySupplier = false } = {}) {
   const totals = (budgetRows || []).reduce(
     (acc, row) => {
       acc.contracted += Number(row.totalContractedAmount) || 0;
@@ -162,6 +164,10 @@ export function summarizeBudgets(budgetRows) {
     },
     { contracted: 0, paid: 0, retained: 0, advanceBalance: 0, progressAmount: 0, estimations: 0 },
   );
+  if (bySupplier) {
+    const withSupplierPaid = (budgetRows || []).find((row) => row.supplierPaidAmount != null);
+    if (withSupplierPaid) totals.paid = Number(withSupplierPaid.supplierPaidAmount) || 0;
+  }
   return {
     ...totals,
     balance: totals.contracted - totals.paid,

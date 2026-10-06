@@ -444,3 +444,30 @@ class SupplierPaidTests(phase1.EstimationsPhase1Tests):
                 {'_id': ObjectId(budget_id)}, {'$set': {'excludedTransactionIds': [tx['_id'] for tx in self.txs]}}
             )
         self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 5000.0)
+
+    def test_new_sap_payments_count_automatically_for_the_supplier(self):
+        main.set_estimation_supplier_payments(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'excludedTransactionIds': [self.txs[0]['_id']]}, user=ADMIN
+        )
+        self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 500.0)
+        # llega un pago nuevo de SAP: no hay que asignarlo a nada, cuenta solo
+        new_tx = self._acero_transaction(1000)
+        self.fake_db.transactions.docs.append(new_tx)
+        self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 1500.0)
+        self.assertEqual(main.get_estimation_budget(self.depto1['id'], user=ADMIN)['supplierPaidAmount'], 1500.0)
+        listing = main.list_estimation_supplier_payments(self.key, self.project_id, user=ADMIN)
+        self.assertEqual([r['isExcluded'] for r in listing['items'] if r['id'] == new_tx['_id']], [False])
+        # y se descuenta de la siguiente estimación sin ninguna asignación
+        batch = main.create_supplier_estimation(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'periodStart': '2026-02-01', 'periodEnd': '2026-02-07',
+             'parts': [{'estimationBudgetId': self.depto1['id'], 'captureMode': 'global', 'globalProgressPct': 50}]},
+            user=SUPERADMIN,
+        )
+        self.assertEqual(batch['priorPaidApplied'], 1500.0)
+        self.assertEqual(batch['totalToPay'], 3000.0)
+        # y tras «Incluir todos» los pagos futuros también cuentan
+        main.set_estimation_supplier_payments(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'excludedTransactionIds': []}, user=ADMIN
+        )
+        self.fake_db.transactions.docs.append(self._acero_transaction(250))
+        self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 6250.0)
