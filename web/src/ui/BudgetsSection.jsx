@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
 import { PasteTextImport } from './PasteTextImport.jsx';
+import { OpeningBalancePanel } from './OpeningBalancePanel.jsx';
 import { ExtrasPanel } from './ExtrasPanel.jsx';
 import {
   buildCanonicalSupplierKey,
@@ -70,13 +71,6 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
   const [viewingBudget, setViewingBudget] = useState(null);
   const [extrasBudget, setExtrasBudget] = useState(null);
   const [openingBudget, setOpeningBudget] = useState(null);
-  const [openingLoading, setOpeningLoading] = useState(false);
-  const [openingTransactions, setOpeningTransactions] = useState([]);
-  const [openingRequiresAssignment, setOpeningRequiresAssignment] = useState(false);
-  const [openingAssignments, setOpeningAssignments] = useState({});
-  const [openingManualAdvance, setOpeningManualAdvance] = useState('');
-  const [openingManualPrior, setOpeningManualPrior] = useState('');
-  const [openingNote, setOpeningNote] = useState('');
 
   const projectsById = useMemo(
     () => new Map((Array.isArray(projects) ? projects : []).map((project) => [String(project?._id || ''), project])),
@@ -609,61 +603,11 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
   }
 
   // ---- saldo inicial: pagos previos y anticipo ya entregado ----
-  async function openOpeningPanel(row) {
+  function openOpeningPanel(row) {
     setViewingBudget(null);
     closeAssignPayments();
+    setError('');
     setOpeningBudget(row);
-    setOpeningLoading(true);
-    setError('');
-    try {
-      const payload = await api.estimationBudgetTransactions(row.id);
-      setOpeningTransactions(Array.isArray(payload?.items) ? payload.items : []);
-      setOpeningRequiresAssignment(Boolean(payload?.supplierHasMultipleActiveBudgets));
-      const assignments = {};
-      (row.openingAdvanceTransactionIds || []).forEach((id) => { assignments[id] = 'advance'; });
-      (row.openingPriorPaymentTransactionIds || []).forEach((id) => { assignments[id] = 'prior'; });
-      setOpeningAssignments(assignments);
-      setOpeningManualAdvance(row.openingManualAdvanceAmount ? String(row.openingManualAdvanceAmount) : '');
-      setOpeningManualPrior(row.openingManualPriorPaidAmount ? String(row.openingManualPriorPaidAmount) : '');
-      setOpeningNote(row.openingNote || '');
-    } catch (e) {
-      setError(e.message || 'No se pudieron cargar los pagos del proveedor');
-    } finally {
-      setOpeningLoading(false);
-    }
-  }
-
-  const openingTotals = useMemo(() => {
-    let advance = Number(openingManualAdvance) || 0;
-    let prior = Number(openingManualPrior) || 0;
-    openingTransactions.forEach((tx) => {
-      if (openingAssignments[tx.id] === 'advance') advance += Number(tx.amountWithTax) || 0;
-      if (openingAssignments[tx.id] === 'prior') prior += Number(tx.amountWithTax) || 0;
-    });
-    const total = Number(openingBudget?.totalContractedAmount) || 0;
-    return { advance, prior, paid: advance + prior, paidPct: total > 0 ? ((advance + prior) / total) * 100 : 0 };
-  }, [openingTransactions, openingAssignments, openingManualAdvance, openingManualPrior, openingBudget]);
-
-  async function saveOpeningBalance() {
-    if (!openingBudget) return;
-    setSaving(true);
-    setError('');
-    try {
-      const ids = (kind) => Object.entries(openingAssignments).filter(([, value]) => value === kind).map(([id]) => id);
-      await api.saveEstimationOpeningBalance(openingBudget.id, {
-        advanceTransactionIds: ids('advance'),
-        priorPaymentTransactionIds: ids('prior'),
-        manualAdvanceAmount: Number(openingManualAdvance) || 0,
-        manualPriorPaidAmount: Number(openingManualPrior) || 0,
-        note: openingNote,
-      });
-      setOpeningBudget(null);
-      await loadBudgets();
-    } catch (e) {
-      setError(e.message || 'No se pudo guardar el saldo inicial');
-    } finally {
-      setSaving(false);
-    }
   }
 
   // ---- costo / m² ----
@@ -740,8 +684,35 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
     },
   ];
 
+  // KPI de un proveedor: se muestran dentro del proveedor al expandirlo.
+  const supplierKpis = (items) => {
+    const sum = (key) => items.reduce((acc, row) => acc + (Number(row[key]) || 0), 0);
+    const contracted = sum('totalContractedAmount');
+    const paid = sum('paidAmount');
+    const progress = sum('approvedProgressAmount');
+    const delivered = items.reduce(
+      (acc, row) => acc + ((row.openingMode === 'explicit' || row.openingMode === 'auto-frozen' ? Number(row.openingAdvanceAmount) || 0 : 0) + (Number(row.advanceGivenAmount) || 0)),
+      0,
+    );
+    const list = [
+      { label: 'Total contratado', value: formatCurrency(contracted), sub: `${items.length} presupuesto${items.length === 1 ? '' : 's'}${sum('extraAmount') > 0 ? ` · incluye ${formatCurrency(sum('extraAmount'))} en extras` : ''}` },
+    ];
+    if (isReviewer) {
+      list.push(
+        { label: 'Total pagado a la fecha', value: formatCurrency(paid), sub: `${formatPct(contracted > 0 ? (paid / contracted) * 100 : 0)} del contratado` },
+        { label: 'Saldo por pagar', value: formatCurrency(contracted - paid), sub: 'contratado − pagado', danger: contracted - paid < 0 },
+      );
+    }
+    list.push({ label: 'Avance estimado', value: formatPct(contracted > 0 ? (progress / contracted) * 100 : 0), sub: `${formatCurrency(progress)} en estimaciones aprobadas` });
+    list.push({ label: 'Anticipo', value: formatCurrency(delivered), sub: `entregado · por amortizar ${formatCurrency(sum('remainingAdvanceBalance'))}` });
+    list.push({ label: 'Retenido a la fecha', value: formatCurrency(sum('totalRetainedToDate')), sub: 'fondo de garantía' });
+    list.push({ label: 'Al 100 %', value: `${items.filter((row) => row.isComplete).length} de ${items.length}`, sub: 'presupuestos completos' });
+    return list;
+  };
+
   // Quien solo captura presupuestos (sin rol admin) no ve pagos, saldos ni costos.
-  const visibleKpis = isReviewer ? grandKpis : grandKpis.filter((k) => !['Total pagado', '% pagado', 'Saldo disponible'].includes(k.label));
+  // Los KPI de dinero se ven por proveedor (al expandirlo); arriba solo el costo por m² del proyecto.
+  const visibleKpis = [];
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -1266,6 +1237,17 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                       {isExpanded && (
                         <tr>
                           <td colSpan={9} style={{ padding: 0 }}>
+                            <div className="kpi-grid" style={{ padding: 12 }}>
+                              {supplierKpis(group.items).map((k) => (
+                                <div className="kpi-card" key={k.label}>
+                                  <div>
+                                    <div className="kpi-label">{k.label}</div>
+                                    <div className="kpi-value" style={k.danger ? { color: 'var(--danger-text, #b91c1c)' } : undefined}>{k.value}</div>
+                                    <div className="kpi-sub">{k.sub}</div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                             <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
                               <table className="budgets-table budgets-table-nested">
                                 <thead>
@@ -1589,94 +1571,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
         )}
 
         {openingBudget && (
-          <div className="grid budgets-assignment-panel" style={{ gap: 10, borderRadius: 10, padding: 12 }}>
-            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-              <strong>Saldo inicial · {openingBudget.supplierNameSnapshot || openingBudget.supplierKey} · {openingBudget.name || 'Presupuesto'}</strong>
-              <button type="button" className="secondary" onClick={() => setOpeningBudget(null)} disabled={saving}>Cerrar</button>
-            </div>
-            <div className="small">
-              Para presupuestos que ya traen pagos al empezar a usar el módulo. El anticipo se amortiza solo en cada estimación y los pagos a cuenta
-              se descuentan de lo que se libera. Si no registras nada, se toman todos los pagos asignados al presupuesto. Solo puede cambiarse antes de la primera estimación.
-            </div>
-            {openingLoading ? (
-              <div className="small">Cargando pagos del proveedor...</div>
-            ) : (
-              <>
-                {openingRequiresAssignment && (
-                  <div className="small" style={{ color: '#92400e' }}>
-                    Este proveedor tiene varios presupuestos activos: solo puedes elegir pagos ya asignados a este presupuesto (usa «Asignar pagos»). Los montos manuales sí funcionan.
-                  </div>
-                )}
-                <div style={{ overflowX: 'auto', maxHeight: 260, overflowY: 'auto' }}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Fecha</th>
-                        <th>Descripción</th>
-                        <th>Monto</th>
-                        <th>Cómo se considera</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {openingTransactions.map((tx) => {
-                        const blocked = tx.isAssignedToOtherBudget || (openingRequiresAssignment && !tx.isAssignedToCurrentBudget);
-                        return (
-                          <tr key={tx.id} style={blocked ? { opacity: 0.5 } : undefined}>
-                            <td>{formatDate(tx.date)}</td>
-                            <td>{tx.description || '—'}</td>
-                            <td>{formatCurrency(tx.amountWithTax)}</td>
-                            <td>
-                              <select
-                                value={openingAssignments[tx.id] || ''}
-                                disabled={blocked}
-                                onChange={(e) => setOpeningAssignments((prev) => {
-                                  const next = { ...prev };
-                                  if (e.target.value) next[tx.id] = e.target.value;
-                                  else delete next[tx.id];
-                                  return next;
-                                })}
-                              >
-                                <option value="">No incluir</option>
-                                <option value="advance">Anticipo</option>
-                                <option value="prior">Pago a cuenta</option>
-                              </select>
-                              {tx.isAssignedToOtherBudget && <span className="small"> asignado a otro presupuesto</span>}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {!openingTransactions.length && (
-                        <tr><td colSpan={4} className="small" style={{ textAlign: 'center' }}>Este proveedor no tiene pagos registrados.</td></tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                  <div>
-                    <label>Anticipo manual (opcional)</label>
-                    <input type="number" min="0" step="0.01" value={openingManualAdvance} onChange={(e) => setOpeningManualAdvance(e.target.value)} style={{ width: 170 }} />
-                  </div>
-                  <div>
-                    <label>Otros pagos a cuenta manuales (opcional)</label>
-                    <input type="number" min="0" step="0.01" value={openingManualPrior} onChange={(e) => setOpeningManualPrior(e.target.value)} style={{ width: 170 }} />
-                  </div>
-                  <div style={{ flex: 1, minWidth: 200 }}>
-                    <label>Nota</label>
-                    <input value={openingNote} onChange={(e) => setOpeningNote(e.target.value)} />
-                  </div>
-                </div>
-                <div className="row" style={{ gap: 16, flexWrap: 'wrap', fontSize: 13 }}>
-                  <div><strong>Anticipo:</strong> {formatCurrency(openingTotals.advance)}</div>
-                  <div><strong>Pagos a cuenta:</strong> {formatCurrency(openingTotals.prior)}</div>
-                  <div><strong>Pagado a la fecha:</strong> {formatCurrency(openingTotals.paid)} ({formatPct(openingTotals.paidPct)} del presupuesto)</div>
-                </div>
-                <div className="row" style={{ gap: 8 }}>
-                  <button type="button" onClick={saveOpeningBalance} disabled={saving}>{saving ? 'Guardando...' : 'Guardar saldo inicial'}</button>
-                  <button type="button" className="secondary" onClick={() => setOpeningBudget(null)} disabled={saving}>Cancelar</button>
-                </div>
-              </>
-            )}
-          </div>
+          <OpeningBalancePanel
+            budget={openingBudget}
+            onClose={() => setOpeningBudget(null)}
+            onSaved={async () => {
+              setOpeningBudget(null);
+              await loadBudgets();
+            }}
+          />
         )}
       </div>
     </div>

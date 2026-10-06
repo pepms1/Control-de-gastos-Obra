@@ -211,6 +211,7 @@ function sheetSectionHtml(estimation, budget = {}) {
     Number(estimation.retentionAmount) > 0 ? ['retención −', money(estimation.retentionAmount)] : null,
     showPaidLines && advanceGiven > 0 ? ['anticipo +', money(advanceGiven)] : null,
     showPaidLines ? ['pagado a la fecha −', money(paidToDate)] : null,
+    Number(estimation.advanceGivenAmount) > 0 ? ['anticipo a entregar +', money(estimation.advanceGivenAmount)] : null,
     ['saldo total (a liberar)', money(estimation.totalToPay)],
   ].filter(Boolean).map(([label, value]) => `<div>${label} <strong>${value}</strong></div>`).join('');
 
@@ -283,11 +284,12 @@ export function buildAuthorizedBatchHtml(batch, budgetsById = {}, projectName = 
     return `<div class="budget">Presupuesto: ${escapeHtml(budget.name || part.budgetName || '')}</div>
 ${sheetSectionHtml(part, budget)}`;
   }).join('');
-  const summary = parts.length > 1 ? `<div class="summary"><h2>Resumen de la estimación</h2><div class="totals">
+  const summary = (parts.length > 1 || Number(batch.advanceGivenAmount) > 0) ? `<div class="summary"><h2>Resumen de la estimación</h2><div class="totals">
   <div>subtotal del periodo <strong>${money(batch.periodSubtotal)}</strong></div>
   <div>retención − <strong>${money(batch.retentionAmount)}</strong></div>
   ${Number(batch.advanceAmortizationAmount) > 0 ? `<div>amortización de anticipos − <strong>${money(batch.advanceAmortizationAmount)}</strong></div>` : ''}
   ${Number(batch.priorPaidApplied) > 0 ? `<div>pagos previos − <strong>${money(batch.priorPaidApplied)}</strong></div>` : ''}
+  ${Number(batch.advanceGivenAmount) > 0 ? `<div>anticipo a entregar + <strong>${money(batch.advanceGivenAmount)}</strong></div>` : ''}
   <div>total a liberar <strong>${money(batch.totalToPay)}</strong></div></div></div>` : '';
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <title>Estimación ${escapeHtml(batch.folio)} autorizada</title>
