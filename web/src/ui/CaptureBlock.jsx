@@ -14,7 +14,15 @@ import {
 export function CaptureBlock({ budget, previousCumulative, savedPart = null, isReviewer = false, poolApplied = 0, onOpenOpening, onChange, onRemove }) {
   const [form, setForm] = useState(() => buildCaptureForm(budget, previousCumulative, savedPart));
   // Anticipo que se entrega con esta estimación (sin tener que ir al presupuesto).
-  const [advance, setAdvance] = useState(savedPart?.advanceGivenAmount ? String(savedPart.advanceGivenAmount) : '');
+  // Anticipo previsto en el presupuesto que aún no se entrega: se propone en esta estimación.
+  const pendingPlannedAdvance = budget.supplierUsesPriorPool && budget.advanceAmortizationEnabled
+    ? Math.max(Math.round(((Number(budget.advanceAmount) || 0) - (Number(budget.advanceDeliveredAmount) || 0)) * 100) / 100, 0)
+    : 0;
+  const [advance, setAdvance] = useState(
+    savedPart
+      ? (savedPart.advanceGivenAmount ? String(savedPart.advanceGivenAmount) : '')
+      : (pendingPlannedAdvance > 0 ? pendingPlannedAdvance.toFixed(2) : ''),
+  );
   const [advancePct, setAdvancePct] = useState('');
   const advanceAmount = Math.max(Number(advance) || 0, 0);
   const groupsEnabled = hasNamedGroups(budget);
@@ -129,6 +137,9 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
             : (Number(budget.advanceAmount) > 0 && budget.advanceAmortizationEnabled
               ? <>Anticipo registrado: <strong>{formatCurrency(budget.advanceAmount)}</strong> · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}. </>
               : <>Este presupuesto aún no tiene anticipo. </>)}
+          {!savedPart && pendingPlannedAdvance > 0 && (
+            <><strong>Anticipo previsto en el presupuesto: {formatCurrency(pendingPlannedAdvance)}</strong>; se propone entregarlo en esta estimación. Bórralo o cámbialo si no corresponde. </>
+          )}
           Si esta estimación entrega anticipo, se autoriza y se paga como parte de la estimación y desde la aprobación se amortiza en las siguientes (sin retención).
           Puedes entregar solo anticipo, sin avance.
         </div>
