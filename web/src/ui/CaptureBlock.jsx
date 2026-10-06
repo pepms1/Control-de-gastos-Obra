@@ -122,9 +122,13 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
           )}
         </div>
         <div className="small" style={{ color: 'var(--gray-600)' }}>
-          {Number(budget.advanceAmount) > 0 && budget.advanceAmortizationEnabled
-            ? <>Anticipo registrado: <strong>{formatCurrency(budget.advanceAmount)}</strong> · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}. </>
-            : <>Este presupuesto aún no tiene anticipo. </>}
+          {budget.supplierUsesPriorPool
+            ? (Number(budget.advanceDeliveredAmount) > 0
+              ? <>Anticipo entregado: <strong>{formatCurrency(budget.advanceDeliveredAmount)}</strong> · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}. </>
+              : <>Sin anticipo entregado{Number(budget.advanceAmount) > 0 ? ` (previsto ${formatCurrency(budget.advanceAmount)})` : ''}: no se amortiza nada hasta entregarlo. </>)
+            : (Number(budget.advanceAmount) > 0 && budget.advanceAmortizationEnabled
+              ? <>Anticipo registrado: <strong>{formatCurrency(budget.advanceAmount)}</strong> · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}. </>
+              : <>Este presupuesto aún no tiene anticipo. </>)}
           Si esta estimación entrega anticipo, se autoriza y se paga como parte de la estimación y desde la aprobación se amortiza en las siguientes (sin retención).
           Puedes entregar solo anticipo, sin avance.
         </div>

@@ -471,3 +471,66 @@ class SupplierPaidTests(phase1.EstimationsPhase1Tests):
         )
         self.fake_db.transactions.docs.append(self._acero_transaction(250))
         self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 6250.0)
+
+
+class PlannedAdvanceInMultiBudgetSupplierTests(phase1.EstimationsPhase1Tests):
+    """El anticipo capturado en un presupuesto solo se amortiza si de verdad se entregó."""
+
+    def setUp(self):
+        super().setUp()
+        self.txs = [self._acero_transaction(3000), self._acero_transaction(2000)]
+        self.fake_db = self._fake_db(transactions=self.txs)
+        self.patches = [
+            patch.object(main, 'db', self.fake_db),
+            patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q),
+            patch.object(main, 'build_transactions_query', return_value={}),
+        ]
+        for p in self.patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self.patches])
+        base = dict(advanceAmortizationEnabled=True, advanceAmount=0, retentionPct=10)
+        self.a = self._create_budget(self.fake_db, name='A', **base)
+        self.b = self._create_budget(self.fake_db, name='B', **base)
+        self.c = self._create_budget(self.fake_db, name='C', **{**base, 'advanceAmount': 2000})  # previsto, sin pagar
+        self.d = self._create_budget(self.fake_db, name='D', **base)
+        self.key = self.a['supplierKey']
+        main.set_estimation_budget_opening_balance(self.a['id'], {'advanceTransactionIds': [self.txs[0]['_id']]}, user=ADMIN)
+        main.set_estimation_budget_opening_balance(self.b['id'], {'advanceTransactionIds': [self.txs[1]['_id']]}, user=ADMIN)
+
+    def _estimate_all(self, pct=50):
+        parts = [{'estimationBudgetId': x['id'], 'captureMode': 'global', 'globalProgressPct': pct} for x in (self.a, self.b, self.c, self.d)]
+        return main.create_supplier_estimation(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'periodStart': '2026-02-01', 'periodEnd': '2026-02-07', 'parts': parts},
+            user=SUPERADMIN,
+        )
+
+    def test_only_delivered_advances_are_amortized_and_nothing_is_deducted_twice(self):
+        batch = self._estimate_all()
+        amort = {p['budgetName']: p['advanceAmortizationAmount'] for p in batch['parts']}
+        # A entregó $3,000 (30 %), B $2,000 (20 %); C tiene $2,000 previstos pero no entregados; D no tiene
+        self.assertEqual(amort, {'A': 1500.0, 'B': 1000.0, 'C': 0.0, 'D': 0.0})
+        self.assertEqual(batch['priorPaidApplied'], 0.0)  # los $5,000 pagados son los anticipos
+        self.assertEqual(batch['totalToPay'], 3000.0 + 3500.0 + 4500.0 + 4500.0)
+
+    def test_budget_exposes_the_delivered_advance_and_what_is_left_to_amortize(self):
+        c = main.get_estimation_budget(self.c['id'], user=ADMIN)
+        a = main.get_estimation_budget(self.a['id'], user=ADMIN)
+        self.assertEqual((c['advanceAmount'], c['advanceDeliveredAmount'], c['remainingAdvanceBalance']), (2000.0, 0.0, 0.0))
+        self.assertEqual((a['advanceDeliveredAmount'], a['remainingAdvanceBalance']), (3000.0, 3000.0))
+
+    def test_an_advance_given_in_the_estimation_is_amortized_afterwards(self):
+        parts = [{'estimationBudgetId': self.c['id'], 'advanceAmount': 2000, 'noProgress': True}]
+        first = main.create_supplier_estimation(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'periodStart': '2026-02-01', 'periodEnd': '2026-02-07', 'parts': parts},
+            user=SUPERADMIN,
+        )
+        main.submit_supplier_estimation(first['id'], user=SUPERADMIN)
+        main.approve_supplier_estimation(first['id'], {}, user=ADMIN)
+        c = main.get_estimation_budget(self.c['id'], user=ADMIN)
+        self.assertEqual((c['advanceDeliveredAmount'], c['remainingAdvanceBalance']), (2000.0, 2000.0))
+        nxt = main.create_supplier_estimation(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'periodStart': '2026-03-01', 'periodEnd': '2026-03-07',
+             'parts': [{'estimationBudgetId': self.c['id'], 'captureMode': 'global', 'globalProgressPct': 50}]},
+            user=SUPERADMIN,
+        )
+        self.assertEqual(nxt['parts'][0]['advanceAmortizationAmount'], 1000.0)  # 20 % de $5,000

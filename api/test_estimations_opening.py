@@ -315,11 +315,14 @@ class EstimationsAutoPaymentTests(EstimationsOpeningBalanceTests):
         est = self._first_estimation(50)
         self.assertEqual(est['priorPaidApplied'], 0)
 
-    def test_supplier_with_two_active_budgets_gets_no_automatic_payments(self):
+    def test_supplier_with_two_active_budgets_takes_unassigned_payments_from_the_supplier(self):
+        # los pagos no asignados a un presupuesto son del proveedor y se descuentan; el anticipo
+        # previsto del presupuesto (1,000) no se da por pagado, solo el que se entrega de verdad.
         self._add_payments(1000)
         self._call(self._create_budget, self.fake_db, name='Segundo contrato mismo proveedor')
         est = self._first_estimation(50)
-        self.assertEqual(est['priorPaidApplied'], 0)
+        self.assertEqual(est['priorPaidApplied'], 1000)
+        self.assertEqual(est['advanceAmortizationAmount'], 0)
 
     def test_budget_with_existing_estimations_does_not_get_automatic_payments(self):
         legacy = {
