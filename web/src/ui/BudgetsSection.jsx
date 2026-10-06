@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
+import { PasteTextImport } from './PasteTextImport.jsx';
 import { ExtrasPanel } from './ExtrasPanel.jsx';
 import {
   buildCanonicalSupplierKey,
@@ -52,6 +53,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
   const [form, setForm] = useState(emptyBudgetForm(selectedProjectId));
   const [importingConceptos, setImportingConceptos] = useState(false);
   const [importWarnings, setImportWarnings] = useState([]);
+  const [showPasteText, setShowPasteText] = useState(false);
   const importFileInputRef = useRef(null);
   const groupFileInputRef = useRef(null);
   const [selectedConceptoIds, setSelectedConceptoIds] = useState(new Set());
@@ -401,32 +403,36 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
     setImportWarnings([]);
     setError('');
     try {
-      const result = await api.importEstimationConceptos(file);
-      const importedRows = (Array.isArray(result?.items) ? result.items : []).map((item) => ({
-        id: generateId(),
-        description: item.description || '',
-        unit: item.unit || '',
-        quantity: String(item.quantity ?? ''),
-        unitPrice: String(item.unitPrice ?? ''),
-        group: item.group || '',
-      }));
-      if (!importedRows.length) {
-        setError('El archivo no arrojó conceptos importables.');
-        return;
-      }
-      setForm((prev) => ({
-        ...prev,
-        lineItems:
-          prev.lineItems.length === 1 && isBlankConceptoRow(prev.lineItems[0])
-            ? importedRows
-            : [...prev.lineItems, ...importedRows],
-      }));
-      setImportWarnings(Array.isArray(result?.warnings) ? result.warnings : []);
+      applyImportResult(await api.importEstimationConceptos(file));
     } catch (e) {
       setError(e.message || 'No se pudo importar el archivo');
     } finally {
       setImportingConceptos(false);
     }
+  }
+
+  // Agrega a la tabla los conceptos extraídos de un archivo o de texto pegado.
+  function applyImportResult(result) {
+    const importedRows = (Array.isArray(result?.items) ? result.items : []).map((item) => ({
+      id: generateId(),
+      description: item.description || '',
+      unit: item.unit || '',
+      quantity: String(item.quantity ?? ''),
+      unitPrice: String(item.unitPrice ?? ''),
+      group: item.group || '',
+    }));
+    if (!importedRows.length) {
+      setError('No se obtuvieron conceptos importables.');
+      return;
+    }
+    setForm((prev) => ({
+      ...prev,
+      lineItems:
+        prev.lineItems.length === 1 && isBlankConceptoRow(prev.lineItems[0])
+          ? importedRows
+          : [...prev.lineItems, ...importedRows],
+    }));
+    setImportWarnings(Array.isArray(result?.warnings) ? result.warnings : []);
   }
 
   async function submitBudgetForm(event) {
@@ -940,9 +946,17 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                 >
                   {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
                 </button>
+                <button type="button" className="secondary" onClick={() => setShowPasteText((prev) => !prev)}>
+                  📋 Pegar texto
+                </button>
                 <button type="button" className="secondary" onClick={addConceptoRow}>+ Agregar concepto</button>
               </div>
             </div>
+            {showPasteText && (
+              <div style={{ marginBottom: 6 }}>
+                <PasteTextImport onResult={(result) => { setError(''); applyImportResult(result); }} onClose={() => setShowPasteText(false)} />
+              </div>
+            )}
             {importWarnings.length > 0 && (
               <div className="small" style={{ color: 'var(--gray-600)', background: 'var(--gray-100)', borderRadius: 6, padding: 8, marginBottom: 6 }}>
                 {importWarnings.map((warning, idx) => (

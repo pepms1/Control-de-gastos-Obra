@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { api } from '../api.js';
+import { PasteTextImport } from './PasteTextImport.jsx';
 import { formatCurrency, generateId } from './estimationShared.js';
 
 // Conceptos que no estaban en el presupuesto original. Se agregan a un grupo
@@ -21,6 +22,7 @@ export function ExtrasPanel({ budget, onClose, onSaved }) {
   const [rows, setRows] = useState([emptyExtraRow()]);
   const [saving, setSaving] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [showPasteText, setShowPasteText] = useState(false);
   const [warnings, setWarnings] = useState([]);
   const [error, setError] = useState('');
   const fileInputRef = useRef(null);
@@ -44,25 +46,29 @@ export function ExtrasPanel({ budget, onClose, onSaved }) {
     setError('');
     setWarnings([]);
     try {
-      const result = await api.importEstimationConceptos(file);
-      const imported = (Array.isArray(result?.items) ? result.items : []).map((item) => ({
-        id: generateId(),
-        description: item.description || '',
-        unit: item.unit || '',
-        quantity: String(item.quantity ?? ''),
-        unitPrice: String(item.unitPrice ?? ''),
-      }));
-      if (!imported.length) {
-        setError('El archivo no arrojó conceptos importables.');
-        return;
-      }
-      setRows((prev) => (prev.length === 1 && isBlank(prev[0]) ? imported : [...prev, ...imported]));
-      setWarnings(Array.isArray(result?.warnings) ? result.warnings : []);
+      applyImportResult(await api.importEstimationConceptos(file));
     } catch (e) {
       setError(e.message || 'No se pudo importar el archivo');
     } finally {
       setImporting(false);
     }
+  }
+
+  // Agrega a la tabla los conceptos extraídos de un archivo o de texto pegado.
+  function applyImportResult(result) {
+    const imported = (Array.isArray(result?.items) ? result.items : []).map((item) => ({
+      id: generateId(),
+      description: item.description || '',
+      unit: item.unit || '',
+      quantity: String(item.quantity ?? ''),
+      unitPrice: String(item.unitPrice ?? ''),
+    }));
+    if (!imported.length) {
+      setError('No se obtuvieron conceptos importables.');
+      return;
+    }
+    setRows((prev) => (prev.length === 1 && isBlank(prev[0]) ? imported : [...prev, ...imported]));
+    setWarnings(Array.isArray(result?.warnings) ? result.warnings : []);
   }
 
   async function save(event) {
@@ -143,9 +149,13 @@ export function ExtrasPanel({ budget, onClose, onSaved }) {
           <button type="button" className="secondary" onClick={() => fileInputRef.current?.click()} disabled={importing}>
             {importing ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
           </button>
+          <button type="button" className="secondary" onClick={() => setShowPasteText((prev) => !prev)}>📋 Pegar texto</button>
           <button type="button" className="secondary" onClick={() => setRows((prev) => [...prev, emptyExtraRow()])}>+ Agregar concepto</button>
         </div>
       </div>
+      {showPasteText && (
+        <PasteTextImport onResult={(result) => { setError(''); applyImportResult(result); }} onClose={() => setShowPasteText(false)} />
+      )}
       {warnings.length > 0 && (
         <div className="small" style={{ background: 'var(--gray-100)', borderRadius: 6, padding: 8 }}>
           {warnings.map((warning, idx) => <div key={idx}>⚠ {warning}</div>)}
