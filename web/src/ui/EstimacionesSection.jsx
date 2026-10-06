@@ -217,7 +217,8 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     setEditingBatch(null);
     setBlockResults({});
     setFormMeta({ periodStart: todayIsoDate(), periodEnd: todayIsoDate(), notes: '', requestedAmount: '' });
-    setSelectedBudgetIds(eligibleBudgets.length === 1 ? [eligibleBudgets[0].id] : []);
+    // Por defecto se despliegan todos los presupuestos disponibles del proveedor.
+    setSelectedBudgetIds(eligibleBudgets.map((budget) => budget.id));
     setShowForm(true);
   }
 
@@ -946,7 +947,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                   <div style={{ display: 'grid', gap: 6 }}>
                     <strong style={{ fontSize: 13 }}>¿De qué presupuestos vas a estimar?</strong>
                     <div className="small" style={{ color: 'var(--gray-600)' }}>
-                      Marca los presupuestos de {supplierName} que avanzaron en este periodo. Los que ya están al 100 % o pendientes de autorización no se pueden elegir.
+                      Se muestran todos los presupuestos disponibles de {supplierName}; quita la marca de los que no avanzaron (los que no tengan avance ni anticipo no se guardan). Los que ya están al 100 % o pendientes de autorización no se pueden elegir.
                     </div>
                     <div style={{ display: 'grid', gap: 4 }}>
                       {supplierBudgets.map((budget) => {
