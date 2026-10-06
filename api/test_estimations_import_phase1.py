@@ -325,3 +325,38 @@ class ContractorBudgetFormatTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ContractorLetterheadTests(unittest.TestCase):
+    """Formatos de contratista con membrete: la tabla empieza muchos renglones abajo."""
+
+    def test_header_row_far_below_the_letterhead_is_detected(self):
+        rows = [
+            ['Héctor Morales Medina.', None, None, None, None, None, None, None],
+            ['Contratista', None, None, None, None, None, None, '29/09/2026'],
+            ['Obra:', None, 'Calderón de la Barca.', None, None, None, None, None],
+            ['Contrato:', None, 'Yesería.', None, None, None, None, None],
+            [None, 'Arq. Rafael Marcos.', None, None, None, None, None, None],
+            [None, None, None, 'DEPARTAMENTO 201.', None, None, None, None],
+            [None, None, 'Por este conducto presente el siguiente presupuesto a su consideración.', None, None, None, None, None],
+            [None] * 8,
+            [None] * 8,
+            ['No.', 'Concepto', None, None, 'Unidad', 'Cantidad', 'Precio', 'Total'],
+            [1.0, 'Aplanados de yeso en muros.', None, None, 'm2.', 480.6, 115.0, ' $ 55,269.00 '],
+            [2.0, 'Emboquillados en muros.', None, None, 'm.', 109.0, 57.5, ' $ 6,267.50 '],
+            [3.0, 'Refuerzo con metal desplegado cal. 500', None, None, 'm.', 82.0, 90.0, ' $ 7,380.00 '],
+            [None] * 8,
+            [None, None, None, None, None, None, 'TOTAL', ' $ 68,916.50 '],
+            [None, 'Notas.', None, None, None, None, None, None],
+            [None, None, 'No incluye I.V.A.', None, None, None, None, None],
+        ]
+        items, warnings = main.parse_concepto_rows_from_table(rows)
+        self.assertEqual(
+            [(i['description'], i['unit'], i['quantity'], i['unitPrice']) for i in items],
+            [
+                ('Aplanados de yeso en muros.', 'm2', 480.6, 115.0),
+                ('Emboquillados en muros.', 'm', 109.0, 57.5),
+                ('Refuerzo con metal desplegado cal. 500', 'm', 82.0, 90.0),
+            ],
+        )
+        self.assertFalse(any('Se asumió' in w or 'no coincide' in w for w in warnings))
