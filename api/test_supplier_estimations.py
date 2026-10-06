@@ -351,3 +351,19 @@ class SupplierPaidTests(phase1.EstimationsPhase1Tests):
         )
         listed = main.list_supplier_estimations(self.key, self.project_id, user=ADMIN)
         self.assertEqual(listed[0]['paymentStatus'], 'POR_PAGAR')
+
+
+    def test_assigning_a_payment_as_advance_brings_back_an_unassigned_payment(self):
+        # el pago se desasignó del proveedor...
+        main.set_estimation_supplier_payments(
+            {'projectId': self.project_id, 'supplierKey': self.key, 'excludedTransactionIds': [self.txs[0]['_id']]}, user=ADMIN
+        )
+        self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 500.0)
+        # ...y se puede asignar como anticipo a cualquier presupuesto: vuelve a contar
+        saved = main.set_estimation_budget_opening_balance(
+            self.depto2['id'], {'advanceTransactionIds': [self.txs[0]['_id']]}, user=ADMIN
+        )
+        self.assertEqual(saved['openingAdvanceAmount'], 4500.0)
+        self.assertEqual(main.compute_supplier_paid_amount(self.project_id, self.key), 5000.0)
+        links = self.fake_db.estimationPaymentLinks.find({'transactionId': self.txs[0]['_id']})
+        self.assertEqual([link['estimationBudgetId'] for link in links], [self.depto2['id']])
