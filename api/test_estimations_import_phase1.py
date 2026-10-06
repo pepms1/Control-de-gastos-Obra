@@ -42,7 +42,7 @@ class ConceptoImportParsingTests(unittest.TestCase):
         self.assertEqual(items[0]['description'], 'Excavación a mano')
         self.assertEqual(items[0]['quantity'], 50.0)
         self.assertEqual(items[0]['unitPrice'], 120.0)
-        self.assertTrue(any('orden' in w.lower() for w in warnings))
+        self.assertTrue(any('encabezados' in w.lower() for w in warnings))
 
     def test_parses_currency_formatted_numbers(self):
         rows = [
@@ -360,3 +360,88 @@ class ContractorLetterheadTests(unittest.TestCase):
             ],
         )
         self.assertFalse(any('Se asumió' in w or 'no coincide' in w for w in warnings))
+
+
+class RobustTableDetectionTests(unittest.TestCase):
+    def _items(self, rows):
+        items, warnings = main.parse_concepto_rows_from_table(rows)
+        return [(i['description'], i['unit'], i['quantity'], i['unitPrice']) for i in items], warnings
+
+    def test_alternative_header_names(self):
+        rows = [
+            ['Clave', 'Descripción de los trabajos', 'U.M.', 'Volumen', 'P.U.', 'Importe'],
+            ['A1', 'Aplanado de yeso', 'm2', 100, 115, 11500],
+            ['A2', 'Emboquillado', 'ml', 20, 57.5, 1150],
+        ]
+        got, _ = self._items(rows)
+        self.assertEqual(got, [('Aplanado de yeso', 'm2', 100.0, 115.0), ('Emboquillado', 'ml', 20.0, 57.5)])
+
+    def test_keyword_headers_with_extra_words(self):
+        rows = [
+            ['No.', 'Concepto', 'Unidad', 'Cantidad total', 'Precio unitario s/IVA (MXN)', 'Precio total'],
+            [1, 'Muro de block', 'm2', 50, 300, 15000],
+        ]
+        got, _ = self._items(rows)
+        self.assertEqual(got, [('Muro de block', 'm2', 50.0, 300.0)])
+
+    def test_price_is_derived_from_importe_when_there_is_no_price_column(self):
+        rows = [
+            ['Concepto', 'Unidad', 'Cantidad', 'Importe'],
+            ['Pintura vinílica', 'm2', 40, 6000],
+        ]
+        got, _ = self._items(rows)
+        self.assertEqual(got, [('Pintura vinílica', 'm2', 40.0, 150.0)])
+
+    def test_columns_are_inferred_without_headers_even_if_out_of_order(self):
+        rows = [
+            [1, 'Aplanado de yeso en muros', 'm2', 480.6, 115, 55269],
+            [2, 'Emboquillados en muros', 'm', 109, 57.5, 6267.5],
+            [3, 'Refuerzo con metal desplegado', 'm', 82, 90, 7380],
+        ]
+        got, warnings = self._items(rows)
+        self.assertEqual(got[0], ('Aplanado de yeso en muros', 'm2', 480.6, 115.0))
+        self.assertEqual(len(got), 3)
+        self.assertTrue(any('dedujeron' in w for w in warnings))
+
+    def test_header_far_down_the_sheet(self):
+        rows = [['Membrete', None, None, None]] * 30 + [
+            ['Concepto', 'Unidad', 'Cantidad', 'Precio'],
+            ['Tubería', 'ml', 10, 80],
+        ]
+        got, _ = self._items(rows)
+        self.assertEqual(got, [('Tubería', 'ml', 10.0, 80.0)])
+
+
+class MultiSheetWorkbookTests(unittest.TestCase):
+    def _workbook(self, sheets):
+        import openpyxl
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        for title, rows in sheets.items():
+            ws = wb.create_sheet(title)
+            for row in rows:
+                ws.append(row)
+        buffer = BytesIO()
+        wb.save(buffer)
+        return buffer.getvalue()
+
+    def test_all_sheets_are_read_and_sheet_names_become_groups(self):
+        header = ['Concepto', 'Unidad', 'Cantidad', 'Precio Unitario']
+        data = self._workbook({
+            'Depto 201': [header, ['Yeso', 'm2', 10, 100]],
+            'Depto 202': [header, ['Yeso', 'm2', 20, 100]],
+            'Notas': [['Texto suelto sin tabla']],
+        })
+        items, warnings = main.extract_concepto_rows_from_xlsx_bytes(data)
+        self.assertEqual([(i['group'], i['quantity']) for i in items], [('Depto 201', 10.0), ('Depto 202', 20.0)])
+        self.assertTrue(any('2 hojas' in w for w in warnings))
+
+    def test_single_sheet_keeps_no_group_and_formulas_without_cache_are_explained(self):
+        header = ['Concepto', 'Unidad', 'Cantidad', 'Precio Unitario']
+        data = self._workbook({'Hoja1': [header, ['Yeso', 'm2', 10, 100]]})
+        items, _ = main.extract_concepto_rows_from_xlsx_bytes(data)
+        self.assertNotIn('group', items[0])
+        formulas = self._workbook({'Hoja1': [header, ['Yeso', 'm2', '=5*2', '=100']]})
+        items, warnings = main.extract_concepto_rows_from_xlsx_bytes(formulas)
+        self.assertEqual(items, [])
+        self.assertTrue(any('fórmulas' in w for w in warnings))

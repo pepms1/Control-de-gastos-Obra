@@ -11932,7 +11932,73 @@ CONCEPTO_HEADER_ALIASES = {
     "total": "importe",
 }
 
-CONCEPTO_REQUIRED_CANONICAL_KEYS = ("cantidad", "preciounitario")
+CONCEPTO_HEADER_ALIASES.update({
+    "descripciondelostrabajos": "concepto",
+    "descripciondeltrabajo": "concepto",
+    "descripciondeobra": "concepto",
+    "conceptodeobra": "concepto",
+    "conceptos": "concepto",
+    "trabajos": "concepto",
+    "obra": "concepto",
+    "detalle": "concepto",
+    "nombre": "concepto",
+    "und": "unidad",
+    "unds": "unidad",
+    "uni": "unidad",
+    "uds": "unidad",
+    "ud": "unidad",
+    "medida": "unidad",
+    "cantidades": "cantidad",
+    "cantidadtotal": "cantidad",
+    "volumen": "cantidad",
+    "volumenes": "cantidad",
+    "vol": "cantidad",
+    "metrado": "cantidad",
+    "cantidadunidad": "cantidad",
+    "punit": "preciounitario",
+    "pu": "preciounitario",
+    "unitario": "preciounitario",
+    "valorunitario": "preciounitario",
+    "preciounit": "preciounitario",
+    "preciounidad": "preciounitario",
+    "preciodeunidad": "preciounitario",
+    "costo": "preciounitario",
+    "tarifa": "preciounitario",
+    "suma": "importe",
+    "totalpartida": "importe",
+    "importepartida": "importe",
+    "valor": "importe",
+})
+
+
+def canonical_concepto_header(cell) -> str | None:
+    """Nombre canonico de una columna: coincidencia exacta de alias y, si no, por
+    palabras clave («Precio unitario s/IVA», «P. Unit. (MXN)», «Cantidad total»…)."""
+    key = normalize_concepto_header(cell)
+    if not key:
+        return None
+    exact = CONCEPTO_HEADER_ALIASES.get(key)
+    if exact:
+        return exact
+    if len(key) > 40:
+        return None
+    if key.startswith(("cantidad", "cant", "volumen")):
+        return "cantidad"
+    if "unitario" in key or (key.startswith(("preciou", "punit", "costou", "pu")) and len(key) <= 14):
+        return "preciounitario"
+    if key.startswith(("importe", "monto")) or key.endswith("total"):
+        return "importe"
+    if key.startswith(("precio", "costo")):
+        return "preciounitario"
+    if key.startswith(("unidad", "und")):
+        return "unidad"
+    if key.startswith(("descripcion", "concepto")):
+        return "concepto"
+    return None
+
+
+# Cantidad es indispensable; el precio puede salir del importe (importe ÷ cantidad).
+CONCEPTO_REQUIRED_CANONICAL_KEYS = ("cantidad",)
 
 
 def parse_concepto_number(raw) -> float:
@@ -11943,14 +12009,16 @@ def parse_concepto_number(raw) -> float:
     return parse_decimal(raw)
 
 
-def detect_concepto_header_row(rows: list, max_scan_rows: int = 40):
+def detect_concepto_header_row(rows: list, max_scan_rows: int = 60):
     for row_idx, row in enumerate(rows[:max_scan_rows]):
         header_index: dict[str, int] = {}
         for col_idx, cell in enumerate(row or []):
-            canonical = CONCEPTO_HEADER_ALIASES.get(normalize_concepto_header(cell))
+            canonical = canonical_concepto_header(cell)
             if canonical and canonical not in header_index:
                 header_index[canonical] = col_idx
-        if all(key in header_index for key in CONCEPTO_REQUIRED_CANONICAL_KEYS):
+        if all(key in header_index for key in CONCEPTO_REQUIRED_CANONICAL_KEYS) and (
+            "preciounitario" in header_index or "importe" in header_index
+        ):
             if "concepto" not in header_index:
                 # Encabezado propio del contratista ("MUEBLES", "TRABAJO", ...):
                 # el concepto es la primera columna que no se reconoció.
@@ -11977,6 +12045,74 @@ def _last_number_in_row(row):
     return None
 
 
+def infer_concepto_columns(rows: list) -> dict | None:
+    """Sin encabezados: deduce las columnas por su contenido. El concepto es la
+    columna con más texto, la unidad la de textos cortos tipo m2/pza/ml, y las
+    numéricas se ordenan comprobando cantidad × precio = importe."""
+    sample = rows[:200]
+    width = max((len(row) for row in sample), default=0)
+    if width < 3:
+        return None
+    unit_pattern = re.compile(rf"^(?:{_TEXT_UNITS})\.?$", re.IGNORECASE)
+
+    def number_or_none(raw):
+        try:
+            return parse_concepto_number(raw) if raw not in (None, "") and str(raw).strip() else None
+        except ValueError:
+            return None
+
+    stats = []
+    for col in range(width):
+        cells = [row[col] for row in sample if col < len(row) and str(row[col] or "").strip()]
+        if not cells:
+            stats.append(None)
+            continue
+        numeric = [number_or_none(c) for c in cells]
+        numeric_ratio = sum(1 for n in numeric if n is not None) / len(cells)
+        text_cells = [str(c).strip() for c, n in zip(cells, numeric) if n is None]
+        stats.append({
+            "numeric_ratio": numeric_ratio,
+            "avg_len": (sum(len(t) for t in text_cells) / len(text_cells)) if text_cells else 0,
+            "unit_ratio": sum(1 for t in text_cells if unit_pattern.match(t)) / len(cells),
+            "count": len(cells),
+        })
+    numeric_cols = [c for c, st in enumerate(stats) if st and st["numeric_ratio"] >= 0.6]
+    text_cols = [c for c, st in enumerate(stats) if st and st["numeric_ratio"] < 0.6]
+    if not text_cols or len(numeric_cols) < 2:
+        return None
+    concepto = max(text_cols, key=lambda c: stats[c]["avg_len"])
+    unit_cols = [c for c in text_cols if c != concepto and stats[c]["unit_ratio"] >= 0.5]
+    mapping = {"concepto": concepto}
+    if unit_cols:
+        mapping["unidad"] = unit_cols[0]
+    # Columnas numéricas a la derecha del concepto (la numeración «No.» queda a su izquierda).
+    right = [c for c in numeric_cols if c > concepto] or numeric_cols
+    right = right[-4:] if len(right) > 4 else right
+
+    def values(col):
+        return [(number_or_none(row[col]) if col < len(row) else None) for row in sample]
+
+    if len(right) >= 3:
+        best = None
+        for a in right:
+            for b in right:
+                for c in right:
+                    if len({a, b, c}) < 3:
+                        continue
+                    hits = 0
+                    for qa, pb, ic in zip(values(a), values(b), values(c)):
+                        if qa and pb and ic and abs(qa * pb - ic) <= max(1.0, 0.01 * ic):
+                            hits += 1
+                    if hits and (best is None or hits > best[0]):
+                        best = (hits, a, b, c)
+        if best:
+            mapping.update({"cantidad": best[1], "preciounitario": best[2], "importe": best[3]})
+            return mapping
+    qty_col, price_col = right[0], right[1]
+    mapping.update({"cantidad": qty_col, "preciounitario": price_col})
+    return mapping
+
+
 def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False, column_map: dict | None = None):
     """column_map: indices de columnas ya conocidos (tablas de continuacion sin
     encabezado propio dentro de un mismo documento)."""
@@ -11993,12 +12129,20 @@ def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False, 
     else:
         header_row_idx, header_index = detect_concepto_header_row(cleaned_rows)
         if header_row_idx is None:
-            header_index = {"concepto": 0, "unidad": 1, "cantidad": 2, "preciounitario": 3}
+            inferred = infer_concepto_columns(cleaned_rows)
+            if inferred:
+                header_index = inferred
+                warnings.append(
+                    "No se detectaron encabezados; las columnas (concepto, unidad, cantidad y precio) se dedujeron por su "
+                    "contenido. Revisa cada renglón."
+                )
+            else:
+                header_index = {"concepto": 0, "unidad": 1, "cantidad": 2, "preciounitario": 3}
+                warnings.append(
+                    "No se detectaron encabezados reconocibles; se asumió el orden Concepto, Unidad, Cantidad, "
+                    "Precio Unitario. Revisa cada renglón."
+                )
             data_rows = cleaned_rows
-            warnings.append(
-                "No se detectaron encabezados reconocibles; se asumió el orden Concepto, Unidad, Cantidad, "
-                "Precio Unitario. Revisa cada renglón."
-            )
         else:
             data_rows = cleaned_rows[header_row_idx + 1:]
 
@@ -12025,6 +12169,10 @@ def parse_concepto_rows_from_table(rows: list, *, low_confidence: bool = False, 
         unit = (normalize_non_empty_string(cell_value(row, "unidad")) or "").rstrip(".").strip()
         quantity = number_or_none(cell_value(row, "cantidad"))
         unit_price = number_or_none(cell_value(row, "preciounitario"))
+        if unit_price is None and quantity and "preciounitario" not in header_index:
+            stated = number_or_none(cell_value(row, "importe"))
+            if stated is not None:
+                unit_price = round(stated / quantity, 4)
 
         if not description or quantity is None or unit_price is None or quantity <= 0:
             if _is_total_row(row):
@@ -12084,7 +12232,7 @@ _TEXT_UNITS = (
     r"m2|m²|mt2|mts2|mts?\.?|m3|m³|ml|metros?(?:\s+(?:lineales?|cuadrados?|cubicos?|cúbicos?))?|"
     r"pzas?\.?|pz|piezas?|lotes?|jgos?\.?|juegos?|kgs?|kilos?|ton|toneladas?|salidas?|servicios?|visitas?|"
     r"d[ií]as?|jornales?|horas?|hrs?|rollos?|sacos?|bultos?|litros?|lts?|cubetas?|unidades?|u|gl|galones?|"
-    r"tramos?|piso|pisos|cajas?|paquetes?|viajes?|puntos?|aplicaci[oó]n(?:es)?|tablas?|hojas?|placas?"
+    r"tramos?|piso|pisos|cajas?|paquetes?|viajes?|puntos?|aplicaci[oó]n(?:es)?|tablas?|hojas?|placas?|m"
 )
 _NUM = r"\d[\d,]*(?:\.\d+)?"
 _TEXT_LINE_QTY_UNIT_PRICE = re.compile(
@@ -12394,6 +12542,45 @@ def extract_table_rows_from_xlsx_bytes(file_bytes: bytes) -> list:
     return [list(row) for row in ws.iter_rows(values_only=True)]
 
 
+def extract_concepto_rows_from_xlsx_bytes(file_bytes: bytes):
+    """Lee TODAS las hojas visibles del libro: cada hoja se interpreta por separado y,
+    si más de una trae conceptos, el nombre de la hoja pasa a ser el grupo de los
+    que no traían uno (p. ej. una hoja por departamento o por capítulo)."""
+    wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    per_sheet: list[tuple[str, list[dict]]] = []
+    warnings: list[str] = []
+    for ws in wb.worksheets:
+        if getattr(ws, "sheet_state", "visible") != "visible":
+            continue
+        rows = [list(row) for row in ws.iter_rows(values_only=True)]
+        if not any(any(str(cell or "").strip() for cell in row) for row in rows):
+            continue
+        sheet_items, sheet_warnings = parse_concepto_rows_from_table(rows)
+        if sheet_items:
+            per_sheet.append((ws.title, sheet_items))
+            warnings.extend(f"Hoja «{ws.title}»: {w}" if len(wb.worksheets) > 1 else w for w in sheet_warnings)
+    items: list[dict] = []
+    multiple = len(per_sheet) > 1
+    for title, sheet_items in per_sheet:
+        for item in sheet_items:
+            if multiple and not item.get("group"):
+                item = {**item, "group": normalize_group_name(title)}
+            items.append(item)
+    if multiple:
+        warnings.append(f"El libro tiene {len(per_sheet)} hojas con conceptos; se leyeron todas y el nombre de cada hoja quedó como grupo.")
+    if not items:
+        # Fórmulas sin valor guardado: el archivo nunca se calculó/guardó en Excel.
+        try:
+            raw = openpyxl.load_workbook(BytesIO(file_bytes), data_only=False)
+            if any(isinstance(cell.value, str) and cell.value.startswith("=") for ws in raw.worksheets for row in ws.iter_rows() for cell in row):
+                warnings.append(
+                    "El archivo tiene fórmulas sin valores guardados. Ábrelo en Excel, guárdalo y vuelve a subirlo."
+                )
+        except Exception:
+            pass
+    return items, warnings
+
+
 def extract_table_rows_from_csv_bytes(file_bytes: bytes) -> list:
     try:
         decoded = file_bytes.decode("utf-8-sig")
@@ -12554,10 +12741,9 @@ async def import_estimation_conceptos(
     if file_name.endswith(".xlsx"):
         source_type = "xlsx"
         try:
-            rows = extract_table_rows_from_xlsx_bytes(file_bytes)
+            items, warnings = extract_concepto_rows_from_xlsx_bytes(file_bytes)
         except Exception:
             raise HTTPException(status_code=400, detail="No se pudo leer el archivo de Excel (.xlsx)")
-        items, warnings = parse_concepto_rows_from_table(rows)
     elif file_name.endswith(".csv"):
         source_type = "csv"
         try:
@@ -12579,6 +12765,8 @@ async def import_estimation_conceptos(
             raise HTTPException(status_code=400, detail="No se pudo leer el archivo de Word (.docx)")
     elif file_name.endswith(".doc"):
         raise HTTPException(status_code=400, detail="El formato .doc (Word antiguo) no es compatible. Guárdalo como .docx y vuelve a subirlo")
+    elif file_name.endswith(".xls"):
+        raise HTTPException(status_code=400, detail="El formato .xls (Excel antiguo) no es compatible. Guárdalo como .xlsx y vuelve a subirlo")
     else:
         raise HTTPException(status_code=400, detail="Formato no soportado. Usa .xlsx, .csv, .pdf o .docx")
 
