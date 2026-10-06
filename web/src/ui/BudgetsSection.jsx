@@ -61,6 +61,15 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
   const [importWarnings, setImportWarnings] = useState([]);
   const [showPasteText, setShowPasteText] = useState(false);
   const [paymentsSupplier, setPaymentsSupplier] = useState(null);
+  const budgetFormRef = useRef(null);
+
+  // El formulario (nuevo o de edición) y los paneles abren debajo de la tabla de proveedores:
+  // se desplaza la pantalla hasta ellos para que no pasen desapercibidos.
+  useEffect(() => {
+    if (!showForm) return;
+    const timer = setTimeout(() => budgetFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 60);
+    return () => clearTimeout(timer);
+  }, [showForm, editingBudgetRow?.id]);
   const importFileInputRef = useRef(null);
   const groupFileInputRef = useRef(null);
   const [selectedConceptoIds, setSelectedConceptoIds] = useState(new Set());
@@ -77,6 +86,16 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
   const [viewingBudget, setViewingBudget] = useState(null);
   const [extrasBudget, setExtrasBudget] = useState(null);
   const [openingBudget, setOpeningBudget] = useState(null);
+
+  // Paneles de detalle / asignar pagos / extras / saldo inicial: abren abajo; se lleva la vista hasta ellos.
+  useEffect(() => {
+    if (!(viewingBudget || assigningBudget || extrasBudget || openingBudget)) return undefined;
+    const timer = setTimeout(
+      () => document.querySelector('.budgets-assignment-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      80,
+    );
+    return () => clearTimeout(timer);
+  }, [viewingBudget?.id, assigningBudget?.id, extrasBudget?.id, openingBudget?.id]);
 
   const projectsById = useMemo(
     () => new Map((Array.isArray(projects) ? projects : []).map((project) => [String(project?._id || ''), project])),
@@ -809,426 +828,6 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
 
       {error && <div className="small" style={{ color: '#b91c1c' }}>{error}</div>}
 
-      {showForm && (
-        <form className="card" style={{ display: 'grid', gap: 10, padding: 16 }} onSubmit={submitBudgetForm}>
-          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-            <strong>{editingBudgetRow ? 'Editar presupuesto' : 'Nuevo presupuesto'}</strong>
-            <button type="button" className="secondary" onClick={resetBudgetForm}>✕ Cancelar</button>
-          </div>
-          {!isReviewer && !editingBudgetRow && (
-            <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
-              Al crearlo, el presupuesto queda <strong>por autorizar</strong>: un admin debe autorizarlo antes de poder estimar sobre él.
-            </div>
-          )}
-          {!isReviewer && editingBudgetRow && editingBudgetRow.approvalStatus !== 'PENDIENTE' && (
-            <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
-              Este presupuesto ya está autorizado. Si cambias conceptos, precios unitarios, volúmenes, anticipo o retención, volverá a
-              <strong> autorización</strong> y no se podrá estimar hasta que un admin lo autorice de nuevo.
-            </div>
-          )}
-          {editingBudgetRow?.approvalStatus === 'PENDIENTE' && (
-            <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
-              Pendiente de autorización{editingBudgetRow.reauthRequired ? ' (modificado después de autorizado)' : ''}.
-            </div>
-          )}
-
-          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-            <div>
-              <label>Obra</label>
-              <select
-                value={form.projectId}
-                onChange={(e) => setForm((prev) => ({ ...prev, projectId: e.target.value }))}
-                disabled={Boolean(editingBudgetRow)}
-                required
-              >
-                <option value="">Selecciona obra</option>
-                {(projects || []).map((project) => (
-                  <option key={project._id} value={project._id}>{project.displayName || project.name}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label>Proveedor</label>
-              <select
-                value={form.supplierKey}
-                onChange={(e) => {
-                  const nextKey = e.target.value;
-                  const option = supplierOptions.find((row) => row.supplierKey === nextKey);
-                  setForm((prev) => ({
-                    ...prev,
-                    supplierKey: nextKey,
-                    supplierName: option?.supplierName || prev.supplierName,
-                    supplierCardCode: option?.sapCardCode || prev.supplierCardCode,
-                    businessPartner: option?.sapBusinessPartner || prev.businessPartner,
-                    vendorId: option?.vendorId || prev.vendorId,
-                  }));
-                }}
-                disabled={Boolean(editingBudgetRow)}
-                required
-              >
-                <option value="">Selecciona proveedor</option>
-                {supplierOptions.map((row) => (
-                  <option key={row.supplierKey} value={row.supplierKey}>{row.supplierName || row.supplierKey}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label>Nombre del presupuesto</label>
-              <input
-                value={form.name}
-                onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-                placeholder="Ej. Instalación hidrosanitaria"
-              />
-            </div>
-            <div>
-              <label>% Retención (fondo de garantía)</label>
-              <input
-                value={form.retentionPct}
-                onChange={(e) => setForm((prev) => ({ ...prev, retentionPct: e.target.value }))}
-                placeholder="0"
-                style={{ width: 90 }}
-              />
-            </div>
-            <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-              <input
-                type="checkbox"
-                checked={Boolean(form.advanceAmortizationEnabled)}
-                onChange={(e) => setForm((prev) => ({ ...prev, advanceAmortizationEnabled: e.target.checked }))}
-              />
-              Amortizar anticipo
-            </label>
-            <div>
-              <label>Monto de anticipo</label>
-              <input
-                value={formTotals.usesGroupAdvance ? formTotals.advanceAmount.toFixed(2) : form.advanceAmount}
-                onChange={(e) => setForm((prev) => ({ ...prev, advanceAmount: e.target.value }))}
-                placeholder="0.00"
-                style={{ width: 120 }}
-                disabled={formTotals.usesGroupAdvance}
-                title={formTotals.usesGroupAdvance ? 'Sale de los % de anticipo por grupo' : undefined}
-              />
-            </div>
-            <div>
-              <label>Nota (opcional)</label>
-              <input value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} />
-            </div>
-            {editingBudgetRow && (
-              <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(form.isActive)}
-                  onChange={(e) => setForm((prev) => ({ ...prev, isActive: e.target.checked }))}
-                />
-                Presupuesto activo
-              </label>
-            )}
-          </div>
-
-          <div>
-            <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
-              <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(form.discountEnabled)}
-                  onChange={(e) => setForm((prev) => ({ ...prev, discountEnabled: e.target.checked }))}
-                />
-                <strong>Agregar descuento al presupuesto</strong>
-              </label>
-              {form.discountEnabled && (
-                <div className="row" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: 10 }}>
-                  <div className="row" style={{ gap: 12, alignItems: 'center' }}>
-                    <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                      <input type="radio" name="discount-mode" checked={form.discountMode === 'pct'} onChange={() => setForm((prev) => ({ ...prev, discountMode: 'pct', discountValue: '' }))} />
-                      Porcentaje (%)
-                    </label>
-                    <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                      <input type="radio" name="discount-mode" checked={form.discountMode === 'amount'} onChange={() => setForm((prev) => ({ ...prev, discountMode: 'amount', discountValue: '' }))} />
-                      Cantidad cerrada ($)
-                    </label>
-                  </div>
-                  <div>
-                    <label>{form.discountMode === 'amount' ? 'Descuento ($)' : 'Descuento (%)'}</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={form.discountValue}
-                      onChange={(e) => setForm((prev) => ({ ...prev, discountValue: e.target.value }))}
-                      placeholder={form.discountMode === 'amount' ? '0.00' : '0'}
-                      style={{ width: 150, borderColor: form.discountValue !== '' && !formDiscount.applies ? '#b91c1c' : undefined }}
-                    />
-                  </div>
-                  <div className="small" style={{ display: 'grid', gap: 2, minWidth: 260 }}>
-                    <div>Subtotal sin descuento: <strong>{formatCurrency(formDiscount.subtotal)}</strong></div>
-                    <div>
-                      Descuento: <strong>{formatCurrency(formDiscount.amount)}</strong>
-                      {formDiscount.applies && <> = <strong>{formatPct(formDiscount.pct)}</strong>{form.discountMode === 'amount' ? ' (se aplica a todos los precios)' : ''}</>}
-                    </div>
-                    <div>Total con descuento: <strong>{formatCurrency(formDiscount.subtotal - formDiscount.amount)}</strong></div>
-                  </div>
-                  {form.discountValue !== '' && !formDiscount.applies && (
-                    <div className="small" style={{ color: '#b91c1c' }}>El descuento debe ser mayor a 0 y menor al subtotal (o a 100 %).</div>
-                  )}
-                  {editingBudgetRow && Number(editingBudgetRow.estimationsCount) > 0 && (
-                    <div className="small" style={{ color: '#92400e', flexBasis: '100%' }}>
-                      Este presupuesto ya tiene estimaciones: el descuento solo cambia los precios de las estimaciones nuevas; las ya capturadas conservan sus montos.
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
-              <label>Conceptos</label>
-              <div className="row" style={{ gap: 6 }}>
-                <input
-                  ref={importFileInputRef}
-                  type="file"
-                  accept=".xlsx,.csv,.pdf,.docx"
-                  onChange={handleImportConceptosFile}
-                  style={{ display: 'none' }}
-                />
-                <button
-                  type="button"
-                  className="btn-outline"
-                  onClick={() => importFileInputRef.current?.click()}
-                  disabled={importingConceptos}
-                >
-                  {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
-                </button>
-                <button type="button" className="btn-outline" onClick={() => setShowPasteText((prev) => !prev)}>
-                  📋 Pegar texto
-                </button>
-                <button type="button" onClick={addConceptoRow}>+ Agregar concepto</button>
-              </div>
-            </div>
-            {showPasteText && (
-              <div style={{ marginBottom: 6 }}>
-                <PasteTextImport onResult={(result) => { setError(''); applyImportResult(result); }} onClose={() => setShowPasteText(false)} />
-              </div>
-            )}
-            {importWarnings.length > 0 && (
-              <div className="small" style={{ color: 'var(--gray-600)', background: 'var(--gray-100)', borderRadius: 6, padding: 8, marginBottom: 6 }}>
-                {importWarnings.map((warning, idx) => (
-                  <div key={idx}>⚠ {warning}</div>
-                ))}
-              </div>
-            )}
-            <div
-              className="row"
-              style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: 10, margin: '12px 0 8px' }}
-            >
-              <div>
-                <label>Agrupar los conceptos marcados en</label>
-                <input
-                  list="budget-group-options"
-                  value={bulkGroupName}
-                  onChange={(e) => setBulkGroupName(e.target.value)}
-                  placeholder="Ej. BAJADAS"
-                  style={{ width: 200 }}
-                />
-              </div>
-              <button type="button" className="btn-outline" onClick={applyBulkGroup}>Asignar grupo</button>
-              <button
-                type="button"
-                className="btn-outline"
-                onClick={() => setSelectedConceptoIds(
-                  selectedConceptoIds.size === form.lineItems.length ? new Set() : new Set(form.lineItems.map((row) => row.id)),
-                )}
-              >
-                {selectedConceptoIds.size === form.lineItems.length ? 'Quitar marcas' : 'Marcar todos'}
-              </button>
-              <div style={{ flex: 1 }} />
-              <input ref={groupFileInputRef} type="file" accept=".xlsx,.csv,.pdf,.docx" onChange={handleGroupFromFile} style={{ display: 'none' }} />
-              <button
-                type="button"
-                className="btn-outline"
-                onClick={() => groupFileInputRef.current?.click()}
-                disabled={groupingFromFile}
-                title="Lee un Excel/Word con los grupos y se los pone a los conceptos que ya existen, sin agregar ni quitar conceptos"
-              >
-                {groupingFromFile ? 'Leyendo...' : '⭱ Agrupar desde archivo'}
-              </button>
-            </div>
-            {groupingMessage && <div className="small" style={{ marginBottom: 6 }}>{groupingMessage}</div>}
-            <div style={{ overflowX: 'auto' }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>Grupo</th>
-                    <th>Descripción</th>
-                    <th>Unidad</th>
-                    <th>Cantidad</th>
-                    <th>Precio unitario</th>
-                    {discountPct > 0 && <th>Precio con descuento ({formatPct(discountPct)})</th>}
-                    <th>Importe</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {form.lineItems.map((row, index) => {
-                    const hasHistory = conceptoIdsWithHistory.has(row.id);
-                    return (
-                      <tr key={row.id}>
-                        <td>
-                          <input
-                            type="checkbox"
-                            checked={selectedConceptoIds.has(row.id)}
-                            onChange={() => toggleSelectConcepto(row.id)}
-                            aria-label="Marcar concepto"
-                          />
-                        </td>
-                        <td>
-                          <input
-                            list="budget-group-options"
-                            value={row.group || ''}
-                            onChange={(e) => updateConceptoRow(index, { group: e.target.value })}
-                            placeholder="Sin grupo"
-                            style={{ width: 150 }}
-                          />
-                        </td>
-                        <td>
-                          <input
-                            value={row.description}
-                            onChange={(e) => updateConceptoRow(index, { description: e.target.value })}
-                            required
-                          />
-                          {row.isExtra && (
-                            <span className="small" style={{ marginLeft: 6, color: '#92400e' }} title={row.extraNote || undefined}>
-                              {row.extraKind === 'adicional' ? 'adicional' : 'extra'}
-                            </span>
-                          )}
-                        </td>
-                        <td>
-                          <UnitSelect value={row.unit} onChange={(unit) => updateConceptoRow(index, { unit })} width={130} />
-                        </td>
-                        <td>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={row.quantity}
-                            onChange={(e) => updateConceptoRow(index, { quantity: e.target.value })}
-                            style={{ width: 100 }}
-                            required
-                          />
-                        </td>
-                        <td>
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={row.unitPrice}
-                            onChange={(e) => updateConceptoRow(index, { unitPrice: e.target.value })}
-                            style={{ width: 110 }}
-                            required
-                          />
-                        </td>
-                        {discountPct > 0 && (
-                          <td>{row.isExtra ? <span className="small">sin descuento</span> : <strong>{formatCurrency(netUnitPrice(row, discountPct))}</strong>}</td>
-                        )}
-                        <td>{formatCurrency(computeLineItemAmount(row, discountPct))}</td>
-                        <td>
-                          <button
-                            type="button"
-                            className="secondary"
-                            onClick={() => removeConceptoRow(index)}
-                            disabled={hasHistory || form.lineItems.length <= 1}
-                            title={hasHistory ? 'No se puede quitar: ya tiene avance registrado en alguna estimación' : undefined}
-                          >
-                            ✕
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            <datalist id="budget-group-options">
-              {listFormGroups(form.lineItems, discountPct).filter((g) => g.name).map((g) => (
-                <option key={g.name} value={g.name} />
-              ))}
-            </datalist>
-            {listFormGroups(form.lineItems, discountPct).some((g) => g.name) && (
-              <div style={{ marginTop: 10 }}>
-                <label>Anticipo por grupo</label>
-                <div className="small" style={{ marginBottom: 4 }}>
-                  Cada grupo amortiza su propio % de anticipo al estimar. Si lo dejas en 0 el grupo no amortiza (por ejemplo, los extras).
-                </div>
-                <div style={{ overflowX: 'auto' }}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Grupo</th>
-                        <th>Conceptos</th>
-                        <th>Presupuesto</th>
-                        <th>% anticipo</th>
-                        <th>Anticipo</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {listFormGroups(form.lineItems, discountPct).map((group) => {
-                        const pct = Number((form.groupAdvancePcts || {})[group.name]) || 0;
-                        return (
-                          <tr key={group.name || '__general__'}>
-                            <td>{groupLabel(group.name)}</td>
-                            <td>{group.count}</td>
-                            <td>{formatCurrency(group.amount)}</td>
-                            <td>
-                              <input
-                                type="number"
-                                min="0"
-                                max="100"
-                                step="0.01"
-                                value={(form.groupAdvancePcts || {})[group.name] ?? ''}
-                                onChange={(e) => setForm((prev) => ({
-                                  ...prev,
-                                  groupAdvancePcts: { ...(prev.groupAdvancePcts || {}), [group.name]: e.target.value },
-                                }))}
-                                style={{ width: 90 }}
-                              />
-                            </td>
-                            <td>{formatCurrency((group.amount * pct) / 100)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-            <div className="row" style={{ gap: 16, fontSize: 13, marginTop: 4 }}>
-              {discountPct > 0 && (
-                <>
-                  <div><strong>Subtotal:</strong> {formatCurrency(formDiscount.subtotal)}</div>
-                  <div><strong>Descuento ({formatPct(discountPct)}):</strong> −{formatCurrency(formDiscount.amount)}</div>
-                </>
-              )}
-              <div><strong>Total contratado:</strong> {formatCurrency(formTotals.totalContractedAmount)}</div>
-              {(Boolean(form.advanceAmortizationEnabled) || formTotals.usesGroupAdvance) && (
-                <div><strong>% Anticipo (calculado):</strong> {formatPct(formTotals.advancePct)}</div>
-              )}
-              {formTotals.usesGroupAdvance && (
-                <div><strong>Anticipo previsto:</strong> {formatCurrency(formTotals.advanceAmount)}</div>
-              )}
-            </div>
-          </div>
-
-          <div className="row" style={{ gap: 8 }}>
-            <button type="submit" disabled={saving}>
-              {saving ? 'Guardando...' : editingBudgetRow ? 'Guardar cambios' : 'Crear presupuesto'}
-            </button>
-            {editingBudgetRow && isReviewer && (
-              <button type="button" className="secondary" onClick={deleteCurrentBudget} disabled={saving} style={{ color: '#b91c1c' }}>
-                Eliminar
-              </button>
-            )}
-            <button type="button" className="secondary" onClick={resetBudgetForm}>Cancelar</button>
-          </div>
-        </form>
-      )}
-
       <div className="card budgets-card" style={{ overflow: 'hidden' }}>
         {/* Toolbar */}
         <div className="card-header">
@@ -1697,6 +1296,426 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           />
         )}
       </div>
+
+      {showForm && (
+        <form ref={budgetFormRef} className="card" style={{ display: 'grid', gap: 10, padding: 16 }} onSubmit={submitBudgetForm}>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <strong>{editingBudgetRow ? 'Editar presupuesto' : 'Nuevo presupuesto'}</strong>
+            <button type="button" className="secondary" onClick={resetBudgetForm}>✕ Cancelar</button>
+          </div>
+          {!isReviewer && !editingBudgetRow && (
+            <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
+              Al crearlo, el presupuesto queda <strong>por autorizar</strong>: un admin debe autorizarlo antes de poder estimar sobre él.
+            </div>
+          )}
+          {!isReviewer && editingBudgetRow && editingBudgetRow.approvalStatus !== 'PENDIENTE' && (
+            <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
+              Este presupuesto ya está autorizado. Si cambias conceptos, precios unitarios, volúmenes, anticipo o retención, volverá a
+              <strong> autorización</strong> y no se podrá estimar hasta que un admin lo autorice de nuevo.
+            </div>
+          )}
+          {editingBudgetRow?.approvalStatus === 'PENDIENTE' && (
+            <div className="small" style={{ background: '#fef3c7', color: '#92400e', borderRadius: 6, padding: 10 }}>
+              Pendiente de autorización{editingBudgetRow.reauthRequired ? ' (modificado después de autorizado)' : ''}.
+            </div>
+          )}
+
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <div>
+              <label>Obra</label>
+              <select
+                value={form.projectId}
+                onChange={(e) => setForm((prev) => ({ ...prev, projectId: e.target.value }))}
+                disabled={Boolean(editingBudgetRow)}
+                required
+              >
+                <option value="">Selecciona obra</option>
+                {(projects || []).map((project) => (
+                  <option key={project._id} value={project._id}>{project.displayName || project.name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label>Proveedor</label>
+              <select
+                value={form.supplierKey}
+                onChange={(e) => {
+                  const nextKey = e.target.value;
+                  const option = supplierOptions.find((row) => row.supplierKey === nextKey);
+                  setForm((prev) => ({
+                    ...prev,
+                    supplierKey: nextKey,
+                    supplierName: option?.supplierName || prev.supplierName,
+                    supplierCardCode: option?.sapCardCode || prev.supplierCardCode,
+                    businessPartner: option?.sapBusinessPartner || prev.businessPartner,
+                    vendorId: option?.vendorId || prev.vendorId,
+                  }));
+                }}
+                disabled={Boolean(editingBudgetRow)}
+                required
+              >
+                <option value="">Selecciona proveedor</option>
+                {supplierOptions.map((row) => (
+                  <option key={row.supplierKey} value={row.supplierKey}>{row.supplierName || row.supplierKey}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label>Nombre del presupuesto</label>
+              <input
+                value={form.name}
+                onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="Ej. Instalación hidrosanitaria"
+              />
+            </div>
+            <div>
+              <label>% Retención (fondo de garantía)</label>
+              <input
+                value={form.retentionPct}
+                onChange={(e) => setForm((prev) => ({ ...prev, retentionPct: e.target.value }))}
+                placeholder="0"
+                style={{ width: 90 }}
+              />
+            </div>
+            <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={Boolean(form.advanceAmortizationEnabled)}
+                onChange={(e) => setForm((prev) => ({ ...prev, advanceAmortizationEnabled: e.target.checked }))}
+              />
+              Amortizar anticipo
+            </label>
+            <div>
+              <label>Monto de anticipo</label>
+              <input
+                value={formTotals.usesGroupAdvance ? formTotals.advanceAmount.toFixed(2) : form.advanceAmount}
+                onChange={(e) => setForm((prev) => ({ ...prev, advanceAmount: e.target.value }))}
+                placeholder="0.00"
+                style={{ width: 120 }}
+                disabled={formTotals.usesGroupAdvance}
+                title={formTotals.usesGroupAdvance ? 'Sale de los % de anticipo por grupo' : undefined}
+              />
+            </div>
+            <div>
+              <label>Nota (opcional)</label>
+              <input value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} />
+            </div>
+            {editingBudgetRow && (
+              <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.isActive)}
+                  onChange={(e) => setForm((prev) => ({ ...prev, isActive: e.target.checked }))}
+                />
+                Presupuesto activo
+              </label>
+            )}
+          </div>
+
+          <div>
+            <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
+              <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.discountEnabled)}
+                  onChange={(e) => setForm((prev) => ({ ...prev, discountEnabled: e.target.checked }))}
+                />
+                <strong>Agregar descuento al presupuesto</strong>
+              </label>
+              {form.discountEnabled && (
+                <div className="row" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: 10 }}>
+                  <div className="row" style={{ gap: 12, alignItems: 'center' }}>
+                    <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <input type="radio" name="discount-mode" checked={form.discountMode === 'pct'} onChange={() => setForm((prev) => ({ ...prev, discountMode: 'pct', discountValue: '' }))} />
+                      Porcentaje (%)
+                    </label>
+                    <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <input type="radio" name="discount-mode" checked={form.discountMode === 'amount'} onChange={() => setForm((prev) => ({ ...prev, discountMode: 'amount', discountValue: '' }))} />
+                      Cantidad cerrada ($)
+                    </label>
+                  </div>
+                  <div>
+                    <label>{form.discountMode === 'amount' ? 'Descuento ($)' : 'Descuento (%)'}</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={form.discountValue}
+                      onChange={(e) => setForm((prev) => ({ ...prev, discountValue: e.target.value }))}
+                      placeholder={form.discountMode === 'amount' ? '0.00' : '0'}
+                      style={{ width: 150, borderColor: form.discountValue !== '' && !formDiscount.applies ? '#b91c1c' : undefined }}
+                    />
+                  </div>
+                  <div className="small" style={{ display: 'grid', gap: 2, minWidth: 260 }}>
+                    <div>Subtotal sin descuento: <strong>{formatCurrency(formDiscount.subtotal)}</strong></div>
+                    <div>
+                      Descuento: <strong>{formatCurrency(formDiscount.amount)}</strong>
+                      {formDiscount.applies && <> = <strong>{formatPct(formDiscount.pct)}</strong>{form.discountMode === 'amount' ? ' (se aplica a todos los precios)' : ''}</>}
+                    </div>
+                    <div>Total con descuento: <strong>{formatCurrency(formDiscount.subtotal - formDiscount.amount)}</strong></div>
+                  </div>
+                  {form.discountValue !== '' && !formDiscount.applies && (
+                    <div className="small" style={{ color: '#b91c1c' }}>El descuento debe ser mayor a 0 y menor al subtotal (o a 100 %).</div>
+                  )}
+                  {editingBudgetRow && Number(editingBudgetRow.estimationsCount) > 0 && (
+                    <div className="small" style={{ color: '#92400e', flexBasis: '100%' }}>
+                      Este presupuesto ya tiene estimaciones: el descuento solo cambia los precios de las estimaciones nuevas; las ya capturadas conservan sus montos.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+              <label>Conceptos</label>
+              <div className="row" style={{ gap: 6 }}>
+                <input
+                  ref={importFileInputRef}
+                  type="file"
+                  accept=".xlsx,.csv,.pdf,.docx"
+                  onChange={handleImportConceptosFile}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  type="button"
+                  className="btn-outline"
+                  onClick={() => importFileInputRef.current?.click()}
+                  disabled={importingConceptos}
+                >
+                  {importingConceptos ? 'Importando...' : '⭱ Importar Excel/CSV/PDF/Word'}
+                </button>
+                <button type="button" className="btn-outline" onClick={() => setShowPasteText((prev) => !prev)}>
+                  📋 Pegar texto
+                </button>
+                <button type="button" onClick={addConceptoRow}>+ Agregar concepto</button>
+              </div>
+            </div>
+            {showPasteText && (
+              <div style={{ marginBottom: 6 }}>
+                <PasteTextImport onResult={(result) => { setError(''); applyImportResult(result); }} onClose={() => setShowPasteText(false)} />
+              </div>
+            )}
+            {importWarnings.length > 0 && (
+              <div className="small" style={{ color: 'var(--gray-600)', background: 'var(--gray-100)', borderRadius: 6, padding: 8, marginBottom: 6 }}>
+                {importWarnings.map((warning, idx) => (
+                  <div key={idx}>⚠ {warning}</div>
+                ))}
+              </div>
+            )}
+            <div
+              className="row"
+              style={{ gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: 10, margin: '12px 0 8px' }}
+            >
+              <div>
+                <label>Agrupar los conceptos marcados en</label>
+                <input
+                  list="budget-group-options"
+                  value={bulkGroupName}
+                  onChange={(e) => setBulkGroupName(e.target.value)}
+                  placeholder="Ej. BAJADAS"
+                  style={{ width: 200 }}
+                />
+              </div>
+              <button type="button" className="btn-outline" onClick={applyBulkGroup}>Asignar grupo</button>
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={() => setSelectedConceptoIds(
+                  selectedConceptoIds.size === form.lineItems.length ? new Set() : new Set(form.lineItems.map((row) => row.id)),
+                )}
+              >
+                {selectedConceptoIds.size === form.lineItems.length ? 'Quitar marcas' : 'Marcar todos'}
+              </button>
+              <div style={{ flex: 1 }} />
+              <input ref={groupFileInputRef} type="file" accept=".xlsx,.csv,.pdf,.docx" onChange={handleGroupFromFile} style={{ display: 'none' }} />
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={() => groupFileInputRef.current?.click()}
+                disabled={groupingFromFile}
+                title="Lee un Excel/Word con los grupos y se los pone a los conceptos que ya existen, sin agregar ni quitar conceptos"
+              >
+                {groupingFromFile ? 'Leyendo...' : '⭱ Agrupar desde archivo'}
+              </button>
+            </div>
+            {groupingMessage && <div className="small" style={{ marginBottom: 6 }}>{groupingMessage}</div>}
+            <div style={{ overflowX: 'auto' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th>Grupo</th>
+                    <th>Descripción</th>
+                    <th>Unidad</th>
+                    <th>Cantidad</th>
+                    <th>Precio unitario</th>
+                    {discountPct > 0 && <th>Precio con descuento ({formatPct(discountPct)})</th>}
+                    <th>Importe</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {form.lineItems.map((row, index) => {
+                    const hasHistory = conceptoIdsWithHistory.has(row.id);
+                    return (
+                      <tr key={row.id}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={selectedConceptoIds.has(row.id)}
+                            onChange={() => toggleSelectConcepto(row.id)}
+                            aria-label="Marcar concepto"
+                          />
+                        </td>
+                        <td>
+                          <input
+                            list="budget-group-options"
+                            value={row.group || ''}
+                            onChange={(e) => updateConceptoRow(index, { group: e.target.value })}
+                            placeholder="Sin grupo"
+                            style={{ width: 150 }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            value={row.description}
+                            onChange={(e) => updateConceptoRow(index, { description: e.target.value })}
+                            required
+                          />
+                          {row.isExtra && (
+                            <span className="small" style={{ marginLeft: 6, color: '#92400e' }} title={row.extraNote || undefined}>
+                              {row.extraKind === 'adicional' ? 'adicional' : 'extra'}
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <UnitSelect value={row.unit} onChange={(unit) => updateConceptoRow(index, { unit })} width={130} />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={row.quantity}
+                            onChange={(e) => updateConceptoRow(index, { quantity: e.target.value })}
+                            style={{ width: 100 }}
+                            required
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={row.unitPrice}
+                            onChange={(e) => updateConceptoRow(index, { unitPrice: e.target.value })}
+                            style={{ width: 110 }}
+                            required
+                          />
+                        </td>
+                        {discountPct > 0 && (
+                          <td>{row.isExtra ? <span className="small">sin descuento</span> : <strong>{formatCurrency(netUnitPrice(row, discountPct))}</strong>}</td>
+                        )}
+                        <td>{formatCurrency(computeLineItemAmount(row, discountPct))}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => removeConceptoRow(index)}
+                            disabled={hasHistory || form.lineItems.length <= 1}
+                            title={hasHistory ? 'No se puede quitar: ya tiene avance registrado en alguna estimación' : undefined}
+                          >
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <datalist id="budget-group-options">
+              {listFormGroups(form.lineItems, discountPct).filter((g) => g.name).map((g) => (
+                <option key={g.name} value={g.name} />
+              ))}
+            </datalist>
+            {listFormGroups(form.lineItems, discountPct).some((g) => g.name) && (
+              <div style={{ marginTop: 10 }}>
+                <label>Anticipo por grupo</label>
+                <div className="small" style={{ marginBottom: 4 }}>
+                  Cada grupo amortiza su propio % de anticipo al estimar. Si lo dejas en 0 el grupo no amortiza (por ejemplo, los extras).
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Grupo</th>
+                        <th>Conceptos</th>
+                        <th>Presupuesto</th>
+                        <th>% anticipo</th>
+                        <th>Anticipo</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {listFormGroups(form.lineItems, discountPct).map((group) => {
+                        const pct = Number((form.groupAdvancePcts || {})[group.name]) || 0;
+                        return (
+                          <tr key={group.name || '__general__'}>
+                            <td>{groupLabel(group.name)}</td>
+                            <td>{group.count}</td>
+                            <td>{formatCurrency(group.amount)}</td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="0.01"
+                                value={(form.groupAdvancePcts || {})[group.name] ?? ''}
+                                onChange={(e) => setForm((prev) => ({
+                                  ...prev,
+                                  groupAdvancePcts: { ...(prev.groupAdvancePcts || {}), [group.name]: e.target.value },
+                                }))}
+                                style={{ width: 90 }}
+                              />
+                            </td>
+                            <td>{formatCurrency((group.amount * pct) / 100)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            <div className="row" style={{ gap: 16, fontSize: 13, marginTop: 4 }}>
+              {discountPct > 0 && (
+                <>
+                  <div><strong>Subtotal:</strong> {formatCurrency(formDiscount.subtotal)}</div>
+                  <div><strong>Descuento ({formatPct(discountPct)}):</strong> −{formatCurrency(formDiscount.amount)}</div>
+                </>
+              )}
+              <div><strong>Total contratado:</strong> {formatCurrency(formTotals.totalContractedAmount)}</div>
+              {(Boolean(form.advanceAmortizationEnabled) || formTotals.usesGroupAdvance) && (
+                <div><strong>% Anticipo (calculado):</strong> {formatPct(formTotals.advancePct)}</div>
+              )}
+              {formTotals.usesGroupAdvance && (
+                <div><strong>Anticipo previsto:</strong> {formatCurrency(formTotals.advanceAmount)}</div>
+              )}
+            </div>
+          </div>
+
+          <div className="row" style={{ gap: 8 }}>
+            <button type="submit" disabled={saving}>
+              {saving ? 'Guardando...' : editingBudgetRow ? 'Guardar cambios' : 'Crear presupuesto'}
+            </button>
+            {editingBudgetRow && isReviewer && (
+              <button type="button" className="secondary" onClick={deleteCurrentBudget} disabled={saving} style={{ color: '#b91c1c' }}>
+                Eliminar
+              </button>
+            )}
+            <button type="button" className="secondary" onClick={resetBudgetForm}>Cancelar</button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }
