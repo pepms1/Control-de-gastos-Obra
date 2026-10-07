@@ -12241,12 +12241,12 @@ def approve_estimation(
         raise HTTPException(status_code=400, detail="El monto autorizado no puede exceder lo solicitado por el contratista")
     note = normalize_non_empty_string((payload or {}).get("authorizationNote")) or ""
     difference = round(authorized - calculated, 2)
-    # Se pide motivo al autorizar menos de lo solicitado o más de lo que marca el avance.
-    needs_note = abs(authorized - baseline) >= 0.01 or authorized - calculated >= 0.01
+    # Solo se pide motivo al autorizar más de lo que marca el avance; autorizar menos no lo requiere.
+    needs_note = authorized - calculated >= 0.01
     if needs_note and not note:
         raise HTTPException(
             status_code=400,
-            detail="authorizationNote is required when the authorized amount is below the requested amount or above the calculated total",
+            detail="authorizationNote is required when the authorized amount is above the calculated total",
         )
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -12843,11 +12843,11 @@ def approve_supplier_estimation(batch_id: str, payload: dict, user: dict = Depen
         raise HTTPException(status_code=400, detail="El monto autorizado no puede exceder lo solicitado por el contratista")
     note = normalize_non_empty_string((payload or {}).get("authorizationNote")) or ""
     difference = round(authorized - calculated, 2)
-    needs_note = abs(authorized - baseline) >= 0.01 or authorized - calculated >= 0.01
+    needs_note = authorized - calculated >= 0.01
     if needs_note and not note:
         raise HTTPException(
             status_code=400,
-            detail="authorizationNote is required when the authorized amount is below the requested amount or above the calculated total",
+            detail="authorizationNote is required when the authorized amount is above the calculated total",
         )
 
     # El monto total autorizado se reparte entre los presupuestos en proporcion a lo calculado.

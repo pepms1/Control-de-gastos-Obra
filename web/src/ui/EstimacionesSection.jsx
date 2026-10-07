@@ -378,8 +378,8 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       setError('El monto autorizado no puede exceder lo solicitado por el contratista.');
       return;
     }
-    if ((Math.abs(amount - baseline) >= 0.01 || amount - calculated >= 0.01) && !authorizationNote.trim()) {
-      setError(amount < baseline ? 'Indica el motivo por el que se autoriza menos de lo solicitado.' : 'Indica el motivo por el que se autoriza más de lo que marca el avance.');
+    if (amount - calculated >= 0.01 && !authorizationNote.trim()) {
+      setError('Indica el motivo por el que se autoriza más de lo que marca el avance.');
       return;
     }
     runAction(api.approveSupplierEstimation, batch.id, { authorizedAmount: amount, authorizationNote: authorizationNote.trim() });
