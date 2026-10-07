@@ -24,6 +24,8 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
       : (pendingPlannedAdvance > 0 ? pendingPlannedAdvance.toFixed(2) : ''),
   );
   const [advancePct, setAdvancePct] = useState('');
+  // La sección de anticipo va contraída salvo que esta estimación entregue anticipo.
+  const [showAdvance, setShowAdvance] = useState(Boolean(Number(advance) > 0));
   const advanceAmount = Math.max(Number(advance) || 0, 0);
   const groupsEnabled = hasNamedGroups(budget);
 
@@ -113,38 +115,56 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
         </div>
       )}
 
-      <div style={{ background: 'var(--gray-100)', borderRadius: 6, padding: 8, display: 'grid', gap: 6 }}>
-        <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <div>
-            <label>Anticipo a entregar con esta estimación ($)</label>
-            <input type="number" min="0" step="0.01" value={advance} onChange={(e) => { setAdvance(e.target.value); setAdvancePct(''); }} placeholder="0.00" style={{ width: 180 }} />
+      {showAdvance ? (
+        <div style={{ background: 'var(--gray-100)', borderRadius: 6, padding: 8, display: 'grid', gap: 6 }}>
+          <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div>
+              <label>Anticipo a entregar con esta estimación ($)</label>
+              <input type="number" min="0" step="0.01" value={advance} onChange={(e) => { setAdvance(e.target.value); setAdvancePct(''); }} placeholder="0.00" style={{ width: 180 }} />
+            </div>
+            <div>
+              <label>o % del presupuesto</label>
+              <input type="number" min="0" max="100" step="0.01" value={advancePct} onChange={(e) => setAdvanceFromPct(e.target.value)} style={{ width: 110 }} />
+            </div>
+            {isReviewer && Number(budget.estimationsCount) === 0 && onOpenOpening && (
+              <button type="button" className="secondary" onClick={() => onOpenOpening(budget.id)}>
+                Registrar anticipo / pagos ya entregados…
+              </button>
+            )}
           </div>
-          <div>
-            <label>o % del presupuesto</label>
-            <input type="number" min="0" max="100" step="0.01" value={advancePct} onChange={(e) => setAdvanceFromPct(e.target.value)} style={{ width: 110 }} />
+          <div className="small" style={{ color: 'var(--gray-600)' }}>
+            {budget.supplierUsesPriorPool
+              ? (Number(budget.advanceDeliveredAmount) > 0
+                ? <>Anticipo entregado: <strong>{formatCurrency(budget.advanceDeliveredAmount)}</strong> · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}. </>
+                : <>Sin anticipo entregado{Number(budget.advanceAmount) > 0 ? ` (previsto ${formatCurrency(budget.advanceAmount)})` : ''}: no se amortiza nada hasta entregarlo. </>)
+              : (Number(budget.advanceAmount) > 0 && budget.advanceAmortizationEnabled
+                ? <>Anticipo registrado: <strong>{formatCurrency(budget.advanceAmount)}</strong> · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}. </>
+                : <>Este presupuesto aún no tiene anticipo. </>)}
+            {!savedPart && pendingPlannedAdvance > 0 && (
+              <><strong>Anticipo previsto en el presupuesto: {formatCurrency(pendingPlannedAdvance)}</strong>; se propone entregarlo en esta estimación. Bórralo o cámbialo si no corresponde. </>
+            )}
+            Si esta estimación entrega anticipo, se autoriza y se paga como parte de la estimación y desde la aprobación se amortiza en las siguientes (sin retención).
+            Puedes entregar solo anticipo, sin avance.
           </div>
-          {isReviewer && Number(budget.estimationsCount) === 0 && onOpenOpening && (
-            <button type="button" className="secondary" onClick={() => onOpenOpening(budget.id)}>
-              Registrar anticipo / pagos ya entregados…
-            </button>
-          )}
+          {advanceAmount === 0 && (
+          <div>
+            <button type="button" className="secondary" onClick={() => setShowAdvance(false)}>Esta estimación no entrega anticipo (contraer)</button>
+          </div>
+        )}
         </div>
-        <div className="small" style={{ color: 'var(--gray-600)' }}>
-          {budget.supplierUsesPriorPool
-            ? (Number(budget.advanceDeliveredAmount) > 0
-              ? <>Anticipo entregado: <strong>{formatCurrency(budget.advanceDeliveredAmount)}</strong> · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}. </>
-              : <>Sin anticipo entregado{Number(budget.advanceAmount) > 0 ? ` (previsto ${formatCurrency(budget.advanceAmount)})` : ''}: no se amortiza nada hasta entregarlo. </>)
-            : (Number(budget.advanceAmount) > 0 && budget.advanceAmortizationEnabled
-              ? <>Anticipo registrado: <strong>{formatCurrency(budget.advanceAmount)}</strong> · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}. </>
-              : <>Este presupuesto aún no tiene anticipo. </>)}
-          {!savedPart && pendingPlannedAdvance > 0 && (
-            <><strong>Anticipo previsto en el presupuesto: {formatCurrency(pendingPlannedAdvance)}</strong>; se propone entregarlo en esta estimación. Bórralo o cámbialo si no corresponde. </>
-          )}
-          Si esta estimación entrega anticipo, se autoriza y se paga como parte de la estimación y desde la aprobación se amortiza en las siguientes (sin retención).
-          Puedes entregar solo anticipo, sin avance.
+      ) : (
+        <div className="row" style={{ gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button type="button" className="btn-outline" onClick={() => setShowAdvance(true)}>+ Entregar anticipo con esta estimación</button>
+          <span className="small" style={{ color: 'var(--gray-600)' }}>
+            {budget.supplierUsesPriorPool
+              ? (Number(budget.advanceDeliveredAmount) > 0 ? <>Anticipo entregado {formatCurrency(budget.advanceDeliveredAmount)} · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}</> : 'Sin anticipo entregado')
+              : (Number(budget.advanceAmount) > 0 && budget.advanceAmortizationEnabled ? <>Anticipo registrado {formatCurrency(budget.advanceAmount)} · por amortizar {formatCurrency(budget.remainingAdvanceBalance)}</> : 'Sin anticipo')}
+          </span>
         </div>
-      </div>
+      )}
 
+      <div style={{ border: '1px solid var(--gray-300, #d1d5db)', borderLeft: '4px solid var(--primary, #1e1b4b)', borderRadius: 8, padding: 14, display: 'grid', gap: 10, background: '#fff' }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>Avance de esta estimación</div>
       <div className="row" style={{ gap: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         <strong style={{ fontSize: 13 }}>¿Cómo capturas el avance?</strong>
         {[
@@ -359,6 +379,7 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
           </table>
         </div>
       )}
+      </div>
 
       <div className="small" style={{ textAlign: 'right' }}>
         Subtotal {formatCurrency(preview.periodSubtotal)} · retención −{formatCurrency(preview.retentionAmount)}
