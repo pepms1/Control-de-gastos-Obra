@@ -445,3 +445,43 @@ class MultiSheetWorkbookTests(unittest.TestCase):
         items, warnings = main.extract_concepto_rows_from_xlsx_bytes(formulas)
         self.assertEqual(items, [])
         self.assertTrue(any('fórmulas' in w for w in warnings))
+
+
+class DuplicatedTotalRowTests(unittest.TestCase):
+    def _items(self, *amounts):
+        return [{'description': f'C{i}', 'unit': '', 'quantity': 1.0, 'unitPrice': float(a)} for i, a in enumerate(amounts)]
+
+    def test_total_row_equal_to_the_sum_of_the_others_is_dropped_with_a_warning(self):
+        items, warnings = main.drop_duplicated_total_item(self._items(1000, 400, 350, 250))
+        self.assertEqual([i['description'] for i in items], ['C1', 'C2', 'C3'])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('total del presupuesto', warnings[0])
+
+    def test_total_row_in_the_middle_or_end_is_also_found(self):
+        items, _ = main.drop_duplicated_total_item(self._items(400, 350, 250, 1000))
+        self.assertEqual(len(items), 3)
+
+    def test_nothing_is_dropped_when_no_row_matches_the_rest(self):
+        items, warnings = main.drop_duplicated_total_item(self._items(1000, 400, 350, 300))
+        self.assertEqual(len(items), 4)
+        self.assertEqual(warnings, [])
+
+    def test_two_equal_rows_are_not_mistaken_for_a_total(self):
+        items, warnings = main.drop_duplicated_total_item(self._items(500, 500))
+        self.assertEqual(len(items), 2)
+        self.assertEqual(warnings, [])
+
+    def test_the_kablan_layout_with_total_as_first_row(self):
+        rows = [
+            ['ITEM', 'CÓDIGO', 'CONCEPTO', 'UN.', 'CANTIDAD', 'P.U.', 'IMPORTE'],
+            [None, None, 'INSTALACIÓN ELÉCTRICA 5 DEPARTAMENTOS', None, None, None, None],
+            [1, 1.1, 'INSTALACIÓN ELÉCTRICA', None, 1, 600, 600],
+            [3, '1.1.1.1', 'ALUMBRADO Depto 01', None, 1, 300, 300],
+            [4, '1.1.1.2', 'ALUMBRADO Depto 02', None, 1, 200, 200],
+            [5, '1.1.1.3', 'ALUMBRADO Depto 03', None, 1, 100, 100],
+        ]
+        items, _ = main.parse_concepto_rows_from_table(rows)
+        self.assertEqual(len(items), 4)
+        items, warnings = main.drop_duplicated_total_item(items)
+        self.assertEqual([i['description'] for i in items], ['ALUMBRADO Depto 01', 'ALUMBRADO Depto 02', 'ALUMBRADO Depto 03'])
+        self.assertTrue(warnings)

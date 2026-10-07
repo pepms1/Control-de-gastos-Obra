@@ -13622,11 +13622,36 @@ def import_estimation_conceptos_text(payload: dict, user: dict = Depends(require
                 "«Colocación de mármol 45 m2 x $350» o «Tubería: $6,000»."
             ),
         )
-    return {"items": items, "warnings": warnings, "sourceType": "texto"}
+    items, total_warnings = drop_duplicated_total_item(items)
+    return {"items": items, "warnings": [*warnings, *total_warnings], "sourceType": "texto"}
 
 
 def formatear_moneda_mx(value) -> str:
     return f"${float(value):,.2f}"
+
+
+def drop_duplicated_total_item(items: list[dict]) -> tuple[list[dict], list[str]]:
+    """Algunos presupuestos traen el TOTAL del contrato como un renglón más (con cantidad 1 y el total como
+    precio): sumado a los conceptos duplica el presupuesto. Si un renglón vale lo mismo que la suma de todos
+    los demás, se quita y se avisa."""
+    if len(items) < 3:
+        return items, []
+    amounts = [round(float(item["quantity"]) * float(item["unitPrice"]), 2) for item in items]
+    total = round(sum(amounts), 2)
+    candidates = [
+        idx for idx, amount in enumerate(amounts)
+        if amount > 0 and abs(amount - (total - amount)) <= max(1.0, amount * 0.001)
+    ]
+    if not candidates:
+        return items, []
+    idx = max(candidates, key=lambda i: amounts[i])
+    removed = items[idx]
+    kept = items[:idx] + items[idx + 1:]
+    warning = (
+        f"Se omitió el renglón «{str(removed.get('description') or '').strip()}» ({formatear_moneda_mx(amounts[idx])}) porque es el "
+        f"total del presupuesto y duplicaba la suma de los demás conceptos ({formatear_moneda_mx(total - amounts[idx])})."
+    )
+    return kept, [warning]
 
 
 def extract_table_rows_from_xlsx_bytes(file_bytes: bytes) -> list:
@@ -13872,7 +13897,8 @@ async def import_estimation_conceptos(
             ),
         )
 
-    return {"items": items, "warnings": warnings, "sourceType": source_type}
+    items, total_warnings = drop_duplicated_total_item(items)
+    return {"items": items, "warnings": [*warnings, *total_warnings], "sourceType": source_type}
 
 
 @app.get("/api/admin/trabajos-especiales/suppliers")
