@@ -211,7 +211,7 @@ const escapeHtml = (value) => String(value ?? '')
 // Hoja de autorización lista para imprimir / guardar como PDF (sin dependencias).
 // Solo incluye la hoja de estimación hacia abajo; el monto autorizado y quién autorizó van en grande.
 // Hoja de estimación (por grupo o por concepto) de UN presupuesto, con sus totales.
-function sheetSectionHtml(estimation, budget = {}, { compact = false } = {}) {
+function sheetSectionHtml(estimation, budget = {}) {
   const sheet = estimation.groupBreakdown || [];
   const sum = (key) => sheet.reduce((total, row) => total + (Number(row[key]) || 0), 0);
   const totalBudget = sum('budgetAmount');
@@ -253,20 +253,6 @@ function sheetSectionHtml(estimation, budget = {}, { compact = false } = {}) {
     ['saldo total (a liberar)', money(estimation.totalToPay)],
   ].filter(Boolean).map(([label, value]) => `<div>${label} <strong>${value}</strong></div>`).join('');
 
-  if (compact) {
-    // Versión para varios presupuestos: sin título ni desglose de totales, una sola línea de cifras.
-    const line = [
-      ['avance', money(sum('cumulativeAmount'))],
-      ['amortización −', money(sum('cumulativeAmortization'))],
-      Number(estimation.retentionAmount) > 0 ? ['retención −', money(estimation.retentionAmount)] : null,
-      Number(estimation.advanceGivenAmount) > 0 ? ['anticipo a entregar +', money(estimation.advanceGivenAmount)] : null,
-      ['a liberar', money(estimation.totalToPay)],
-    ].filter(Boolean).map(([label, value]) => `${label} <strong>${value}</strong>`).join(' · ');
-    const body = hasGroups
-      ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Avance $</th><th>%</th><th>Amortización</th><th>Saldo</th></tr></thead><tbody>${sheet.map((row) => `<tr><td>${escapeHtml(groupLabel(row.group))}${row.isExtra ? ' <em>(extra)</em>' : ''}</td><td class="n">${money(row.budgetAmount)}</td><td class="n">${money(row.cumulativeAmount)}</td><td class="n">${formatPct(row.cumulativePct)}</td><td class="n">${Number(row.cumulativeAmortization) > 0 ? money(row.cumulativeAmortization) : '—'}</td><td class="n">${money(row.netAmount)}</td></tr>${extraRows(row)}`).join('')}</tbody></table>`
-      : `<table><thead><tr><th>Concepto</th><th>Unidad</th><th>Previo</th><th>Acumulado</th><th>Importe periodo</th></tr></thead><tbody>${conceptRows}</tbody></table>`;
-    return `${body}<div class="totals line">${line}</div>`;
-  }
   return `<h2>Hoja de estimación${hasGroups ? ' por grupo (acumulado a la fecha)' : ''}</h2>
 ${hasGroups ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Anticipo</th><th>%</th><th>Avance $</th><th>Avance %</th><th>Amortización</th><th>Saldo</th></tr></thead><tbody>${rows}
 <tr class="tot"><td>Total</td><td class="n">${money(totalBudget)}</td><td class="n">${money(sum('advanceAmount'))}</td><td></td><td class="n">${money(sum('cumulativeAmount'))}</td><td class="n">${formatPct(totalBudget > 0 ? (sum('cumulativeAmount') / totalBudget) * 100 : 0)}</td><td class="n">${money(sum('cumulativeAmortization'))}</td><td class="n">${money(sum('netAmount'))}</td></tr></tbody></table>`
@@ -341,11 +327,22 @@ ${signatureHtml(estimation)}
 export function buildAuthorizedBatchHtml(batch, budgetsById = {}, projectName = '') {
   const money = formatCurrency;
   const parts = batch.parts || [];
-  const sections = parts.map((part) => {
+  // Con varios presupuestos solo se imprime el global (más los extras desglosados, si los hay).
+  const multi = parts.length > 1;
+  const extrasSections = multi ? parts.map((part) => {
+    const budget = budgetsById[part.estimationBudgetId] || {};
+    const rows = (part.groupBreakdown || []).filter((row) => row.isExtra)
+      .flatMap((row) => extraConceptsOfGroup(row.group, part, budget))
+      .map((c) => `<tr><td>${escapeHtml(budget.name || part.budgetName || '')}</td><td>${escapeHtml(c.description)}${c.unit ? ` (${escapeHtml(c.quantity)} ${escapeHtml(c.unit)})` : ''}</td><td class="n">${money(c.budgetAmount)}</td><td class="n">${money(c.cumulativeAmount)}</td><td class="n">${formatPct(c.cumulativePct)}</td></tr>`).join('');
+    return rows;
+  }).join('') : '';
+  const sections = multi ? (extrasSections
+    ? `<h2>Extras</h2><table><thead><tr><th>Presupuesto</th><th>Concepto</th><th>Presupuesto</th><th>Avance $</th><th>%</th></tr></thead><tbody>${extrasSections}</tbody></table>`
+    : '') : parts.map((part) => {
     const budget = budgetsById[part.estimationBudgetId] || {};
     const discountNote = Number(budget.discountPct) > 0 ? ` <small>(precios con ${formatPct(budget.discountPct)} de descuento)</small>` : '';
     return `<div class="budget">Presupuesto: ${escapeHtml(budget.name || part.budgetName || '')}${discountNote}</div>
-${sheetSectionHtml(part, budget, { compact: parts.length > 1 })}`;
+${sheetSectionHtml(part, budget)}`;
   }).join('');
   const summary = (parts.length > 1 || Number(batch.advanceGivenAmount) > 0) ? `<div class="summary"><h2>Resumen de la estimación</h2><div class="totals">
   <div>subtotal del periodo <strong>${money(batch.periodSubtotal)}</strong></div>
