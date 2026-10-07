@@ -276,7 +276,11 @@ const PDF_STYLE = `
   .summary{border-top:2px solid #111;margin-top:18px;padding-top:6px}
   .sign{display:flex;gap:40px;margin-top:48px;page-break-inside:avoid}
   .sign div{flex:1;text-align:center}
-  .sign .line{border-top:1px solid #111;height:70px;margin-bottom:4px}
+  .sigarea{height:84px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;margin-top:-14px}
+  .sigimg{max-height:56px;max-width:240px}
+  .sigtxt{font-family:'Dancing Script','Segoe Script','Brush Script MT','Lucida Handwriting',cursive;font-size:34px;line-height:1;color:#1e3a8a;margin-bottom:-4px}
+  .stamp{display:block;color:#444;font-size:10px;margin:2px 0}
+  .sign .line{border-top:1px solid #111;margin-bottom:4px}
   .sign small{color:#555}
   .compact{font-size:10px}
   .compact .obra{font-size:26px;margin-bottom:2px} .compact .head{font-size:15px} .compact .sub{margin-bottom:6px}
@@ -287,7 +291,7 @@ const PDF_STYLE = `
   .compact .totals{line-height:1.3;margin-top:2px} .compact .totals.line{font-size:10px}
   .compact .summary{margin-top:8px;padding-top:2px} .compact h2{font-size:11px;margin:4px 0 2px}
   .compact table.grid{font-size:9px} .compact tr.dep td{background:#e5e7eb;font-weight:700;font-size:10px} .compact .paid{margin-top:6px;font-size:12px;color:#444} .totals .grand{font-size:14px;border-top:1px solid #111;margin-top:3px;padding-top:2px}
-  .compact .sign{margin-top:18px} .compact .sign .line{height:36px}
+  .compact .sign{margin-top:12px}
   @page{size:letter;margin:10mm}
   @media print{body{margin:0}}`;
 
@@ -297,16 +301,40 @@ function authorizationBoxHtml(estimation) {
   return `<div class="auth">
   <div class="lbl">Monto autorizado</div>
   <div class="amt">${money(estimation.authorizedAmount)}</div>
-  <div class="who">Autorizó: ${escapeHtml(estimation.approvedBy || '—')} · ${formatDate(estimation.approvedAt)}</div>
+  <div class="who">Autorizó: ${escapeHtml(estimation.approvedBy || '—')} · ${escapeHtml(formatDateTime(estimation.approvedAt) || '—')}</div>
   ${requested !== null ? `<div>Solicitado por el contratista: ${money(requested)}</div>` : ''}
   <div>Avance total calculado: ${money(estimation.totalToPay)}</div>
   ${estimation.authorizationNote ? `<div>Motivo: ${escapeHtml(estimation.authorizationNote)}</div>` : ''}
 </div>`;
 }
 
+// Firma digital por usuario que autoriza: se imprime sobre la raya de firma con la fecha y hora de la AUTORIZACIÓN.
+// Para una firma en imagen, sube un PNG (fondo transparente) a web/public/firmas/<usuario en minúsculas>.png;
+// si no existe, se imprime el nombre en letra manuscrita.
+const SIGNATURES = {
+  superadmin: { name: 'José Marcos S' },
+  dms: { name: 'David Marcos S' },
+};
+
+function formatDateTime(value) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString('es-MX', {
+    timeZone: 'America/Mexico_City', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
 function signatureHtml(estimation) {
+  const approver = String(estimation.approvedBy || '').trim();
+  const key = approver.toLowerCase();
+  const signed = Boolean(approver) && Boolean(estimation.approvedAt);
+  const name = SIGNATURES[key]?.name || approver;
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const signature = signed ? `<img class="sigimg" src="${origin}/firmas/${encodeURIComponent(key)}.png" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='block'"><span class="sigtxt" style="display:none">${escapeHtml(name)}</span>
+    <small class="stamp">Autorizado digitalmente el ${escapeHtml(formatDateTime(estimation.approvedAt))}</small>` : '';
   return `<div class="sign">
-  <div><div class="line"></div>Firma de autorización<br><small>${escapeHtml(estimation.approvedBy || '')}</small></div>
+  <div><div class="sigarea">${signature}</div><div class="line"></div>Firma de autorización<br><small>${escapeHtml(approver)}</small></div>
 </div>`;
 }
 
@@ -314,7 +342,7 @@ function signatureHtml(estimation) {
 export function buildAuthorizedSheetHtml(estimation, budget = {}, projectName = '') {
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <title>Estimación ${escapeHtml(estimation.folio)} autorizada</title>
-<style>${PDF_STYLE}</style></head><body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap"><style>${PDF_STYLE}</style></head><body>
 ${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
 <div class="head"><span>${escapeHtml(budget.supplierNameSnapshot || estimation.supplierName || '')}</span><span>Estimación #${escapeHtml(estimation.folio)}</span></div>
 <div class="sub">${escapeHtml(budget.name || estimation.budgetName || '')} · Periodo ${formatDate(estimation.periodStart)} – ${formatDate(estimation.periodEnd)}</div>
@@ -381,7 +409,7 @@ ${sheetSectionHtml(part, budget)}`;
   ${paidToDate != null ? `<div class="paid">pagado total a la fecha al proveedor (anticipos + pagos a cuenta) <strong>${money(paidToDate)}</strong></div>` : ''}</div></div>` : '';
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <title>Estimación ${escapeHtml(batch.folio)} autorizada</title>
-<style>${PDF_STYLE}</style></head><body${parts.length > 1 ? ' class="compact"' : ''}>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap"><style>${PDF_STYLE}</style></head><body${parts.length > 1 ? ' class="compact"' : ''}>
 ${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
 <div class="head"><span>${escapeHtml(batch.supplierName || '')}</span><span>Estimación #${escapeHtml(batch.folio)}</span></div>
 <div class="sub">${parts.length > 1 ? `${parts.length} presupuestos · ` : `${escapeHtml(batch.budgetName || '')} · `}Periodo ${formatDate(batch.periodStart)} – ${formatDate(batch.periodEnd)}</div>
@@ -399,7 +427,10 @@ function openPrintWindow(html) {
   win.document.write(html);
   win.document.close();
   win.focus();
-  setTimeout(() => win.print(), 300);
+  // se espera a la firma (imagen/fuente), con tope, para que salga en la impresión
+  const images = Array.from(win.document.images).map((img) => (img.complete ? null : new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; })));
+  const fonts = win.document.fonts?.ready || null;
+  Promise.race([Promise.all([...images, fonts]), new Promise((resolve) => setTimeout(resolve, 2500))]).then(() => win.print());
   return true;
 }
 
