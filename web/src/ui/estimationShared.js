@@ -262,7 +262,8 @@ ${hasGroups ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Anticipo<
 
 const PDF_STYLE = `
   body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:28px;font-size:12px}
-  .obra{font-size:20px;font-weight:700;margin-bottom:6px}
+  .obra{font-size:30px;font-weight:800;line-height:1.1;margin-bottom:6px}
+  .head{display:flex;justify-content:space-between;align-items:baseline;gap:16px;font-size:18px;font-weight:700;margin:0 0 2px}
   h1{font-size:18px;margin:0 0 2px} .sub{color:#555;margin-bottom:14px}
   .auth{border:2px solid #166534;background:#f0fdf4;border-radius:8px;padding:14px 18px;margin:12px 0 18px}
   .auth .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#166534}
@@ -275,18 +276,22 @@ const PDF_STYLE = `
   .summary{border-top:2px solid #111;margin-top:18px;padding-top:6px}
   .sign{display:flex;gap:40px;margin-top:48px;page-break-inside:avoid}
   .sign div{flex:1;text-align:center}
-  .sign .line{border-top:1px solid #111;height:70px;margin-bottom:4px}
+  .sigarea{height:84px;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;margin-top:-14px}
+  .sigimg{max-height:56px;max-width:240px}
+  .sigtxt{font-family:'Dancing Script','Segoe Script','Brush Script MT','Lucida Handwriting',cursive;font-size:34px;line-height:1;color:#1e3a8a;margin-bottom:-4px}
+  .stamp{display:block;color:#444;font-size:10px;margin:2px 0}
+  .sign .line{border-top:1px solid #111;margin-bottom:4px}
   .sign small{color:#555}
   .compact{font-size:10px}
-  .compact .obra{font-size:15px;margin-bottom:2px} .compact h1{font-size:14px} .compact .sub{margin-bottom:6px}
+  .compact .obra{font-size:26px;margin-bottom:2px} .compact .head{font-size:15px} .compact .sub{margin-bottom:6px}
   .compact .auth{padding:6px 12px;margin:6px 0 8px;display:flex;flex-wrap:wrap;gap:2px 24px;align-items:baseline}
   .compact .auth .amt{font-size:22px;margin:0} .compact .auth .who{font-size:12px}
   .compact table{margin:3px 0} .compact th,.compact td{padding:1px 4px}
   .compact .budget{font-size:11px;margin:8px 0 0;padding-bottom:1px}
   .compact .totals{line-height:1.3;margin-top:2px} .compact .totals.line{font-size:10px}
   .compact .summary{margin-top:8px;padding-top:2px} .compact h2{font-size:11px;margin:4px 0 2px}
-  .compact table.grid{font-size:9px} .compact tr.dep td{background:#e5e7eb;font-weight:700;font-size:10px} .compact .paid{margin-top:4px;font-size:12px}
-  .compact .sign{margin-top:18px} .compact .sign .line{height:36px}
+  .compact table.grid{font-size:9px} .compact tr.dep td{background:#e5e7eb;font-weight:700;font-size:10px} .compact .paid{margin-top:6px;font-size:12px;color:#444} .totals .grand{font-size:14px;border-top:1px solid #111;margin-top:3px;padding-top:2px}
+  .compact .sign{margin-top:12px}
   @page{size:letter;margin:10mm}
   @media print{body{margin:0}}`;
 
@@ -296,16 +301,41 @@ function authorizationBoxHtml(estimation) {
   return `<div class="auth">
   <div class="lbl">Monto autorizado</div>
   <div class="amt">${money(estimation.authorizedAmount)}</div>
-  <div class="who">Autorizó: ${escapeHtml(estimation.approvedBy || '—')} · ${formatDate(estimation.approvedAt)}</div>
+  <div class="who">Autorizó: ${escapeHtml(estimation.approvedBy || '—')} · ${escapeHtml(formatDateTime(estimation.approvedAt) || '—')}</div>
   ${requested !== null ? `<div>Solicitado por el contratista: ${money(requested)}</div>` : ''}
-  <div>Avance calculado (a liberar): ${money(estimation.totalToPay)}</div>
+  <div>Avance total calculado: ${money(estimation.totalToPay)}</div>
   ${estimation.authorizationNote ? `<div>Motivo: ${escapeHtml(estimation.authorizationNote)}</div>` : ''}
 </div>`;
 }
 
+// Firma digital por usuario que autoriza: se imprime sobre la raya de firma con la fecha y hora de la AUTORIZACIÓN.
+// Para una firma en imagen, sube un PNG (fondo transparente) a web/public/firmas/<usuario en minúsculas>.png;
+// si no existe, se imprime el nombre en letra manuscrita.
+const SIGNATURES = {
+  superadmin: { name: 'José Marcos S' },
+  pms: { name: 'José Marcos S' },
+  dms: { name: 'David Marcos S' },
+};
+
+function formatDateTime(value) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return parsed.toLocaleString('es-MX', {
+    timeZone: 'America/Mexico_City', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
 function signatureHtml(estimation) {
+  const approver = String(estimation.approvedBy || '').trim();
+  const key = approver.toLowerCase();
+  const signed = Boolean(approver) && Boolean(estimation.approvedAt);
+  const name = SIGNATURES[key]?.name || approver;
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const signature = signed ? `<img class="sigimg" src="${origin}/firmas/${encodeURIComponent(key)}.png" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='block'"><span class="sigtxt" style="display:none">${escapeHtml(name)}</span>
+    <small class="stamp">Autorizado digitalmente el ${escapeHtml(formatDateTime(estimation.approvedAt))}</small>` : '';
   return `<div class="sign">
-  <div><div class="line"></div>Firma de autorización<br><small>${escapeHtml(estimation.approvedBy || '')}</small></div>
+  <div><div class="sigarea">${signature}</div><div class="line"></div>Firma de autorización<br><small>${escapeHtml(approver)}</small></div>
 </div>`;
 }
 
@@ -313,9 +343,9 @@ function signatureHtml(estimation) {
 export function buildAuthorizedSheetHtml(estimation, budget = {}, projectName = '') {
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <title>Estimación ${escapeHtml(estimation.folio)} autorizada</title>
-<style>${PDF_STYLE}</style></head><body>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap"><style>${PDF_STYLE}</style></head><body>
 ${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
-<h1>Estimación #${escapeHtml(estimation.folio)} · ${escapeHtml(budget.supplierNameSnapshot || estimation.supplierName || '')}</h1>
+<div class="head"><span>${escapeHtml(budget.supplierNameSnapshot || estimation.supplierName || '')}</span><span>Estimación #${escapeHtml(estimation.folio)}</span></div>
 <div class="sub">${escapeHtml(budget.name || estimation.budgetName || '')} · Periodo ${formatDate(estimation.periodStart)} – ${formatDate(estimation.periodEnd)}</div>
 ${authorizationBoxHtml(estimation)}
 ${sheetSectionHtml(estimation, budget)}
@@ -371,18 +401,18 @@ export function buildAuthorizedBatchHtml(batch, budgetsById = {}, projectName = 
 ${sheetSectionHtml(part, budget)}`;
   }).join('');
   const summary = (parts.length > 1 || Number(batch.advanceGivenAmount) > 0) ? `<div class="summary"><h2>Resumen de la estimación</h2><div class="totals">
-  <div>subtotal del periodo <strong>${money(batch.periodSubtotal)}</strong></div>
-  <div>retención − <strong>${money(batch.retentionAmount)}</strong></div>
+  <div>avance de esta estimación <strong>${money(batch.periodSubtotal)}</strong></div>
+  ${Number(batch.retentionAmount) > 0 ? `<div>retención − <strong>${money(batch.retentionAmount)}</strong></div>` : ''}
   ${Number(batch.advanceAmortizationAmount) > 0 ? `<div>amortización de anticipos − <strong>${money(batch.advanceAmortizationAmount)}</strong></div>` : ''}
-  ${Number(batch.priorPaidApplied) > 0 ? `<div>pagos previos − <strong>${money(batch.priorPaidApplied)}</strong></div>` : ''}
+  ${Number(batch.priorPaidApplied) > 0 ? `<div>pagos ya hechos aplicados a este avance (sin anticipos) − <strong>${money(batch.priorPaidApplied)}</strong></div>` : ''}
   ${Number(batch.advanceGivenAmount) > 0 ? `<div>anticipo a entregar + <strong>${money(batch.advanceGivenAmount)}</strong></div>` : ''}
-  <div>total a liberar <strong>${money(batch.totalToPay)}</strong></div>
-  ${paidToDate != null ? `<div class="paid">pagado total a la fecha al proveedor (incluye anticipos) <strong>${money(paidToDate)}</strong></div>` : ''}</div></div>` : '';
+  <div class="grand">Avance total (a pagar con esta estimación) <strong>${money(batch.totalToPay)}</strong></div>
+  ${paidToDate != null ? `<div class="paid">pagado total a la fecha al proveedor (anticipos + pagos a cuenta) <strong>${money(paidToDate)}</strong></div>` : ''}</div></div>` : '';
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <title>Estimación ${escapeHtml(batch.folio)} autorizada</title>
-<style>${PDF_STYLE}</style></head><body${parts.length > 1 ? ' class="compact"' : ''}>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap"><style>${PDF_STYLE}</style></head><body${parts.length > 1 ? ' class="compact"' : ''}>
 ${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
-<h1>Estimación #${escapeHtml(batch.folio)} · ${escapeHtml(batch.supplierName || '')}</h1>
+<div class="head"><span>${escapeHtml(batch.supplierName || '')}</span><span>Estimación #${escapeHtml(batch.folio)}</span></div>
 <div class="sub">${parts.length > 1 ? `${parts.length} presupuestos · ` : `${escapeHtml(batch.budgetName || '')} · `}Periodo ${formatDate(batch.periodStart)} – ${formatDate(batch.periodEnd)}</div>
 ${authorizationBoxHtml(batch)}
 ${sections}
@@ -398,7 +428,10 @@ function openPrintWindow(html) {
   win.document.write(html);
   win.document.close();
   win.focus();
-  setTimeout(() => win.print(), 300);
+  // se espera a la firma (imagen/fuente), con tope, para que salga en la impresión
+  const images = Array.from(win.document.images).map((img) => (img.complete ? null : new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; })));
+  const fonts = win.document.fonts?.ready || null;
+  Promise.race([Promise.all([...images, fonts]), new Promise((resolve) => setTimeout(resolve, 2500))]).then(() => win.print());
   return true;
 }
 
