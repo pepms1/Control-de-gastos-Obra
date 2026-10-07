@@ -285,6 +285,7 @@ const PDF_STYLE = `
   .compact .budget{font-size:11px;margin:8px 0 0;padding-bottom:1px}
   .compact .totals{line-height:1.3;margin-top:2px} .compact .totals.line{font-size:10px}
   .compact .summary{margin-top:8px;padding-top:2px} .compact h2{font-size:11px;margin:4px 0 2px}
+  .compact table.grid{font-size:9px} .compact tr.dep td{background:#e5e7eb;font-weight:700;font-size:10px} .compact .paid{margin-top:4px;font-size:12px}
   .compact .sign{margin-top:18px} .compact .sign .line{height:36px}
   @page{size:letter;margin:10mm}
   @media print{body{margin:0}}`;
@@ -322,23 +323,48 @@ ${signatureHtml(estimation)}
 </body></html>`;
 }
 
+// Hoja única de varios presupuestos (departamentos) como la de la arquitecta: por depto, sus conceptos
+// con presupuesto, anticipo, avance acumulado, amortización y saldo. Sin totales por depto.
+function multiBudgetSheetHtml(parts, budgetsById) {
+  const money = formatCurrency;
+  const dash = '—';
+  let totals = { budget: 0, advance: 0, cumulative: 0, amort: 0, net: 0 };
+  const body = parts.map((part) => {
+    const budget = budgetsById[part.estimationBudgetId] || {};
+    const groupBy = Object.fromEntries((part.groupBreakdown || []).map((g) => [g.group || '', g]));
+    const discountNote = Number(budget.discountPct) > 0 ? ` <small>(precios con ${formatPct(budget.discountPct)} de descuento)</small>` : '';
+    const rows = (part.lineItems || []).map((li) => {
+      const group = groupBy[li.group || ''] || {};
+      const budgetAmount = Number(li.contractedAmount) || 0;
+      const rate = Number(group.advancePct) || 0;
+      const advance = budgetAmount * rate / 100;
+      const cumulative = Number(li.cumulativeAmount) || 0;
+      const amortRatio = Number(group.cumulativeAmount) > 0 ? (Number(group.cumulativeAmortization) || 0) / Number(group.cumulativeAmount) : 0;
+      const amort = cumulative * amortRatio;
+      totals = {
+        budget: totals.budget + budgetAmount, advance: totals.advance + advance,
+        cumulative: totals.cumulative + cumulative, amort: totals.amort + amort, net: totals.net + cumulative - amort,
+      };
+      return `<tr><td class="n">${escapeHtml(li.contractedQuantity ?? '')}</td><td>${escapeHtml(li.unit || '')}</td><td class="n">${money(li.unitPrice)}</td>
+<td>${escapeHtml(li.description)}</td><td class="n">${money(budgetAmount)}</td><td class="n">${advance > 0 ? money(advance) : dash}</td>
+<td class="n">${rate > 0 ? formatPct(rate) : dash}</td><td class="n">${money(cumulative)}</td><td class="n">${formatPct(li.progressPct)}</td>
+<td class="n">${amort > 0 ? money(amort) : dash}</td><td class="n">${money(cumulative - amort)}</td></tr>`;
+    }).join('');
+    return `<tr class="dep"><td colspan="11">${escapeHtml(budget.name || part.budgetName || '')}${discountNote}</td></tr>${rows}`;
+  }).join('');
+  return `<table class="grid"><thead><tr><th>Cant.</th><th>Unid.</th><th>P.U.</th><th>Concepto</th><th>Presupuesto</th><th>Anticipo</th><th>%</th><th>Avance $</th><th>Avance %</th><th>Amortización</th><th>Saldo</th></tr></thead>
+<tbody>${body}<tr class="tot"><td colspan="4">Total</td><td class="n">${money(totals.budget)}</td><td class="n">${money(totals.advance)}</td><td></td><td class="n">${money(totals.cumulative)}</td>
+<td class="n">${formatPct(totals.budget > 0 ? (totals.cumulative / totals.budget) * 100 : 0)}</td><td class="n">${money(totals.amort)}</td><td class="n">${money(totals.net)}</td></tr></tbody></table>`;
+}
+
 // Hoja de autorización de la estimación del PROVEEDOR: una hoja por presupuesto (departamento)
 // y el monto autorizado total arriba.
 export function buildAuthorizedBatchHtml(batch, budgetsById = {}, projectName = '') {
   const money = formatCurrency;
   const parts = batch.parts || [];
-  // Con varios presupuestos solo se imprime el global (más los extras desglosados, si los hay).
   const multi = parts.length > 1;
-  const extrasSections = multi ? parts.map((part) => {
-    const budget = budgetsById[part.estimationBudgetId] || {};
-    const rows = (part.groupBreakdown || []).filter((row) => row.isExtra)
-      .flatMap((row) => extraConceptsOfGroup(row.group, part, budget))
-      .map((c) => `<tr><td>${escapeHtml(budget.name || part.budgetName || '')}</td><td>${escapeHtml(c.description)}${c.unit ? ` (${escapeHtml(c.quantity)} ${escapeHtml(c.unit)})` : ''}</td><td class="n">${money(c.budgetAmount)}</td><td class="n">${money(c.cumulativeAmount)}</td><td class="n">${formatPct(c.cumulativePct)}</td></tr>`).join('');
-    return rows;
-  }).join('') : '';
-  const sections = multi ? (extrasSections
-    ? `<h2>Extras</h2><table><thead><tr><th>Presupuesto</th><th>Concepto</th><th>Presupuesto</th><th>Avance $</th><th>%</th></tr></thead><tbody>${extrasSections}</tbody></table>`
-    : '') : parts.map((part) => {
+  const paidToDate = Object.values(budgetsById).map((b) => b?.supplierPaidAmount).find((v) => v != null);
+  const sections = multi ? multiBudgetSheetHtml(parts, budgetsById) : parts.map((part) => {
     const budget = budgetsById[part.estimationBudgetId] || {};
     const discountNote = Number(budget.discountPct) > 0 ? ` <small>(precios con ${formatPct(budget.discountPct)} de descuento)</small>` : '';
     return `<div class="budget">Presupuesto: ${escapeHtml(budget.name || part.budgetName || '')}${discountNote}</div>
@@ -350,7 +376,8 @@ ${sheetSectionHtml(part, budget)}`;
   ${Number(batch.advanceAmortizationAmount) > 0 ? `<div>amortización de anticipos − <strong>${money(batch.advanceAmortizationAmount)}</strong></div>` : ''}
   ${Number(batch.priorPaidApplied) > 0 ? `<div>pagos previos − <strong>${money(batch.priorPaidApplied)}</strong></div>` : ''}
   ${Number(batch.advanceGivenAmount) > 0 ? `<div>anticipo a entregar + <strong>${money(batch.advanceGivenAmount)}</strong></div>` : ''}
-  <div>total a liberar <strong>${money(batch.totalToPay)}</strong></div></div></div>` : '';
+  <div>total a liberar <strong>${money(batch.totalToPay)}</strong></div>
+  ${paidToDate != null ? `<div class="paid">pagado total a la fecha al proveedor (incluye anticipos) <strong>${money(paidToDate)}</strong></div>` : ''}</div></div>` : '';
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <title>Estimación ${escapeHtml(batch.folio)} autorizada</title>
 <style>${PDF_STYLE}</style></head><body${parts.length > 1 ? ' class="compact"' : ''}>
