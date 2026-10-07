@@ -417,6 +417,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       let params;
       if (section === 'review') params = { projectId: selectedProjectId, status: 'ENVIADA' };
       else if (section === 'payable') params = { projectId: selectedProjectId, status: 'APROBADA', paymentStatus: 'POR_PAGAR' };
+      else if (section === 'approved') params = { projectId: selectedProjectId, status: 'APROBADA' };
       else if (section === 'drafts') params = { projectId: selectedProjectId, status: 'BORRADOR,ENVIADA' };
       else {
         setQueueRows([]);
@@ -478,9 +479,14 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
             </button>
           </>
         ) : (
-          <button type="button" className={section === 'drafts' ? '' : 'secondary'} onClick={() => setSection('drafts')}>
-            Mis estimaciones abiertas
-          </button>
+          <>
+            <button type="button" className={section === 'drafts' ? '' : 'secondary'} onClick={() => setSection('drafts')}>
+              Mis estimaciones abiertas
+            </button>
+            <button type="button" className={section === 'approved' ? '' : 'secondary'} onClick={() => setSection('approved')}>
+              Estimaciones aprobadas
+            </button>
+          </>
         )}
       </div>
 
@@ -491,6 +497,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
               {section === 'review' && 'Estimaciones por autorizar'}
               {section === 'payable' && 'Estimaciones aprobadas por pagar'}
               {section === 'drafts' && 'Borradores y estimaciones en revisión'}
+              {section === 'approved' && 'Estimaciones aprobadas'}
             </strong>
             <div style={{ flex: 1 }} />
             <button type="button" className="secondary" onClick={loadQueue}>Actualizar</button>
@@ -518,7 +525,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     <th>Periodo</th>
                     <th>Total calculado</th>
                     <th>Solicitado</th>
-                    {section === 'payable' && <th>Autorizado</th>}
+                    {(section === 'payable' || section === 'approved') && <th>Autorizado</th>}
                     <th>Estatus</th>
                     <th>Acciones</th>
                   </tr>
@@ -532,14 +539,14 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       <td>{formatDate(row.periodStart)} – {formatDate(row.periodEnd)}</td>
                       <td>{formatCurrency(row.totalToPay)}</td>
                       <td>{row.requestedAmount != null ? formatCurrency(row.requestedAmount) : '—'}</td>
-                      {section === 'payable' && <td><strong>{formatCurrency(row.authorizedAmount)}</strong></td>}
+                      {(section === 'payable' || section === 'approved') && <td><strong>{formatCurrency(row.authorizedAmount)}</strong></td>}
                       <td><StatusBadge estimation={row} /></td>
                       <td>
                         <div className="row" style={{ gap: 6 }}>
                           <button type="button" onClick={() => openFromQueue(row)}>
                             {section === 'review' && canApproveProject(row.projectId) ? 'Revisar' : section === 'review' ? 'Ver' : 'Abrir'}
                           </button>
-                          {section === 'payable' && (
+                          {(section === 'payable' || section === 'approved') && (
                             <button type="button" className="secondary" onClick={() => printBatch(row)}>PDF autorizado</button>
                           )}
                         </div>
@@ -548,10 +555,11 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                   ))}
                   {!queueRows.length && (
                     <tr>
-                      <td colSpan={section === 'payable' ? 9 : 8} className="small" style={{ textAlign: 'center' }}>
+                      <td colSpan={section === 'payable' || section === 'approved' ? 9 : 8} className="small" style={{ textAlign: 'center' }}>
                         {section === 'review' && 'No hay estimaciones esperando autorización.'}
                         {section === 'payable' && 'No hay estimaciones aprobadas pendientes de pago.'}
                         {section === 'drafts' && 'No hay borradores ni estimaciones en revisión.'}
+                        {section === 'approved' && 'Aún no hay estimaciones aprobadas.'}
                       </td>
                     </tr>
                   )}
