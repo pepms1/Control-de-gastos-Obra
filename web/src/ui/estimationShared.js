@@ -211,7 +211,7 @@ const escapeHtml = (value) => String(value ?? '')
 // Hoja de autorización lista para imprimir / guardar como PDF (sin dependencias).
 // Solo incluye la hoja de estimación hacia abajo; el monto autorizado y quién autorizó van en grande.
 // Hoja de estimación (por grupo o por concepto) de UN presupuesto, con sus totales.
-function sheetSectionHtml(estimation, budget = {}) {
+function sheetSectionHtml(estimation, budget = {}, { compact = false } = {}) {
   const sheet = estimation.groupBreakdown || [];
   const sum = (key) => sheet.reduce((total, row) => total + (Number(row[key]) || 0), 0);
   const totalBudget = sum('budgetAmount');
@@ -253,6 +253,20 @@ function sheetSectionHtml(estimation, budget = {}) {
     ['saldo total (a liberar)', money(estimation.totalToPay)],
   ].filter(Boolean).map(([label, value]) => `<div>${label} <strong>${value}</strong></div>`).join('');
 
+  if (compact) {
+    // Versión para varios presupuestos: sin título ni desglose de totales, una sola línea de cifras.
+    const line = [
+      ['avance', money(sum('cumulativeAmount'))],
+      ['amortización −', money(sum('cumulativeAmortization'))],
+      Number(estimation.retentionAmount) > 0 ? ['retención −', money(estimation.retentionAmount)] : null,
+      Number(estimation.advanceGivenAmount) > 0 ? ['anticipo a entregar +', money(estimation.advanceGivenAmount)] : null,
+      ['a liberar', money(estimation.totalToPay)],
+    ].filter(Boolean).map(([label, value]) => `${label} <strong>${value}</strong>`).join(' · ');
+    const body = hasGroups
+      ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Avance $</th><th>%</th><th>Amortización</th><th>Saldo</th></tr></thead><tbody>${sheet.map((row) => `<tr><td>${escapeHtml(groupLabel(row.group))}${row.isExtra ? ' <em>(extra)</em>' : ''}</td><td class="n">${money(row.budgetAmount)}</td><td class="n">${money(row.cumulativeAmount)}</td><td class="n">${formatPct(row.cumulativePct)}</td><td class="n">${Number(row.cumulativeAmortization) > 0 ? money(row.cumulativeAmortization) : '—'}</td><td class="n">${money(row.netAmount)}</td></tr>${extraRows(row)}`).join('')}</tbody></table>`
+      : `<table><thead><tr><th>Concepto</th><th>Unidad</th><th>Previo</th><th>Acumulado</th><th>Importe periodo</th></tr></thead><tbody>${conceptRows}</tbody></table>`;
+    return `${body}<div class="totals line">${line}</div>`;
+  }
   return `<h2>Hoja de estimación${hasGroups ? ' por grupo (acumulado a la fecha)' : ''}</h2>
 ${hasGroups ? `<table><thead><tr><th>Grupo</th><th>Presupuesto</th><th>Anticipo</th><th>%</th><th>Avance $</th><th>Avance %</th><th>Amortización</th><th>Saldo</th></tr></thead><tbody>${rows}
 <tr class="tot"><td>Total</td><td class="n">${money(totalBudget)}</td><td class="n">${money(sum('advanceAmount'))}</td><td></td><td class="n">${money(sum('cumulativeAmount'))}</td><td class="n">${formatPct(totalBudget > 0 ? (sum('cumulativeAmount') / totalBudget) * 100 : 0)}</td><td class="n">${money(sum('cumulativeAmortization'))}</td><td class="n">${money(sum('netAmount'))}</td></tr></tbody></table>`
@@ -277,7 +291,17 @@ const PDF_STYLE = `
   .sign div{flex:1;text-align:center}
   .sign .line{border-top:1px solid #111;height:70px;margin-bottom:4px}
   .sign small{color:#555}
-  @media print{body{margin:12mm}}`;
+  .compact{font-size:10px}
+  .compact .obra{font-size:15px;margin-bottom:2px} .compact h1{font-size:14px} .compact .sub{margin-bottom:6px}
+  .compact .auth{padding:6px 12px;margin:6px 0 8px;display:flex;flex-wrap:wrap;gap:2px 24px;align-items:baseline}
+  .compact .auth .amt{font-size:22px;margin:0} .compact .auth .who{font-size:12px}
+  .compact table{margin:3px 0} .compact th,.compact td{padding:1px 4px}
+  .compact .budget{font-size:11px;margin:8px 0 0;padding-bottom:1px}
+  .compact .totals{line-height:1.3;margin-top:2px} .compact .totals.line{font-size:10px}
+  .compact .summary{margin-top:8px;padding-top:2px} .compact h2{font-size:11px;margin:4px 0 2px}
+  .compact .sign{margin-top:18px} .compact .sign .line{height:36px}
+  @page{size:letter;margin:10mm}
+  @media print{body{margin:0}}`;
 
 function authorizationBoxHtml(estimation) {
   const money = formatCurrency;
@@ -321,7 +345,7 @@ export function buildAuthorizedBatchHtml(batch, budgetsById = {}, projectName = 
     const budget = budgetsById[part.estimationBudgetId] || {};
     const discountNote = Number(budget.discountPct) > 0 ? ` <small>(precios con ${formatPct(budget.discountPct)} de descuento)</small>` : '';
     return `<div class="budget">Presupuesto: ${escapeHtml(budget.name || part.budgetName || '')}${discountNote}</div>
-${sheetSectionHtml(part, budget)}`;
+${sheetSectionHtml(part, budget, { compact: parts.length > 1 })}`;
   }).join('');
   const summary = (parts.length > 1 || Number(batch.advanceGivenAmount) > 0) ? `<div class="summary"><h2>Resumen de la estimación</h2><div class="totals">
   <div>subtotal del periodo <strong>${money(batch.periodSubtotal)}</strong></div>
@@ -332,7 +356,7 @@ ${sheetSectionHtml(part, budget)}`;
   <div>total a liberar <strong>${money(batch.totalToPay)}</strong></div></div></div>` : '';
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <title>Estimación ${escapeHtml(batch.folio)} autorizada</title>
-<style>${PDF_STYLE}</style></head><body>
+<style>${PDF_STYLE}</style></head><body${parts.length > 1 ? ' class="compact"' : ''}>
 ${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
 <h1>Estimación #${escapeHtml(batch.folio)} · ${escapeHtml(batch.supplierName || '')}</h1>
 <div class="sub">${parts.length > 1 ? `${parts.length} presupuestos · ` : `${escapeHtml(batch.budgetName || '')} · `}Periodo ${formatDate(batch.periodStart)} – ${formatDate(batch.periodEnd)}</div>
