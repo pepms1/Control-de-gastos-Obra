@@ -273,7 +273,7 @@ const PDF_STYLE = `
   .head{display:flex;justify-content:space-between;align-items:baseline;gap:16px;font-size:18px;font-weight:700;margin:0 0 2px}
   h1{font-size:18px;margin:0 0 2px} .sub{color:#555;margin-bottom:14px}
   .auth{border:2px solid #166534;background:#f0fdf4;border-radius:8px;padding:14px 18px;margin:12px 0 18px}
-  .auth .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#166534}
+  .auth .lbl{font-size:34px;font-weight:700;text-transform:uppercase;letter-spacing:.02em;line-height:1.1;color:#166534}
   .auth .amt{font-size:34px;font-weight:700;color:#14532d;margin:2px 0}
   .auth .who{font-size:15px;font-weight:600}
   table{width:100%;border-collapse:collapse;margin:8px 0} th,td{border:1px solid #ccc;padding:4px 6px;text-align:left}
@@ -292,7 +292,7 @@ const PDF_STYLE = `
   .compact{font-size:10px}
   .compact .obra{font-size:26px;margin-bottom:2px} .compact .head{font-size:15px} .compact .sub{margin-bottom:6px}
   .compact .auth{padding:6px 12px;margin:6px 0 8px;display:flex;flex-wrap:wrap;gap:2px 24px;align-items:baseline}
-  .compact .auth .amt{font-size:22px;margin:0} .compact .auth .who{font-size:12px}
+  .compact .auth .lbl{font-size:22px} .compact .auth .amt{font-size:22px;margin:0} .compact .auth .who{font-size:12px}
   .compact table{margin:3px 0} .compact th,.compact td{padding:1px 4px}
   .compact .budget{font-size:11px;margin:8px 0 0;padding-bottom:1px}
   .compact .totals{line-height:1.3;margin-top:2px} .compact .totals.line{font-size:10px}
