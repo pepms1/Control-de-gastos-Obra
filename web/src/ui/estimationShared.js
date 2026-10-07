@@ -314,6 +314,7 @@ function authorizationBoxHtml(estimation) {
 const SIGNATURES = {
   superadmin: { name: 'José Marcos S' },
   pms: { name: 'José Marcos S' },
+  admin: { name: 'José Marcos S' },
   dms: { name: 'David Marcos S' },
 };
 
