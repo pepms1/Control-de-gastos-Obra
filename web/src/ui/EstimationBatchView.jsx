@@ -154,7 +154,7 @@ export function EstimationBatchView({
   const requested = batch.requestedAmount != null ? Number(batch.requestedAmount) : null;
   const baseline = requested ?? calculated;
   const amount = authorizedAmount === '' ? baseline : Number(authorizedAmount) || 0;
-  const needsNote = Math.abs(amount - baseline) >= 0.01 || amount - calculated >= 0.01;
+  const needsNote = amount - calculated >= 0.01;
 
   return (
     <div className="card" style={{ display: 'grid', gap: 10, padding: 16 }}>
@@ -278,9 +278,7 @@ export function EstimationBatchView({
             </div>
             <div style={{ flex: 1, minWidth: 220 }}>
               <label>
-                Motivo{needsNote
-                  ? (amount < baseline ? ' (obligatorio: se autoriza menos de lo solicitado)' : ' (obligatorio: se paga más de lo que marca el avance)')
-                  : ' (opcional)'}
+                Motivo{needsNote ? ' (obligatorio: se paga más de lo que marca el avance)' : ' (opcional)'}
               </label>
               <input value={authorizationNote} onChange={(e) => setAuthorizationNote(e.target.value)} />
             </div>

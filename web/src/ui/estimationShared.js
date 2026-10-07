@@ -277,7 +277,17 @@ const PDF_STYLE = `
   .sign div{flex:1;text-align:center}
   .sign .line{border-top:1px solid #111;height:70px;margin-bottom:4px}
   .sign small{color:#555}
-  @media print{body{margin:12mm}}`;
+  .compact{font-size:10px}
+  .compact .obra{font-size:15px;margin-bottom:2px} .compact h1{font-size:14px} .compact .sub{margin-bottom:6px}
+  .compact .auth{padding:6px 12px;margin:6px 0 8px;display:flex;flex-wrap:wrap;gap:2px 24px;align-items:baseline}
+  .compact .auth .amt{font-size:22px;margin:0} .compact .auth .who{font-size:12px}
+  .compact table{margin:3px 0} .compact th,.compact td{padding:1px 4px}
+  .compact .budget{font-size:11px;margin:8px 0 0;padding-bottom:1px}
+  .compact .totals{line-height:1.3;margin-top:2px} .compact .totals.line{font-size:10px}
+  .compact .summary{margin-top:8px;padding-top:2px} .compact h2{font-size:11px;margin:4px 0 2px}
+  .compact .sign{margin-top:18px} .compact .sign .line{height:36px}
+  @page{size:letter;margin:10mm}
+  @media print{body{margin:0}}`;
 
 function authorizationBoxHtml(estimation) {
   const money = formatCurrency;
@@ -317,7 +327,18 @@ ${signatureHtml(estimation)}
 export function buildAuthorizedBatchHtml(batch, budgetsById = {}, projectName = '') {
   const money = formatCurrency;
   const parts = batch.parts || [];
-  const sections = parts.map((part) => {
+  // Con varios presupuestos solo se imprime el global (más los extras desglosados, si los hay).
+  const multi = parts.length > 1;
+  const extrasSections = multi ? parts.map((part) => {
+    const budget = budgetsById[part.estimationBudgetId] || {};
+    const rows = (part.groupBreakdown || []).filter((row) => row.isExtra)
+      .flatMap((row) => extraConceptsOfGroup(row.group, part, budget))
+      .map((c) => `<tr><td>${escapeHtml(budget.name || part.budgetName || '')}</td><td>${escapeHtml(c.description)}${c.unit ? ` (${escapeHtml(c.quantity)} ${escapeHtml(c.unit)})` : ''}</td><td class="n">${money(c.budgetAmount)}</td><td class="n">${money(c.cumulativeAmount)}</td><td class="n">${formatPct(c.cumulativePct)}</td></tr>`).join('');
+    return rows;
+  }).join('') : '';
+  const sections = multi ? (extrasSections
+    ? `<h2>Extras</h2><table><thead><tr><th>Presupuesto</th><th>Concepto</th><th>Presupuesto</th><th>Avance $</th><th>%</th></tr></thead><tbody>${extrasSections}</tbody></table>`
+    : '') : parts.map((part) => {
     const budget = budgetsById[part.estimationBudgetId] || {};
     const discountNote = Number(budget.discountPct) > 0 ? ` <small>(precios con ${formatPct(budget.discountPct)} de descuento)</small>` : '';
     return `<div class="budget">Presupuesto: ${escapeHtml(budget.name || part.budgetName || '')}${discountNote}</div>
@@ -332,7 +353,7 @@ ${sheetSectionHtml(part, budget)}`;
   <div>total a liberar <strong>${money(batch.totalToPay)}</strong></div></div></div>` : '';
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <title>Estimación ${escapeHtml(batch.folio)} autorizada</title>
-<style>${PDF_STYLE}</style></head><body>
+<style>${PDF_STYLE}</style></head><body${parts.length > 1 ? ' class="compact"' : ''}>
 ${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
 <h1>Estimación #${escapeHtml(batch.folio)} · ${escapeHtml(batch.supplierName || '')}</h1>
 <div class="sub">${parts.length > 1 ? `${parts.length} presupuestos · ` : `${escapeHtml(batch.budgetName || '')} · `}Periodo ${formatDate(batch.periodStart)} – ${formatDate(batch.periodEnd)}</div>

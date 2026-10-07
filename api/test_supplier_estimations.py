@@ -110,14 +110,11 @@ class SupplierEstimationTests(phase1.EstimationsPhase1Tests):
         batch = self._create([self._part(self.depto1, 50), self._part(self.depto2, 20)], requestedAmount=6000)
         self.assertEqual(batch['requestedAmount'], 6000.0)
         self._call(main.submit_supplier_estimation, batch['id'], user=self.capturist)
-        with self.assertRaises(HTTPException) as ctx:  # menos de lo solicitado sin motivo
-            self._call(main.approve_supplier_estimation, batch['id'], {'authorizedAmount': 5000}, user=ADMIN)
-        self.assertEqual(ctx.exception.status_code, 400)
         with self.assertRaises(HTTPException) as ctx:  # más de lo solicitado
             self._call(main.approve_supplier_estimation, batch['id'], {'authorizedAmount': 7000, 'authorizationNote': 'x'}, user=ADMIN)
         self.assertEqual(ctx.exception.status_code, 400)
         approved = self._call(
-            main.approve_supplier_estimation, batch['id'], {'authorizedAmount': 5000, 'authorizationNote': 'ajuste'}, user=ADMIN
+            main.approve_supplier_estimation, batch['id'], {'authorizedAmount': 5000}, user=ADMIN  # menos de lo solicitado: sin motivo
         )
         self.assertEqual(approved['workflowStatus'], 'APROBADA')
         self.assertEqual(approved['authorizedAmount'], 5000.0)
