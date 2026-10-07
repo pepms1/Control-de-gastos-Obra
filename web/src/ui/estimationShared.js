@@ -25,6 +25,13 @@ export function formatDate(value) {
   return parsed.toLocaleDateString('es-MX');
 }
 
+// Una estimación lleva una sola fecha; las anteriores con periodo se siguen mostrando como rango.
+export function formatPeriod(start, end) {
+  if (!start && !end) return '—';
+  if (!end || !start || String(start).slice(0, 10) === String(end).slice(0, 10)) return formatDate(start || end);
+  return `${formatDate(start)} – ${formatDate(end)}`;
+}
+
 export function normalizeTextForSupplierKey(value) {
   return String(value || '')
     .normalize('NFD')
@@ -348,7 +355,7 @@ export function buildAuthorizedSheetHtml(estimation, budget = {}, projectName = 
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap"><style>${PDF_STYLE}</style></head><body>
 ${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
 <div class="head"><span>${escapeHtml(budget.supplierNameSnapshot || estimation.supplierName || '')}</span><span>Estimación #${escapeHtml(estimation.folio)}</span></div>
-<div class="sub">${escapeHtml(budget.name || estimation.budgetName || '')} · Periodo ${formatDate(estimation.periodStart)} – ${formatDate(estimation.periodEnd)}</div>
+<div class="sub">${escapeHtml(budget.name || estimation.budgetName || '')} · ${formatPeriod(estimation.periodStart, estimation.periodEnd)}</div>
 ${authorizationBoxHtml(estimation)}
 ${sheetSectionHtml(estimation, budget)}
 ${signatureHtml(estimation)}
@@ -415,7 +422,7 @@ ${sheetSectionHtml(part, budget)}`;
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap"><style>${PDF_STYLE}</style></head><body${parts.length > 1 ? ' class="compact"' : ''}>
 ${projectName ? `<div class="obra">${escapeHtml(projectName)}</div>` : ''}
 <div class="head"><span>${escapeHtml(batch.supplierName || '')}</span><span>Estimación #${escapeHtml(batch.folio)}</span></div>
-<div class="sub">${parts.length > 1 ? `${parts.length} presupuestos · ` : `${escapeHtml(batch.budgetName || '')} · `}Periodo ${formatDate(batch.periodStart)} – ${formatDate(batch.periodEnd)}</div>
+<div class="sub">${parts.length > 1 ? `${parts.length} presupuestos · ` : `${escapeHtml(batch.budgetName || '')} · `}${formatPeriod(batch.periodStart, batch.periodEnd)}</div>
 ${authorizationBoxHtml(batch)}
 ${sections}
 ${summary}

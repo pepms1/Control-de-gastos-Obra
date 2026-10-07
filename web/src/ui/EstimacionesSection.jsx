@@ -5,7 +5,7 @@ import { CaptureBlock } from './CaptureBlock.jsx';
 import { OpeningBalancePanel } from './OpeningBalancePanel.jsx';
 import { SupplierPaymentsPanel } from './SupplierPaymentsPanel.jsx';
 import { EstimationBatchView, StatusBadge } from './EstimationBatchView.jsx';
-import { formatCurrency, formatDate, formatPct, openAuthorizedBatchSheet } from './estimationShared.js';
+import { formatCurrency, formatDate, formatPct, formatPeriod, openAuthorizedBatchSheet } from './estimationShared.js';
 import { previousCumulativeForBudget, todayIsoDate } from './estimationCapture.js';
 
 // Estimaciones POR PROVEEDOR: una estimación puede llevar avance de cualquiera de los
@@ -303,8 +303,8 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       const payload = {
         projectId: selectedProjectId,
         supplierKey: selectedSupplierKey,
-        periodStart: formMeta.periodStart,
-        periodEnd: formMeta.periodEnd,
+        periodStart: formMeta.periodEnd || formMeta.periodStart,
+        periodEnd: formMeta.periodEnd || formMeta.periodStart,
         notes: formMeta.notes,
         requestedAmount: formMeta.requestedAmount === '' ? null : Number(formMeta.requestedAmount),
         parts,
@@ -522,7 +522,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     <th>Proveedor</th>
                     <th>Presupuestos</th>
                     <th>Folio</th>
-                    <th>Periodo</th>
+                    <th>Fecha</th>
                     <th>Total calculado</th>
                     <th>Solicitado</th>
                     {(section === 'payable' || section === 'approved') && <th>Autorizado</th>}
@@ -536,7 +536,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       <td>{row.supplierName || '—'}</td>
                       <td>{row.budgetName || '—'}</td>
                       <td>#{row.folio}</td>
-                      <td>{formatDate(row.periodStart)} – {formatDate(row.periodEnd)}</td>
+                      <td>{formatPeriod(row.periodStart, row.periodEnd)}</td>
                       <td>{formatCurrency(row.totalToPay)}</td>
                       <td>{row.requestedAmount != null ? formatCurrency(row.requestedAmount) : '—'}</td>
                       {(section === 'payable' || section === 'approved') && <td><strong>{formatCurrency(row.authorizedAmount)}</strong></td>}
@@ -856,7 +856,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                     <thead>
                       <tr>
                         <th>Folio</th>
-                        <th>Periodo</th>
+                        <th>Fecha</th>
                         <th>Presupuestos</th>
                         <th>Subtotal</th>
                         <th>Retención</th>
@@ -876,7 +876,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         return (
                           <tr key={batch.id}>
                             <td>#{batch.folio}</td>
-                            <td>{formatDate(batch.periodStart)} – {formatDate(batch.periodEnd)}</td>
+                            <td>{formatPeriod(batch.periodStart, batch.periodEnd)}</td>
                             <td>{batch.budgetName || '—'}</td>
                             <td>{formatCurrency(batch.periodSubtotal)}</td>
                             <td>{formatCurrency(batch.retentionAmount)}</td>
@@ -947,12 +947,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
 
                   <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
                     <div>
-                      <label>Periodo desde</label>
-                      <input type="date" value={formMeta.periodStart} onChange={(e) => setFormMeta((prev) => ({ ...prev, periodStart: e.target.value }))} required />
-                    </div>
-                    <div>
-                      <label>Periodo hasta</label>
-                      <input type="date" value={formMeta.periodEnd} onChange={(e) => setFormMeta((prev) => ({ ...prev, periodEnd: e.target.value }))} required />
+                      <label>Fecha de la estimación</label>
+                      <input
+                        type="date"
+                        value={formMeta.periodEnd || formMeta.periodStart}
+                        onChange={(e) => setFormMeta((prev) => ({ ...prev, periodStart: e.target.value, periodEnd: e.target.value }))}
+                        required
+                      />
                     </div>
                     <div>
                       <label>Monto solicitado por el contratista</label>

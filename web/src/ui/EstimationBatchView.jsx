@@ -1,5 +1,5 @@
 import React from 'react';
-import { formatCurrency, formatDate, formatPct, groupLabel, extraConceptsOfGroup } from './estimationShared.js';
+import { formatCurrency, formatDate, formatPct, formatPeriod, groupLabel, extraConceptsOfGroup } from './estimationShared.js';
 
 const WORKFLOW_LABELS = { BORRADOR: 'Borrador', ENVIADA: 'Por autorizar', APROBADA: 'Aprobada', REGISTRADA: 'Registrada' };
 
@@ -162,7 +162,7 @@ export function EstimationBatchView({
         <div className="row" style={{ gap: 8, alignItems: 'center' }}>
           <strong>Estimación #{batch.folio} · {batch.supplierName}</strong>
           <StatusBadge estimation={batch} />
-          <span className="small">{formatDate(batch.periodStart)} – {formatDate(batch.periodEnd)}</span>
+          <span className="small">{formatPeriod(batch.periodStart, batch.periodEnd)}</span>
         </div>
         <div className="row" style={{ gap: 6 }}>
           {batch.workflowStatus === 'APROBADA' && <button type="button" onClick={onPrint}>PDF autorizado</button>}
