@@ -1386,7 +1386,10 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                 style={{ width: 90 }}
               />
             </div>
-            <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          </div>
+
+          <div className="row" style={{ gap: 16, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center', marginTop: 24 }}>
               <input
                 type="checkbox"
                 checked={Boolean(form.advanceAmortizationEnabled)}
@@ -1448,11 +1451,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                   Este anticipo ya fue entregado
                 </label>
               )}
-              <div className="small" style={{ color: 'var(--gray-600)', maxWidth: 260 }}>
+              <div className="small" style={{ color: 'var(--gray-600)', maxWidth: 420 }}>
                 Solo define cuánto se amortiza en cada estimación. Con varios presupuestos del proveedor se amortiza únicamente el anticipo que
                 realmente se entregue (pago marcado como anticipo, o «Anticipo a entregar» en la estimación).
               </div>
             </div>
+          </div>
+
+          <div className="row" style={{ gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div>
               <label>Nota (opcional)</label>
               <input value={form.notes} onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))} />
@@ -1467,18 +1473,18 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                 Presupuesto activo
               </label>
             )}
+            <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={Boolean(form.discountEnabled)}
+                onChange={(e) => setForm((prev) => ({ ...prev, discountEnabled: e.target.checked }))}
+              />
+              <strong>Agregar descuento al presupuesto</strong>
+            </label>
           </div>
 
           <div>
             <div style={{ display: 'grid', gap: 6, marginBottom: 10 }}>
-              <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(form.discountEnabled)}
-                  onChange={(e) => setForm((prev) => ({ ...prev, discountEnabled: e.target.checked }))}
-                />
-                <strong>Agregar descuento al presupuesto</strong>
-              </label>
               {form.discountEnabled && (
                 <div className="row" style={{ gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: 10 }}>
                   <div className="row" style={{ gap: 12, alignItems: 'center' }}>
