@@ -313,6 +313,7 @@ function authorizationBoxHtml(estimation) {
 // si no existe, se imprime el nombre en letra manuscrita.
 const SIGNATURES = {
   superadmin: { name: 'José Marcos S' },
+  pms: { name: 'José Marcos S' },
   dms: { name: 'David Marcos S' },
 };
 
