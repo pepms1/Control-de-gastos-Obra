@@ -332,7 +332,8 @@ function signatureHtml(estimation) {
   const signed = Boolean(approver) && Boolean(estimation.approvedAt);
   const name = SIGNATURES[key]?.name || approver;
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const signature = signed ? `<img class="sigimg" src="${origin}/firmas/${encodeURIComponent(key)}.png" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='block'"><span class="sigtxt" style="display:none">${escapeHtml(name)}</span>
+  // El nombre manuscrito siempre está visible; si existe la imagen de firma, openPrintWindow la muestra en su lugar.
+  const signature = signed ? `<img class="sigimg" style="display:none" src="${origin}/firmas/${encodeURIComponent(key)}.png" alt=""><span class="sigtxt">${escapeHtml(name)}</span>
     <small class="stamp">Autorizado digitalmente el ${escapeHtml(formatDateTime(estimation.approvedAt))}</small>` : '';
   return `<div class="sign">
   <div><div class="sigarea">${signature}</div><div class="line"></div>Firma de autorización<br><small>${escapeHtml(approver)}</small></div>
@@ -429,7 +430,18 @@ function openPrintWindow(html) {
   win.document.close();
   win.focus();
   // se espera a la firma (imagen/fuente), con tope, para que salga en la impresión
-  const images = Array.from(win.document.images).map((img) => (img.complete ? null : new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; })));
+  const showImage = (img) => {
+    if (img.naturalWidth > 0) {
+      img.style.display = 'block';
+      const text = img.parentElement?.querySelector('.sigtxt');
+      if (text) text.style.display = 'none';
+    }
+  };
+  const images = Array.from(win.document.images).map((img) => new Promise((resolve) => {
+    const done = () => { showImage(img); resolve(); };
+    if (img.complete) done();
+    else { img.addEventListener('load', done); img.addEventListener('error', resolve); }
+  }));
   const fonts = win.document.fonts?.ready || null;
   Promise.race([Promise.all([...images, fonts]), new Promise((resolve) => setTimeout(resolve, 2500))]).then(() => win.print());
   return true;
