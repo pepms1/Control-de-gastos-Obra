@@ -209,7 +209,11 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     if (budget.isComplete && !inThisBatch) return { ok: false, reason: 'Al 100 % (completo)' };
     return { ok: true, reason: '' };
   }
-  const eligibleBudgets = supplierBudgets.filter((budget) => budgetAvailability(budget).ok);
+  // Para estimar, los presupuestos del proveedor van del más viejo (arriba) al más nuevo (abajo).
+  const formBudgets = [...supplierBudgets].reverse().sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const formOrderIndex = Object.fromEntries(formBudgets.map((budget, index) => [budget.id, index]));
+  const sortByFormOrder = (ids) => [...ids].sort((a, b) => (formOrderIndex[a] ?? 0) - (formOrderIndex[b] ?? 0));
+  const eligibleBudgets = formBudgets.filter((budget) => budgetAvailability(budget).ok);
 
   // ---- Formulario ----
   function startCreate() {
@@ -232,7 +236,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
       notes: batch.notes || '',
       requestedAmount: batch.requestedAmount != null ? String(batch.requestedAmount) : '',
     });
-    setSelectedBudgetIds((batch.parts || []).map((part) => part.estimationBudgetId));
+    setSelectedBudgetIds(sortByFormOrder((batch.parts || []).map((part) => part.estimationBudgetId)));
     setShowForm(true);
   }
 
@@ -245,7 +249,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   }
 
   function toggleBudget(budgetId) {
-    setSelectedBudgetIds((prev) => (prev.includes(budgetId) ? prev.filter((id) => id !== budgetId) : [...prev, budgetId]));
+    setSelectedBudgetIds((prev) => sortByFormOrder(prev.includes(budgetId) ? prev.filter((id) => id !== budgetId) : [...prev, budgetId]));
   }
 
   const activeResults = selectedBudgetIds.map((id) => blockResults[id]).filter(Boolean);
@@ -979,7 +983,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                       Se muestran todos los presupuestos disponibles de {supplierName}; quita la marca de los que no avanzaron (los que no tengan avance ni anticipo no se guardan). Los que ya están al 100 % o pendientes de autorización no se pueden elegir.
                     </div>
                     <div style={{ display: 'grid', gap: 4 }}>
-                      {supplierBudgets.map((budget) => {
+                      {formBudgets.map((budget) => {
                         const availability = budgetAvailability(budget);
                         return (
                           <label key={budget.id} className="small" style={{ display: 'inline-flex', gap: 8, alignItems: 'center', opacity: availability.ok ? 1 : 0.55 }}>
