@@ -200,13 +200,16 @@ export function EstimationBatchView({
         <div><strong>Amortización anticipo:</strong> {formatCurrency(batch.advanceAmortizationAmount)}</div>
         {Number(batch.priorPaidApplied) > 0 && <div><strong>Pagos previos reconocidos:</strong> −{formatCurrency(batch.priorPaidApplied)}</div>}
         {Number(batch.advanceGivenAmount) > 0 && <div><strong>Anticipo entregado:</strong> +{formatCurrency(batch.advanceGivenAmount)}</div>}
-        <div><strong>Total calculado (a liberar):</strong> {formatCurrency(batch.totalToPay)}</div>
+        <div><strong>Total calculado (a liberar){batch.ivaEnabled ? ' sin IVA' : ''}:</strong> {formatCurrency(batch.totalToPay)}</div>
+        {batch.ivaEnabled && <div><strong>IVA ({batch.ivaPct || 16}%):</strong> {formatCurrency(batch.ivaAmount)}</div>}
+        {batch.ivaEnabled && <div><strong>Total con IVA:</strong> {formatCurrency(batch.totalWithIva)}</div>}
       </div>
 
       {batch.workflowStatus === 'APROBADA' && (
         <div className="small" style={{ display: 'grid', gap: 2 }}>
           <div>
-            <strong>Autorizado: {formatCurrency(batch.authorizedAmount)}</strong>
+            <strong>Autorizado{batch.ivaEnabled ? ' (sin IVA)' : ''}: {formatCurrency(batch.authorizedAmount)}</strong>
+            {batch.ivaEnabled && <> · IVA {formatCurrency(batch.ivaAmount)} · <strong>Total con IVA {formatCurrency(batch.totalWithIva)}</strong></>}
             {requested !== null && (
               <> · Solicitado por el contratista: {formatCurrency(requested)}
                 {Math.abs(Number(batch.authorizedVsRequested) || 0) >= 0.01 && <> ({formatCurrency(batch.authorizedVsRequested)} vs. solicitado)</>}
@@ -259,6 +262,7 @@ export function EstimationBatchView({
                   {requested !== null && Math.abs(amount - requested) >= 0.01
                     ? `${formatCurrency(Math.abs(requested - amount))} ${amount < requested ? 'menos' : 'más'} que lo solicitado`
                     : 'lo solicitado'}
+                  {batch.ivaEnabled && calculated > 0 ? ` · sin IVA; con IVA ${formatCurrency(amount + (Number(batch.ivaAmount) / calculated) * amount)}` : ''}
                 </div>
               </div>
             </div>

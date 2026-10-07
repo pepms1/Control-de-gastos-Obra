@@ -307,7 +307,8 @@ function authorizationBoxHtml(estimation) {
   const requested = estimation.requestedAmount != null ? Number(estimation.requestedAmount) : null;
   return `<div class="auth">
   <div class="lbl">Monto autorizado</div>
-  <div class="amt">${money(estimation.authorizedAmount)}</div>
+  <div class="amt">${money(estimation.authorizedAmount)}${estimation.ivaEnabled ? ' <small style="font-size:12px;font-weight:600">sin IVA</small>' : ''}</div>
+  ${estimation.ivaEnabled ? `<div class="who">IVA (${formatPct(estimation.ivaPct || 16)}): ${money(estimation.ivaAmount)} · Total con IVA: ${money(estimation.totalWithIva)}</div>` : ''}
   <div class="who">Autorizó: ${escapeHtml(estimation.approvedBy || '—')} · ${escapeHtml(formatDateTime(estimation.approvedAt) || '—')}</div>
   ${requested !== null ? `<div>Solicitado por el contratista: ${money(requested)}</div>` : ''}
   <div>Avance total calculado: ${money(estimation.totalToPay)}</div>
@@ -409,14 +410,15 @@ export function buildAuthorizedBatchHtml(batch, budgetsById = {}, projectName = 
     return `<div class="budget">Presupuesto: ${escapeHtml(budget.name || part.budgetName || '')}${discountNote}</div>
 ${sheetSectionHtml(part, budget)}`;
   }).join('');
-  const summary = (parts.length > 1 || Number(batch.advanceGivenAmount) > 0) ? `<div class="summary"><h2>Resumen de la estimación</h2><div class="totals">
+  const summary = (parts.length > 1 || Number(batch.advanceGivenAmount) > 0 || batch.ivaEnabled) ? `<div class="summary"><h2>Resumen de la estimación</h2><div class="totals">
   <div>avance de esta estimación <strong>${money(batch.periodSubtotal)}</strong></div>
   ${Number(batch.retentionAmount) > 0 ? `<div>retención − <strong>${money(batch.retentionAmount)}</strong></div>` : ''}
   ${Number(batch.advanceAmortizationAmount) > 0 ? `<div>amortización de anticipos − <strong>${money(batch.advanceAmortizationAmount)}</strong></div>` : ''}
   ${Number(batch.priorPaidApplied) > 0 ? `<div>pagos ya hechos aplicados a este avance (sin anticipos) − <strong>${money(batch.priorPaidApplied)}</strong></div>` : ''}
   ${Number(batch.advanceGivenAmount) > 0 ? `<div>anticipo a entregar + <strong>${money(batch.advanceGivenAmount)}</strong></div>` : ''}
-  <div class="grand">Avance total (a pagar con esta estimación) <strong>${money(batch.totalToPay)}</strong></div>
-  ${paidToDate != null ? `<div class="paid">pagado total a la fecha al proveedor (anticipos + pagos a cuenta) <strong>${money(paidToDate)}</strong></div>` : ''}</div></div>` : '';
+  <div class="grand">Avance total (a pagar con esta estimación)${batch.ivaEnabled ? ' sin IVA' : ''} <strong>${money(batch.totalToPay)}</strong></div>
+  ${batch.ivaEnabled ? `<div>IVA (${formatPct(batch.ivaPct || 16)}) + <strong>${money(batch.ivaAmount)}</strong></div><div class="grand">Total con IVA <strong>${money(batch.totalWithIva)}</strong></div>` : ''}
+  ${paidToDate != null ? `<div class="paid">pagado total a la fecha al proveedor${batch.ivaEnabled ? ' sin IVA' : ''} (anticipos + pagos a cuenta) <strong>${money(paidToDate)}</strong></div>` : ''}</div></div>` : '';
   return `<!doctype html><html lang="es"><head><meta charset="utf-8">
 <title>Estimación ${escapeHtml(batch.folio)} autorizada</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600&display=swap"><style>${PDF_STYLE}</style></head><body${parts.length > 1 ? ' class="compact"' : ''}>

@@ -294,6 +294,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
       retentionPct: String(row.retentionPct ?? 0),
       advanceAmortizationEnabled: Boolean(row.advanceAmortizationEnabled),
       advanceDelivered: Boolean(row.openingSetAt) && Number(row.openingAdvanceAmount) > 0,
+      ivaEnabled: Boolean(row.ivaEnabled),
       advanceAmount: String(row.advanceAmount ?? 0),
       advanceMode: row.advanceMode === 'pct' ? 'pct' : 'amount',
       advancePctInput: row.advanceMode === 'pct' ? String(row.advancePctInput ?? '') : '',
@@ -513,6 +514,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           currency: form.currency,
           retentionPct: Number(form.retentionPct) || 0,
           advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
+          ivaEnabled: Boolean(form.ivaEnabled),
           advanceAmount,
           ...advancePayload,
           ...(canMarkAdvanceDelivered ? { advanceDelivered: Boolean(form.advanceDelivered) } : {}),
@@ -533,6 +535,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
           notes: form.notes,
           retentionPct: Number(form.retentionPct) || 0,
           advanceAmortizationEnabled: Boolean(form.advanceAmortizationEnabled),
+          ivaEnabled: Boolean(form.ivaEnabled),
           advanceAmount,
           ...advancePayload,
           groupAdvancePcts,
@@ -1473,6 +1476,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                 Presupuesto activo
               </label>
             )}
+            <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }} title="Los precios del presupuesto van sin IVA; en la estimación se muestra el IVA y el total con IVA, y los pagos con IVA se comparan por su subtotal.">
+              <input
+                type="checkbox"
+                checked={Boolean(form.ivaEnabled)}
+                onChange={(e) => setForm((prev) => ({ ...prev, ivaEnabled: e.target.checked }))}
+              />
+              Lleva IVA (16%)
+            </label>
             <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
               <input
                 type="checkbox"
