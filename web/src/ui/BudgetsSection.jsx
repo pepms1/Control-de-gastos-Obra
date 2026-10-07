@@ -38,6 +38,10 @@ function classifyBudgetStatus(paidPct) {
   return { label: 'En presupuesto', className: 'in-budget' };
 }
 
+function normalizeSearchText(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
 export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations, isReviewer = false, approvalProjectIds = null, onApprovalChange }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -53,6 +57,7 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
   const [localAreaM2Override, setLocalAreaM2Override] = useState(null);
   const [totalEgresosSinIva, setTotalEgresosSinIva] = useState(0);
   const [expandedSuppliers, setExpandedSuppliers] = useState(() => new Set());
+  const [conceptSearch, setConceptSearch] = useState('');
 
   const [showForm, setShowForm] = useState(false);
   const [editingBudgetRow, setEditingBudgetRow] = useState(null);
@@ -103,10 +108,30 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
     [projects],
   );
 
+  // ---- búsqueda por cualquier palabra de los conceptos (sin acentos ni mayúsculas) ----
+  const searchTokens = useMemo(() => normalizeSearchText(conceptSearch).split(/\s+/).filter(Boolean), [conceptSearch]);
+  const conceptMatchesByBudget = useMemo(() => {
+    if (!searchTokens.length) return null;
+    const result = new Map();
+    rows.forEach((row) => {
+      const matches = (row.lineItems || []).filter((concept) => {
+        const text = normalizeSearchText(concept.description);
+        return searchTokens.every((token) => text.includes(token));
+      });
+      const header = normalizeSearchText(`${row.name || ''} ${row.supplierNameSnapshot || ''}`);
+      if (matches.length || searchTokens.every((token) => header.includes(token))) result.set(row.id, matches);
+    });
+    return result;
+  }, [rows, searchTokens]);
+  const visibleRows = useMemo(
+    () => (conceptMatchesByBudget ? rows.filter((row) => conceptMatchesByBudget.has(row.id)) : rows),
+    [rows, conceptMatchesByBudget],
+  );
+
   // ---- datos agrupados por proveedor (+ / − para expandir) ----
   const groupedRows = useMemo(() => {
     const groups = new Map();
-    rows.forEach((row) => {
+    visibleRows.forEach((row) => {
       const supplierKey = String(row?.supplierKey || '').trim();
       const supplierName = String(row?.supplierNameSnapshot || row?.supplierKey || 'Sin proveedor');
       const groupKey = supplierKey || `__name__:${supplierName}`;
@@ -116,9 +141,14 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
     return Array.from(groups.values())
       .map((group) => ({ ...group, totals: summarizeBudgets(group.items, { bySupplier: true }) }))
       .sort((a, b) => a.supplierName.localeCompare(b.supplierName, 'es'));
-  }, [rows]);
+  }, [visibleRows]);
 
-  const grandTotals = useMemo(() => summarizeBudgets(rows), [rows]);
+  // Al buscar se despliegan los proveedores con coincidencias.
+  useEffect(() => {
+    if (searchTokens.length) setExpandedSuppliers(new Set(groupedRows.map((group) => group.key)));
+  }, [conceptSearch]);
+
+  const grandTotals = useMemo(() => summarizeBudgets(visibleRows), [visibleRows]);
 
   const conceptoIdsWithHistory = useMemo(
     () => new Set(editingBudgetRow?.conceptoIdsWithHistory || []),
@@ -852,6 +882,15 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
               placeholder="Filtrar por proveedor"
             />
           </div>
+          <div className="search-input-wrap" style={{ maxWidth: 320 }}>
+            <input
+              className="search-input"
+              value={conceptSearch}
+              onChange={(e) => setConceptSearch(e.target.value)}
+              placeholder="Buscar en conceptos (ej. mármol)"
+              aria-label="Buscar en conceptos"
+            />
+          </div>
           <button type="button" className="secondary" onClick={loadBudgets}>Buscar</button>
           <label className="small" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
             <input type="checkbox" checked={includeInactive} onChange={(e) => setIncludeInactive(e.target.checked)} />
@@ -995,6 +1034,12 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                                         <td>{project?.displayName || project?.name || row.projectId}</td>
                                         <td>
                                           {row.name || '—'}
+                                          {conceptMatchesByBudget?.get(row.id)?.length > 0 && (
+                                            <div className="small" style={{ color: 'var(--gray-600)' }}>
+                                              Coincide: {conceptMatchesByBudget.get(row.id).slice(0, 3).map((concept) => concept.description).join(' · ')}
+                                              {conceptMatchesByBudget.get(row.id).length > 3 ? ` (+${conceptMatchesByBudget.get(row.id).length - 3})` : ''}
+                                            </div>
+                                          )}
                                           {row.approvalStatus === 'PENDIENTE' && (
                                             <div className="small" style={{ color: '#92400e', fontWeight: 600 }}>
                                               {row.reauthRequired ? 'Por reautorizar' : 'Por autorizar'} · no se puede estimar
