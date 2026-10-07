@@ -551,3 +551,54 @@ class PlannedAdvanceInMultiBudgetSupplierTests(phase1.EstimationsPhase1Tests):
         self.assertEqual(saved['advanceDeliveredAmount'], 500.0)
         saved = main.update_estimation_budget(self.c['id'], {'advanceMode': 'pct', 'advancePct': 20, 'advanceDelivered': True}, user=ADMIN)
         self.assertEqual(saved['advanceDeliveredAmount'], round(saved['totalContractedAmount'] * 0.2, 2))
+
+
+class IvaSupplierTests(phase1.EstimationsPhase1Tests):
+    """Proveedores con IVA: presupuesto y estimación sin IVA; sus pagos cuentan por el subtotal sin IVA."""
+
+    def _iva_tx(self, subtotal):
+        iva = round(subtotal * 0.16, 2)
+        return self._acero_transaction(round(subtotal + iva, 2), tax={'subtotal': subtotal, 'iva': iva, 'totalFactura': round(subtotal + iva, 2)})
+
+    def _setup(self, iva_enabled):
+        self.txs = [self._iva_tx(1000), self._iva_tx(500)]
+        self.fake_db = self._fake_db(transactions=self.txs)
+        patches = [
+            patch.object(main, 'db', self.fake_db),
+            patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q),
+            patch.object(main, 'build_transactions_query', return_value={}),
+        ]
+        for p in patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in patches])
+        return self._create_budget(self.fake_db, ivaEnabled=iva_enabled)
+
+    def test_paid_is_counted_without_iva_when_the_budget_carries_iva(self):
+        budget = self._setup(True)
+        self.assertEqual(budget['paidAmount'], 1500.0)  # subtotales, no 1,740 con IVA
+
+    def test_paid_keeps_the_amount_with_iva_when_the_budget_does_not_carry_iva(self):
+        budget = self._setup(False)
+        self.assertEqual(budget['paidAmount'], 1740.0)
+
+    def test_estimation_shows_iva_and_total_with_iva_over_the_amount_to_authorize(self):
+        budget = self._setup(True)
+        batch = main.create_supplier_estimation(
+            {'projectId': self.project_id, 'supplierKey': budget['supplierKey'], 'periodStart': '2026-02-01', 'periodEnd': '2026-02-01',
+             'parts': [{'estimationBudgetId': budget['id'], 'captureMode': 'global', 'globalProgressPct': 50}]},
+            user=SUPERADMIN,
+        )
+        self.assertTrue(batch['ivaEnabled'])
+        self.assertEqual(batch['ivaAmount'], round(batch['totalToPay'] * 0.16, 2))
+        self.assertEqual(batch['totalWithIva'], round(batch['totalToPay'] * 1.16, 2))
+
+    def test_no_iva_fields_when_the_budget_has_no_iva(self):
+        budget = self._setup(False)
+        batch = main.create_supplier_estimation(
+            {'projectId': self.project_id, 'supplierKey': budget['supplierKey'], 'periodStart': '2026-02-01', 'periodEnd': '2026-02-01',
+             'parts': [{'estimationBudgetId': budget['id'], 'captureMode': 'global', 'globalProgressPct': 50}]},
+            user=SUPERADMIN,
+        )
+        self.assertFalse(batch['ivaEnabled'])
+        self.assertEqual(batch['ivaAmount'], 0.0)
+        self.assertEqual(batch['totalWithIva'], batch['totalToPay'])

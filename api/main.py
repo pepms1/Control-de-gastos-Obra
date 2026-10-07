@@ -9756,6 +9756,7 @@ def list_budget_candidate_transactions(
                 "description": description,
                 "type": tx.get("type") or "EXPENSE",
                 "amountWithTax": round(float(tx.get("amount") or 0), 2),
+                "amountSinIva": compute_monto_sin_iva(tx),
                 "amountWithoutTax": round(float(compute_monto_sin_iva(tx)), 2),
                 "isAssignedToCurrentBudget": assigned_budget_id == budget_id,
                 "isAssignedToOtherBudget": bool(assigned_budget_id and assigned_budget_id != budget_id),
@@ -10315,6 +10316,18 @@ def compute_remaining_opening_paid_balance(estimation_budget: dict, exclude_esti
     return round(max(opening - applied, 0), 2)
 
 
+ESTIMATION_IVA_PCT = 16.0
+
+
+def supplier_uses_iva(project_id: str, supplier_key: str) -> bool:
+    """Proveedor con presupuestos que llevan IVA: los presupuestos y las estimaciones van SIN IVA, así que
+    sus pagos (que traen IVA) se comparan por su subtotal sin IVA."""
+    return any(
+        bool(row.get("ivaEnabled")) and row.get("isActive", True) is not False
+        for row in db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplier_key})
+    )
+
+
 def supplier_uses_prior_pool(project_id: str, supplier_key: str) -> bool:
     """Proveedores con varios presupuestos activos: los pagos previos (sin anticipo) se
     toman de TODO lo pagado al proveedor, no de lo asignado a un presupuesto."""
@@ -10625,7 +10638,7 @@ def _count_active_estimation_budgets_for_supplier(project_id: str, supplier_key:
 # transaction bucketed to that supplier (avoids double counting once a
 # supplier has more than one active estimation budget and needs manual
 # assignment). Always tax-inclusive — this reflects real money paid out.
-def compute_supplier_expenses_excluding(project_id: str, supplier_key: str, excluded_transaction_ids: set[str]) -> float:
+def compute_supplier_expenses_excluding(project_id: str, supplier_key: str, excluded_transaction_ids: set[str], sin_iva: bool = False) -> float:
     """Total de egresos del proveedor (con IVA) sin los pagos que el usuario
     descarto de un presupuesto unico (son de otro presupuesto o fuera de el)."""
     tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
@@ -10656,7 +10669,7 @@ def compute_supplier_expenses_excluding(project_id: str, supplier_key: str, excl
             continue
         if _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key) != supplier_key:
             continue
-        total += float(tx.get("amount") or 0)
+        total += compute_monto_sin_iva(tx) if sin_iva else float(tx.get("amount") or 0)
     return round(total, 2)
 
 
@@ -10679,10 +10692,11 @@ def _supplier_payment_excluded_ids(project_id: str, supplier_key: str) -> set[st
 def compute_supplier_paid_amount(project_id: str, supplier_key: str) -> float:
     """Pagado a la fecha al proveedor: TODOS sus pagos se asignan a sus presupuestos
     por defecto, salvo los que el usuario desasigna."""
+    sin_iva = supplier_uses_iva(project_id, supplier_key)
     excluded = _supplier_payment_excluded_ids(project_id, supplier_key)
     if excluded:
-        return compute_supplier_expenses_excluding(project_id, supplier_key, excluded)
-    totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=True)
+        return compute_supplier_expenses_excluding(project_id, supplier_key, excluded, sin_iva=sin_iva)
+    totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=not sin_iva)
     return round(float(totals_by_bucket.get(supplier_key) or 0), 2)
 
 
@@ -10693,6 +10707,7 @@ def compute_estimation_budget_paid_amount(
     estimation_budget_is_active: bool = True,
     excluded_transaction_ids=None,
 ) -> float:
+    sin_iva = supplier_uses_iva(project_id, supplier_key)
     link_rows = list(db.estimationPaymentLinks.find({"estimationBudgetId": estimation_budget_id}, {"transactionId": 1}))
     linked_transaction_ids = _normalize_transaction_id_values([row.get("transactionId") for row in link_rows])
     if linked_transaction_ids:
@@ -10729,14 +10744,14 @@ def compute_estimation_budget_paid_amount(
         for tx in movements:
             if _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key) != supplier_key:
                 continue
-            paid_amount += float(tx.get("amount") or 0)
+            paid_amount += compute_monto_sin_iva(tx) if sin_iva else float(tx.get("amount") or 0)
         return round(paid_amount, 2)
 
     if estimation_budget_is_active and _count_active_estimation_budgets_for_supplier(project_id, supplier_key) == 1:
         excluded = set(_normalize_transaction_id_values(excluded_transaction_ids or []))
         if excluded:
-            return compute_supplier_expenses_excluding(project_id, supplier_key, excluded)
-        totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=True)
+            return compute_supplier_expenses_excluding(project_id, supplier_key, excluded, sin_iva=sin_iva)
+        totals_by_bucket = compute_expense_totals_by_supplier_bucket(project_id, include_tax=not sin_iva)
         return round(float(totals_by_bucket.get(supplier_key) or 0), 2)
 
     return 0.0
@@ -11168,6 +11183,8 @@ def create_estimation_budget(payload: dict, request: FastAPIRequest, user: dict 
         "isActive": is_active,
         "retentionPct": retention_pct,
         "advanceAmortizationEnabled": advance_amortization_enabled,
+        "ivaEnabled": bool((payload or {}).get("ivaEnabled")),
+        "ivaPct": ESTIMATION_IVA_PCT,
         "advanceAmount": advance_amount,
         "advanceMode": advance_mode,
         "advancePctInput": advance_pct_input,
@@ -11283,6 +11300,7 @@ def list_estimation_budget_candidate_transactions(
                 "description": description,
                 "type": tx.get("type") or "EXPENSE",
                 "amountWithTax": round(float(tx.get("amount") or 0), 2),
+                "amountSinIva": compute_monto_sin_iva(tx),
                 "amountWithoutTax": round(float(compute_monto_sin_iva(tx)), 2),
                 "isAssignedToCurrentBudget": assigned_id == estimation_budget_id,
                 "isAssignedToOtherBudget": bool(assigned_id and assigned_id != estimation_budget_id),
@@ -11428,6 +11446,7 @@ def _list_supplier_payment_rows(project_id: str, supplier_key: str) -> list[dict
             "date": tx.get("date"),
             "description": str(tx.get("description") or tx.get("concept") or "").strip(),
             "amountWithTax": round(float(tx.get("amount") or 0), 2),
+                "amountSinIva": compute_monto_sin_iva(tx),
         })
     rows.sort(key=lambda item: str(item.get("date") or ""), reverse=True)
     return rows
@@ -11573,8 +11592,10 @@ def set_estimation_budget_opening_balance(
         # habia desasignado del proveedor vuelve a contar.
         _assign_payments_to_budget(estimation_budget, advance_ids + prior_ids, user)
 
-    advance_total = round(sum(float(by_id[tx_id].get("amountWithTax") or 0) for tx_id in advance_ids) + manual_advance, 2)
-    prior_total = round(sum(float(by_id[tx_id].get("amountWithTax") or 0) for tx_id in prior_ids) + manual_prior, 2)
+    # Con proveedores que llevan IVA, los pagos seleccionados cuentan por su monto sin IVA (el presupuesto va sin IVA).
+    amount_key = "amountSinIva" if supplier_uses_iva(str(estimation_budget.get("projectId") or ""), str(estimation_budget.get("supplierKey") or "")) else "amountWithTax"
+    advance_total = round(sum(float(by_id[tx_id].get(amount_key) or 0) for tx_id in advance_ids) + manual_advance, 2)
+    prior_total = round(sum(float(by_id[tx_id].get(amount_key) or 0) for tx_id in prior_ids) + manual_prior, 2)
 
     updates: dict = {
         "openingAdvanceTransactionIds": advance_ids,
@@ -11682,6 +11703,9 @@ def update_estimation_budget(estimation_budget_id: str, payload: dict, user: dic
         updates["retentionPct"] = resolve_retention_pct(payload.get("retentionPct"))
     if "advanceAmortizationEnabled" in payload:
         updates["advanceAmortizationEnabled"] = bool(payload.get("advanceAmortizationEnabled"))
+    if "ivaEnabled" in payload:
+        updates["ivaEnabled"] = bool(payload.get("ivaEnabled"))
+        updates["ivaPct"] = ESTIMATION_IVA_PCT
 
     advance_amount = float(existing.get("advanceAmount") or 0)
     if "advanceAmount" in payload:
@@ -12486,6 +12510,22 @@ def _batch_header(parts: list[dict], budgets_by_id: dict[str, dict]) -> dict:
             "paidMarkedBy": lead.get("paidMarkedBy"),
             "paidMarkedAt": lead.get("paidMarkedAt"),
         })
+    # IVA: presupuestos y estimaciones van sin IVA; para los presupuestos que llevan IVA se muestra el IVA y el total
+    # con IVA (lo que se le paga al proveedor), calculados sobre el monto autorizado (o el calculado si aún no se aprueba).
+    iva_amount = 0.0
+    any_iva = False
+    for part in refreshed:
+        part_budget = budgets_by_id.get(str(part.get("estimationBudgetId") or "")) or {}
+        if part_budget.get("ivaEnabled"):
+            any_iva = True
+            base = float(part.get("authorizedAmount") or 0) if status == ESTIMATION_STATUS_APPROVED else float(part.get("totalToPay") or 0)
+            iva_amount += max(base, 0.0) * float(part_budget.get("ivaPct") or ESTIMATION_IVA_PCT) / 100
+    header["ivaEnabled"] = any_iva
+    header["ivaAmount"] = round(iva_amount, 2)
+    header["ivaPct"] = ESTIMATION_IVA_PCT
+    header["totalWithIva"] = round(
+        (header.get("authorizedAmount") if status == ESTIMATION_STATUS_APPROVED else header["totalToPay"]) + iva_amount, 2
+    )
     for part in refreshed:
         budget = budgets_by_id.get(str(part.get("estimationBudgetId") or "")) or {}
         payload = serialize_estimation(part)

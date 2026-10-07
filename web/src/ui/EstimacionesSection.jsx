@@ -284,6 +284,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
   );
   formTotals.priorPaidApplied += poolTotal;
   formTotals.totalToPay -= poolTotal;
+  // IVA: los presupuestos y la estimación van sin IVA; los que llevan IVA muestran el IVA y el total con IVA.
+  const formIva = selectedBudgetIds.reduce((sum, id) => {
+    const result = blockResults[id];
+    if (!result || !budgetsById[id]?.ivaEnabled) return sum;
+    return sum + Math.max(result.preview.totalToPay - (poolByBudget[id] || 0), 0) * 0.16;
+  }, 0);
+  const formHasIva = selectedBudgetIds.some((id) => budgetsById[id]?.ivaEnabled);
 
   function handleBlockChange(result) {
     setBlockResults((prev) => ({ ...prev, [result.budgetId]: result }));
@@ -1055,6 +1062,13 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
                         <div className="kpi-value">{formatCurrency(formTotals.totalToPay)}</div>
                         <div className="kpi-sub">total de {activeResults.filter((r) => r.hasValue).length} presupuesto(s)</div>
                       </div></div>
+                      {formHasIva && (
+                        <div className="kpi-card"><div>
+                          <div className="kpi-label">Total con IVA (16%)</div>
+                          <div className="kpi-value">{formatCurrency(formTotals.totalToPay + formIva)}</div>
+                          <div className="kpi-sub">{formatCurrency(formTotals.totalToPay)} sin IVA + {formatCurrency(formIva)} de IVA</div>
+                        </div></div>
+                      )}
                       <div className="kpi-card"><div>
                         <div className="kpi-label">Solicitado por el contratista</div>
                         <div className="kpi-value">{formMeta.requestedAmount === '' ? '—' : formatCurrency(Number(formMeta.requestedAmount) || 0)}</div>
