@@ -110,28 +110,26 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
 
   // ---- búsqueda por cualquier palabra de los conceptos (sin acentos ni mayúsculas) ----
   const searchTokens = useMemo(() => normalizeSearchText(conceptSearch).split(/\s+/).filter(Boolean), [conceptSearch]);
-  const conceptMatchesByBudget = useMemo(() => {
-    if (!searchTokens.length) return null;
-    const result = new Map();
+  // Renglones (concepto, unidad, precio unitario) que coinciden, de todos los presupuestos cargados.
+  const conceptResults = useMemo(() => {
+    if (!searchTokens.length) return [];
+    const result = [];
     rows.forEach((row) => {
-      const matches = (row.lineItems || []).filter((concept) => {
+      (row.lineItems || []).forEach((concept) => {
         const text = normalizeSearchText(concept.description);
-        return searchTokens.every((token) => text.includes(token));
+        if (searchTokens.every((token) => text.includes(token))) result.push({ row, concept });
       });
-      const header = normalizeSearchText(`${row.name || ''} ${row.supplierNameSnapshot || ''}`);
-      if (matches.length || searchTokens.every((token) => header.includes(token))) result.set(row.id, matches);
     });
-    return result;
+    return result.sort((x, y) =>
+      String(x.row.supplierNameSnapshot || '').localeCompare(String(y.row.supplierNameSnapshot || ''), 'es')
+      || String(x.row.name || '').localeCompare(String(y.row.name || ''), 'es')
+      || String(x.concept.description || '').localeCompare(String(y.concept.description || ''), 'es'));
   }, [rows, searchTokens]);
-  const visibleRows = useMemo(
-    () => (conceptMatchesByBudget ? rows.filter((row) => conceptMatchesByBudget.has(row.id)) : rows),
-    [rows, conceptMatchesByBudget],
-  );
 
   // ---- datos agrupados por proveedor (+ / − para expandir) ----
   const groupedRows = useMemo(() => {
     const groups = new Map();
-    visibleRows.forEach((row) => {
+    rows.forEach((row) => {
       const supplierKey = String(row?.supplierKey || '').trim();
       const supplierName = String(row?.supplierNameSnapshot || row?.supplierKey || 'Sin proveedor');
       const groupKey = supplierKey || `__name__:${supplierName}`;
@@ -141,14 +139,9 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
     return Array.from(groups.values())
       .map((group) => ({ ...group, totals: summarizeBudgets(group.items, { bySupplier: true }) }))
       .sort((a, b) => a.supplierName.localeCompare(b.supplierName, 'es'));
-  }, [visibleRows]);
+  }, [rows]);
 
-  // Al buscar se despliegan los proveedores con coincidencias.
-  useEffect(() => {
-    if (searchTokens.length) setExpandedSuppliers(new Set(groupedRows.map((group) => group.key)));
-  }, [conceptSearch]);
-
-  const grandTotals = useMemo(() => summarizeBudgets(visibleRows), [visibleRows]);
+  const grandTotals = useMemo(() => summarizeBudgets(rows), [rows]);
 
   const conceptoIdsWithHistory = useMemo(
     () => new Set(editingBudgetRow?.conceptoIdsWithHistory || []),
@@ -912,6 +905,42 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
 
         {loading ? (
           <div className="small" style={{ padding: 16 }}>Cargando presupuestos...</div>
+        ) : searchTokens.length ? (
+          <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
+            <div className="small" style={{ padding: '8px 12px', color: 'var(--gray-600)' }}>
+              {conceptResults.length} renglón(es) con «{conceptSearch.trim()}» en {new Set(conceptResults.map((item) => item.row.id)).size} presupuesto(s)
+            </div>
+            <table className="budgets-table">
+              <thead>
+                <tr>
+                  <th>Concepto</th>
+                  <th>Unidad</th>
+                  <th className="col-money">Precio unitario</th>
+                  <th>Proveedor</th>
+                  <th>Presupuesto</th>
+                </tr>
+              </thead>
+              <tbody>
+                {conceptResults.map(({ row, concept }) => (
+                  <tr key={`${row.id}-${concept.id}`}>
+                    <td>{concept.description}</td>
+                    <td>{concept.unit || '—'}</td>
+                    <td>
+                      {formatCurrency(concept.unitPrice)}
+                      {Number(concept.listUnitPrice) > 0 && Number(concept.listUnitPrice) !== Number(concept.unitPrice) && (
+                        <div className="small" style={{ color: 'var(--gray-600)' }}>lista {formatCurrency(concept.listUnitPrice)}</div>
+                      )}
+                    </td>
+                    <td>{row.supplierNameSnapshot || row.supplierKey || '—'}</td>
+                    <td>{row.name || '—'}</td>
+                  </tr>
+                ))}
+                {!conceptResults.length && (
+                  <tr><td colSpan={5} className="small" style={{ textAlign: 'center' }}>Ningún concepto coincide con la búsqueda.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <div className="budgets-table-shell" style={{ overflowX: 'auto' }}>
             <table className="budgets-table">
@@ -1034,12 +1063,6 @@ export function BudgetsSection({ projects, selectedProjectId, onOpenEstimations,
                                         <td>{project?.displayName || project?.name || row.projectId}</td>
                                         <td>
                                           {row.name || '—'}
-                                          {conceptMatchesByBudget?.get(row.id)?.length > 0 && (
-                                            <div className="small" style={{ color: 'var(--gray-600)' }}>
-                                              Coincide: {conceptMatchesByBudget.get(row.id).slice(0, 3).map((concept) => concept.description).join(' · ')}
-                                              {conceptMatchesByBudget.get(row.id).length > 3 ? ` (+${conceptMatchesByBudget.get(row.id).length - 3})` : ''}
-                                            </div>
-                                          )}
                                           {row.approvalStatus === 'PENDIENTE' && (
                                             <div className="small" style={{ color: '#92400e', fontWeight: 600 }}>
                                               {row.reauthRequired ? 'Por reautorizar' : 'Por autorizar'} · no se puede estimar
