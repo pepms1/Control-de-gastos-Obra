@@ -40,6 +40,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SLOW_REQUEST_LOG_MS = float(os.getenv("SLOW_REQUEST_LOG_MS", "700"))
+
+
+@app.middleware("http")
+async def log_slow_requests(request, call_next):
+    """Mide cada petición: la deja en el header Server-Timing (visible en la pestaña Network del navegador) y
+    registra en el log las que tardan más de SLOW_REQUEST_LOG_MS para encontrar cuellos de botella."""
+    started = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.0f}"
+    if elapsed_ms >= SLOW_REQUEST_LOG_MS:
+        logging.getLogger("perf").warning(
+            "[perf] SLOW %s %s -> %s en %.0f ms", request.method, request.url.path, response.status_code, elapsed_ms
+        )
+    return response
+
+
 MONGO_URL = os.getenv("MONGO_URL")
 if not MONGO_URL:
     raise RuntimeError("MONGO_URL env var is required")
@@ -9544,6 +9562,7 @@ def summary_expenses_by_supplier(
         include_cancelled=parse_include_cancelled_flag(includeCancelled) and user.get("role") in {"SUPERADMIN", "ADMIN"},
     )
     movements_query = with_legacy_project_filter(movements_query, project_id)
+    _perf_started = time.perf_counter()
     movements = list(
         db.transactions.find(
             movements_query,
@@ -9564,6 +9583,7 @@ def summary_expenses_by_supplier(
             },
         )
     )
+    logging.getLogger("perf").info("[perf] summary_by_supplier lectura=%.0f ms docs=%d", (time.perf_counter() - _perf_started) * 1000, len(movements))
 
     supplier_ids = []
     for tx in movements:
@@ -15658,6 +15678,7 @@ def spend_by_category(
         if date_to:
             match["date"]["$lte"] = date_to
 
+    _perf_started = time.perf_counter()
     transactions = list(
         db.transactions.find(
             match,
@@ -15676,12 +15697,14 @@ def spend_by_category(
                 "supplierName": 1,
                 "supplierCardCode": 1,
                 "businessPartner": 1,
-                "sap": 1,
+                "sap.cardCode": 1,
+                "sap.businessPartner": 1,
                 "amount": 1,
                 "tax": 1,
             },
         )
     )
+    logging.getLogger("perf").info("[perf] spend_by_category lectura=%.0f ms docs=%d", (time.perf_counter() - _perf_started) * 1000, len(transactions))
 
     supplier_rules = list(
         db.supplierCategory2Rules.find(
