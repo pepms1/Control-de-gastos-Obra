@@ -12,6 +12,7 @@ from hashlib import sha256
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 import json
+import time
 import contextvars
 from contextlib import contextmanager
 from urllib.parse import urlparse
@@ -2881,6 +2882,8 @@ def ensure_indexes():
     db.estimationBudgets.create_index([("projectId", 1), ("supplierKey", 1)], name="estimation_budgets_project_supplier_idx")
     db.estimations.create_index([("estimationBudgetId", 1), ("isDeleted", 1)], name="estimations_budget_deleted_idx")
     db.estimations.create_index([("batchId", 1)], name="estimations_batch_idx")
+    db.estimations.create_index([("workflowStatus", 1), ("isDeleted", 1)], name="estimations_status_idx")
+    db.estimationBudgets.create_index([("approvalStatus", 1)], name="estimation_budgets_approval_idx")
     db.estimations.create_index([("projectId", 1), ("workflowStatus", 1), ("updatedAt", -1)], name="estimations_project_status_idx")
     db.estimationPaymentLinks.create_index([("estimationBudgetId", 1)], name="estimation_payment_links_budget_idx")
     db.supplierPaymentSettings.create_index([("projectId", 1), ("supplierKey", 1)], name="supplier_payment_settings_idx")
@@ -9166,6 +9169,38 @@ def build_active_budget_duplicate_query(project_id: str, supplier_key: str, conc
     return query
 
 
+_DASHBOARD_CACHE: dict = {}
+_DASHBOARD_CACHE_TTL_SECONDS = 45
+_DASHBOARD_CACHE_MAX_ENTRIES = 300
+_DASHBOARD_CACHE_LOCK = threading.Lock()
+
+
+def dashboard_cached(func):
+    """Guarda unos segundos el resultado de los resúmenes pesados del dashboard (leen todos los egresos de la
+    obra): la misma consulta, del mismo usuario, no se recalcula al abrir la app o cambiar de módulo. Los
+    errores no se guardan; los totales pueden tardar hasta el TTL en reflejar un pago recién importado."""
+    import functools
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        user = kwargs.get("user") or {}
+        key = (func.__name__, id(db), str(user.get("username") or ""), tuple(sorted((k, repr(v)) for k, v in kwargs.items() if k != "user")))
+        now = time.monotonic()
+        with _DASHBOARD_CACHE_LOCK:
+            hit = _DASHBOARD_CACHE.get(key)
+            if hit and now - hit[0] < _DASHBOARD_CACHE_TTL_SECONDS:
+                return hit[1]
+        result = func(*args, **kwargs)
+        with _DASHBOARD_CACHE_LOCK:
+            if len(_DASHBOARD_CACHE) >= _DASHBOARD_CACHE_MAX_ENTRIES:
+                for old_key in [k for k, v in _DASHBOARD_CACHE.items() if now - v[0] >= _DASHBOARD_CACHE_TTL_SECONDS] or list(_DASHBOARD_CACHE)[:50]:
+                    _DASHBOARD_CACHE.pop(old_key, None)
+            _DASHBOARD_CACHE[key] = (now, result)
+        return result
+
+    return wrapper
+
+
 _REQUEST_MEMO: contextvars.ContextVar = contextvars.ContextVar("request_memo", default=None)
 
 
@@ -9476,6 +9511,7 @@ def admin_import_sap_latest(payload: dict, user: dict = Depends(require_admin)):
 
 
 @app.get("/api/expenses/summary-by-supplier")
+@dashboard_cached
 def summary_expenses_by_supplier(
     projectId: str | None = None,
     project: str | None = None,
@@ -11275,7 +11311,8 @@ def get_estimation_budget(estimation_budget_id: str, user: dict = Depends(requir
         raise HTTPException(status_code=404, detail="Estimation budget not found")
     if not can_access_project(user, str(doc.get("projectId") or "")):
         raise HTTPException(status_code=403, detail="Project access denied")
-    return serialize_estimation_budget(doc, include_payments=is_admin_or_superadmin_user(user))
+    with request_memo():
+        return serialize_estimation_budget(doc, include_payments=is_admin_or_superadmin_user(user))
 
 
 @app.get("/api/estimation-budgets/{estimation_budget_id}/transactions")
@@ -12066,11 +12103,12 @@ def reconcile_supplier_estimation_payments(project_id: str, supplier_key: str) -
 def list_estimations(estimation_budget_id: str, user: dict = Depends(require_estimation_capture)):
     _get_estimation_budget_or_404(estimation_budget_id, user)
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
-    reconcile_budget_estimation_payments(estimation_budget)
-    rows = list(
-        db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}).sort("folio", 1)
-    )
-    return [serialize_estimation(refresh_open_estimation_money(row, estimation_budget)) for row in rows]
+    with request_memo():
+        reconcile_budget_estimation_payments(estimation_budget)
+        rows = list(
+            db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}).sort("folio", 1)
+        )
+        return [serialize_estimation(refresh_open_estimation_money(row, estimation_budget)) for row in rows]
 
 
 @app.post("/api/estimation-budgets/{estimation_budget_id}/estimations", status_code=201)
@@ -12838,7 +12876,8 @@ def list_supplier_estimations_queue(
 @app.get("/api/supplier-estimations/{batch_id}")
 def get_supplier_estimation(batch_id: str, user: dict = Depends(require_estimation_capture)):
     _get_batch_or_404(batch_id, user)
-    return serialize_supplier_estimation(batch_id)
+    with request_memo():
+        return serialize_supplier_estimation(batch_id)
 
 
 @app.post("/api/supplier-estimations", status_code=201)
@@ -15588,6 +15627,7 @@ def list_transactions(
 
 
 @app.get("/stats/spend-by-category")
+@dashboard_cached
 def spend_by_category(
     date_from: str | None = None,
     date_to: str | None = None,

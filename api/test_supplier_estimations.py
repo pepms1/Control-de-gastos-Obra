@@ -631,3 +631,28 @@ class ListPerformanceTests(phase1.EstimationsPhase1Tests):
             rows = main.list_estimation_budgets(projectId=self.project_id, supplier=None, includeInactive=False, request=None, user=SUPERADMIN)
         self.assertEqual(len(rows), 4)
         self.assertLessEqual(fake_db.transactions.calls, 1)
+
+
+class DashboardCacheTests(unittest.TestCase):
+    def test_same_call_is_served_from_cache_and_errors_are_not_cached(self):
+        calls = []
+
+        @main.dashboard_cached
+        def endpoint(projectId=None, user=None):
+            calls.append(projectId)
+            if projectId == 'boom':
+                raise HTTPException(status_code=403, detail='x')
+            return {'n': len(calls)}
+
+        user = {'username': 'u1'}
+        first = endpoint(projectId='p1', user=user)
+        second = endpoint(projectId='p1', user=user)
+        self.assertEqual(first, second)
+        self.assertEqual(calls, ['p1'])
+        endpoint(projectId='p2', user=user)  # otro parámetro: se calcula
+        endpoint(projectId='p1', user={'username': 'u2'})  # otro usuario: se calcula
+        self.assertEqual(calls, ['p1', 'p2', 'p1'])
+        for _ in range(2):
+            with self.assertRaises(HTTPException):
+                endpoint(projectId='boom', user=user)
+        self.assertEqual(calls.count('boom'), 2)
