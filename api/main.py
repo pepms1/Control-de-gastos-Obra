@@ -12,6 +12,8 @@ from hashlib import sha256
 from decimal import Decimal, InvalidOperation
 from io import BytesIO
 import json
+import contextvars
+from contextlib import contextmanager
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 import boto3
@@ -2875,6 +2877,13 @@ def ensure_indexes():
     )
     db.supplierCategory2Rules.create_index([("isActive", 1), ("updatedAt", -1)], name="supplier_category2_rules_active_updated_idx")
     db.projects.create_index("name", unique=True)
+    # Módulo de presupuestos/estimaciones: se consultan siempre por obra/proveedor/presupuesto.
+    db.estimationBudgets.create_index([("projectId", 1), ("supplierKey", 1)], name="estimation_budgets_project_supplier_idx")
+    db.estimations.create_index([("estimationBudgetId", 1), ("isDeleted", 1)], name="estimations_budget_deleted_idx")
+    db.estimations.create_index([("batchId", 1)], name="estimations_batch_idx")
+    db.estimations.create_index([("projectId", 1), ("workflowStatus", 1), ("updatedAt", -1)], name="estimations_project_status_idx")
+    db.estimationPaymentLinks.create_index([("estimationBudgetId", 1)], name="estimation_payment_links_budget_idx")
+    db.supplierPaymentSettings.create_index([("projectId", 1), ("supplierKey", 1)], name="supplier_payment_settings_idx")
     db.projects.create_index("slug", unique=True)
     db.payments.create_index([("projectId", 1), ("sapPaymentNum", 1)], unique=True)
     db.apInvoices.create_index([("projectId", 1), ("sapInvoiceNum", 1)], unique=True)
@@ -9157,7 +9166,67 @@ def build_active_budget_duplicate_query(project_id: str, supplier_key: str, conc
     return query
 
 
+_REQUEST_MEMO: contextvars.ContextVar = contextvars.ContextVar("request_memo", default=None)
+
+
+@contextmanager
+def request_memo():
+    """Memoria por petición (solo lecturas): evita releer TODOS los egresos del proyecto una vez por
+    presupuesto o por proveedor al armar listados de presupuestos/estimaciones. Los pagos no cambian
+    durante una petición de lectura, así que los totales por proveedor se calculan una sola vez."""
+    token = _REQUEST_MEMO.set({})
+    try:
+        yield
+    finally:
+        _REQUEST_MEMO.reset(token)
+
+
+def _memoized(key, compute):
+    memo = _REQUEST_MEMO.get()
+    if memo is None:
+        return compute()
+    if key not in memo:
+        memo[key] = compute()
+    return memo[key]
+
+
+def _load_project_expense_movements(project_id: str) -> list[dict]:
+    """Egresos del proyecto con los campos para ubicar al proveedor (una lectura por petición)."""
+    return _memoized(("expense-movements", project_id), lambda: _read_project_expense_movements(project_id))
+
+
+def _read_project_expense_movements(project_id: str) -> list[dict]:
+    tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
+    return list(
+        db.transactions.find(
+            tx_query,
+            {
+                "_id": 1,
+                "amount": 1,
+                "tax": 1,
+                "supplierId": 1,
+                "supplier_id": 1,
+                "vendor_id": 1,
+                "supplierName": 1,
+                "supplierCardCode": 1,
+                "businessPartner": 1,
+                "proveedorNombre": 1,
+                "beneficiario": 1,
+                "sap.cardCode": 1,
+                "sap.businessPartner": 1,
+            },
+        )
+    )
+
+
 def compute_expense_totals_by_supplier_bucket(project_id: str, *, include_tax: bool = True) -> dict[str, float]:
+    return _memoized(
+        ("expense-totals", project_id, bool(include_tax)),
+        lambda: _compute_expense_totals_by_supplier_bucket(project_id, include_tax=include_tax),
+    )
+
+
+def _compute_expense_totals_by_supplier_bucket(project_id: str, *, include_tax: bool = True) -> dict[str, float]:
     tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
     movements = list(
         db.transactions.find(
@@ -10322,9 +10391,12 @@ ESTIMATION_IVA_PCT = 16.0
 def supplier_uses_iva(project_id: str, supplier_key: str) -> bool:
     """Proveedor con presupuestos que llevan IVA: los presupuestos y las estimaciones van SIN IVA, así que
     sus pagos (que traen IVA) se comparan por su subtotal sin IVA."""
-    return any(
-        bool(row.get("ivaEnabled")) and row.get("isActive", True) is not False
-        for row in db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplier_key})
+    return _memoized(
+        ("supplier-iva", project_id, supplier_key),
+        lambda: any(
+            bool(row.get("ivaEnabled")) and row.get("isActive", True) is not False
+            for row in db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplier_key})
+        ),
     )
 
 
@@ -10641,28 +10713,8 @@ def _count_active_estimation_budgets_for_supplier(project_id: str, supplier_key:
 def compute_supplier_expenses_excluding(project_id: str, supplier_key: str, excluded_transaction_ids: set[str], sin_iva: bool = False) -> float:
     """Total de egresos del proveedor (con IVA) sin los pagos que el usuario
     descarto de un presupuesto unico (son de otro presupuesto o fuera de el)."""
-    tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
-    movements = list(
-        db.transactions.find(
-            tx_query,
-            {
-                "_id": 1,
-                "amount": 1,
-                "tax": 1,
-                "supplierId": 1,
-                "supplier_id": 1,
-                "vendor_id": 1,
-                "supplierName": 1,
-                "supplierCardCode": 1,
-                "businessPartner": 1,
-                "proveedorNombre": 1,
-                "beneficiario": 1,
-                "sap.cardCode": 1,
-                "sap.businessPartner": 1,
-            },
-        )
-    )
-    trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
+    movements = _load_project_expense_movements(project_id)
+    trusted_id_to_supplier_key = _memoized(("trusted-map", project_id), lambda: _build_trusted_id_supplier_key_map(movements))
     total = 0.0
     for tx in movements:
         if str(tx.get("_id")) in excluded_transaction_ids:
@@ -10690,6 +10742,10 @@ def _supplier_payment_excluded_ids(project_id: str, supplier_key: str) -> set[st
 
 
 def compute_supplier_paid_amount(project_id: str, supplier_key: str) -> float:
+    return _memoized(("supplier-paid", project_id, supplier_key), lambda: _compute_supplier_paid_amount(project_id, supplier_key))
+
+
+def _compute_supplier_paid_amount(project_id: str, supplier_key: str) -> float:
     """Pagado a la fecha al proveedor: TODOS sus pagos se asignan a sus presupuestos
     por defecto, salvo los que el usuario desasigna."""
     sin_iva = supplier_uses_iva(project_id, supplier_key)
@@ -11131,7 +11187,8 @@ def list_estimation_budgets(
 
     rows = list(db.estimationBudgets.find(query).sort("updatedAt", -1))
     include_payments = is_admin_or_superadmin_user(user)
-    return [serialize_estimation_budget(row, include_payments=include_payments) for row in rows]
+    with request_memo():
+        return [serialize_estimation_budget(row, include_payments=include_payments) for row in rows]
 
 
 @app.post("/api/estimation-budgets", status_code=201)
@@ -12392,24 +12449,25 @@ def list_estimations_queue(
             raise HTTPException(status_code=400, detail="paymentStatus must be POR_PAGAR or PAGADA")
         query["paymentStatus"] = payment_filter.upper()
 
-    if ESTIMATION_STATUS_APPROVED in statuses:
-        supplier_keys = {
-            str(budget_row.get("supplierKey") or "")
-            for budget_row in db.estimationBudgets.find({"projectId": project_id})
-        }
-        for supplier_key in supplier_keys:
-            reconcile_supplier_estimation_payments(project_id, supplier_key)
-    rows = list(db.estimations.find(query).sort("updatedAt", -1))
-    seen: set[str] = set()
-    items = []
-    for row in rows:
-        batch_key = estimation_batch_id(row)
-        if batch_key in seen:
-            continue
-        seen.add(batch_key)
-        parts = get_estimation_batch_parts(batch_key) or [row]
-        items.append(_batch_header(parts, _load_budgets_for(parts)))
-    return {"items": items}
+    with request_memo():
+        if ESTIMATION_STATUS_APPROVED in statuses:
+            supplier_keys = {
+                str(budget_row.get("supplierKey") or "")
+                for budget_row in db.estimationBudgets.find({"projectId": project_id})
+            }
+            for supplier_key in supplier_keys:
+                reconcile_supplier_estimation_payments(project_id, supplier_key)
+        rows = list(db.estimations.find(query).sort("updatedAt", -1))
+        seen: set[str] = set()
+        items = []
+        for row in rows:
+            batch_key = estimation_batch_id(row)
+            if batch_key in seen:
+                continue
+            seen.add(batch_key)
+            parts = get_estimation_batch_parts(batch_key) or [row]
+            items.append(_batch_header(parts, _load_budgets_for(parts)))
+        return {"items": items}
 
 
 # ---- Estimacion por proveedor (varios presupuestos en una misma estimacion) ----
@@ -12748,19 +12806,20 @@ def list_supplier_estimations(
     project_id = resolve_project_id(projectId or get_active_project_id(request))
     if not can_access_project(user, project_id):
         raise HTTPException(status_code=403, detail="Project access denied")
-    reconcile_supplier_estimation_payments(project_id, supplierKey)
-    budget_ids = _supplier_budget_ids(project_id, supplierKey)
-    rows = list(db.estimations.find({"estimationBudgetId": {"$in": budget_ids}, "isDeleted": {"$ne": True}})) if budget_ids else []
-    batches: dict[str, list[dict]] = {}
-    for row in rows:
-        batches.setdefault(estimation_batch_id(row), []).append(row)
-    budgets = {str(b.get("_id")): b for b in db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplierKey})}
-    headers = []
-    for parts in batches.values():
-        parts.sort(key=lambda row: (str(row.get("createdAt") or ""), str(row.get("_id"))))
-        headers.append(_batch_header(parts, budgets))
-    headers.sort(key=lambda h: (int(h.get("folio") or 0), str(h.get("createdAt") or "")))
-    return headers
+    with request_memo():
+        reconcile_supplier_estimation_payments(project_id, supplierKey)
+        budget_ids = _supplier_budget_ids(project_id, supplierKey)
+        rows = list(db.estimations.find({"estimationBudgetId": {"$in": budget_ids}, "isDeleted": {"$ne": True}})) if budget_ids else []
+        batches: dict[str, list[dict]] = {}
+        for row in rows:
+            batches.setdefault(estimation_batch_id(row), []).append(row)
+        budgets = {str(b.get("_id")): b for b in db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplierKey})}
+        headers = []
+        for parts in batches.values():
+            parts.sort(key=lambda row: (str(row.get("createdAt") or ""), str(row.get("_id"))))
+            headers.append(_batch_header(parts, budgets))
+        headers.sort(key=lambda h: (int(h.get("folio") or 0), str(h.get("createdAt") or "")))
+        return headers
 
 
 @app.get("/api/supplier-estimations/queue")
