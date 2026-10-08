@@ -602,3 +602,32 @@ class IvaSupplierTests(phase1.EstimationsPhase1Tests):
         self.assertFalse(batch['ivaEnabled'])
         self.assertEqual(batch['ivaAmount'], 0.0)
         self.assertEqual(batch['totalWithIva'], batch['totalToPay'])
+
+
+class ListPerformanceTests(phase1.EstimationsPhase1Tests):
+    """El listado de presupuestos no debe releer todos los egresos una vez por presupuesto."""
+
+    def test_budget_list_reads_the_project_expenses_once(self):
+        class Counting:
+            def __init__(self, inner):
+                self.inner, self.calls = inner, 0
+
+            def find(self, *args, **kwargs):
+                self.calls += 1
+                return self.inner.find(*args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        txs = [self._acero_transaction(100 + i) for i in range(50)]
+        fake_db = self._fake_db(transactions=txs)
+        fake_db.transactions = Counting(fake_db.transactions)
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
+            main, 'build_transactions_query', return_value={}
+        ):
+            for name in ('A', 'B', 'C', 'D'):
+                self._create_budget(fake_db, name=name)
+            fake_db.transactions.calls = 0
+            rows = main.list_estimation_budgets(projectId=self.project_id, supplier=None, includeInactive=False, request=None, user=SUPERADMIN)
+        self.assertEqual(len(rows), 4)
+        self.assertLessEqual(fake_db.transactions.calls, 1)
