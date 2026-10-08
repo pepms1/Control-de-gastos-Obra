@@ -2881,6 +2881,8 @@ def ensure_indexes():
     db.estimationBudgets.create_index([("projectId", 1), ("supplierKey", 1)], name="estimation_budgets_project_supplier_idx")
     db.estimations.create_index([("estimationBudgetId", 1), ("isDeleted", 1)], name="estimations_budget_deleted_idx")
     db.estimations.create_index([("batchId", 1)], name="estimations_batch_idx")
+    db.estimations.create_index([("workflowStatus", 1), ("isDeleted", 1)], name="estimations_status_idx")
+    db.estimationBudgets.create_index([("approvalStatus", 1)], name="estimation_budgets_approval_idx")
     db.estimations.create_index([("projectId", 1), ("workflowStatus", 1), ("updatedAt", -1)], name="estimations_project_status_idx")
     db.estimationPaymentLinks.create_index([("estimationBudgetId", 1)], name="estimation_payment_links_budget_idx")
     db.supplierPaymentSettings.create_index([("projectId", 1), ("supplierKey", 1)], name="supplier_payment_settings_idx")
@@ -11275,7 +11277,8 @@ def get_estimation_budget(estimation_budget_id: str, user: dict = Depends(requir
         raise HTTPException(status_code=404, detail="Estimation budget not found")
     if not can_access_project(user, str(doc.get("projectId") or "")):
         raise HTTPException(status_code=403, detail="Project access denied")
-    return serialize_estimation_budget(doc, include_payments=is_admin_or_superadmin_user(user))
+    with request_memo():
+        return serialize_estimation_budget(doc, include_payments=is_admin_or_superadmin_user(user))
 
 
 @app.get("/api/estimation-budgets/{estimation_budget_id}/transactions")
@@ -12066,11 +12069,12 @@ def reconcile_supplier_estimation_payments(project_id: str, supplier_key: str) -
 def list_estimations(estimation_budget_id: str, user: dict = Depends(require_estimation_capture)):
     _get_estimation_budget_or_404(estimation_budget_id, user)
     estimation_budget = _get_estimation_budget_or_404(estimation_budget_id, user)
-    reconcile_budget_estimation_payments(estimation_budget)
-    rows = list(
-        db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}).sort("folio", 1)
-    )
-    return [serialize_estimation(refresh_open_estimation_money(row, estimation_budget)) for row in rows]
+    with request_memo():
+        reconcile_budget_estimation_payments(estimation_budget)
+        rows = list(
+            db.estimations.find({"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}).sort("folio", 1)
+        )
+        return [serialize_estimation(refresh_open_estimation_money(row, estimation_budget)) for row in rows]
 
 
 @app.post("/api/estimation-budgets/{estimation_budget_id}/estimations", status_code=201)
@@ -12838,7 +12842,8 @@ def list_supplier_estimations_queue(
 @app.get("/api/supplier-estimations/{batch_id}")
 def get_supplier_estimation(batch_id: str, user: dict = Depends(require_estimation_capture)):
     _get_batch_or_404(batch_id, user)
-    return serialize_supplier_estimation(batch_id)
+    with request_memo():
+        return serialize_supplier_estimation(batch_id)
 
 
 @app.post("/api/supplier-estimations", status_code=201)
