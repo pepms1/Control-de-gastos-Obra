@@ -15506,7 +15506,8 @@ def transactions_stats(
         {
             "amount": 1, "date": 1, "tax": 1, "source": 1, "subtotal": 1, "montoSinIva": 1, "iva": 1, "montoIva": 1,
             "totalFactura": 1, "sap.taxBreakdownSameCurrency": 1, "sap.invoiceSubtotal": 1, "sap.invoiceIva": 1,
-            "sap.invoiceTotal": 1, "financialKind": 1, "excludeFromExpenseViews": 1,
+            "sap.invoiceTotal": 1, "sap.movementDate": 1, "sap.invoiceDate": 1, "fecha": 1, "financialKind": 1,
+            "excludeFromExpenseViews": 1,
         },
     )
     count = 0
@@ -15523,10 +15524,16 @@ def transactions_stats(
         subtotal, _iva, _total = resolve_transaction_tax_components(tx)
         amount = parse_optional_decimal(tx.get("amount")) or 0
         sign = -1 if amount < 0 else 1
-        subtotal_value = float(sign * subtotal) if subtotal is not None else 0.0
+        if subtotal is not None:
+            subtotal_value = float(sign * subtotal)
+        else:
+            # Igual que la app: movimientos de SAP sin desglose «seguro» usan el subtotal de la factura de SAP.
+            sap_subtotal = parse_optional_decimal((tx.get("sap") or {}).get("invoiceSubtotal")) if isinstance(tx.get("sap"), dict) else None
+            subtotal_value = float(sap_subtotal) if sap_subtotal is not None else 0.0
         total_sin_iva += subtotal_value
         total_con_iva += float(amount)
-        month = str(tx.get("date") or "")[:7]
+        sap_doc = tx.get("sap") if isinstance(tx.get("sap"), dict) else {}
+        month = str(tx.get("date") or tx.get("fecha") or sap_doc.get("movementDate") or sap_doc.get("invoiceDate") or "")[:7]
         if len(month) == 7:
             by_month[month] = by_month.get(month, 0.0) + subtotal_value
     logging.getLogger("perf").info("[perf] transactions_stats lectura+calculo=%.0f ms docs=%d", (time.perf_counter() - started) * 1000, count)

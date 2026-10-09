@@ -73,3 +73,15 @@ class TransactionsStatsTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class SapSubtotalFallbackTests(TransactionsStatsTests):
+    def test_sap_movements_without_safe_breakdown_use_the_sap_invoice_subtotal(self):
+        stats = self._run([
+            self._tx(6275.0, '2026-09-30', source='sap-sbo', sap={'invoiceSubtotal': 6275.0, 'invoiceIva': 0.0, 'invoiceTotal': 6275.0}),
+            self._tx(154587.64, '2026-09-30', source='sap-sbo', sap={'invoiceSubtotal': 152776.95, 'invoiceIva': 1810.69, 'invoiceTotal': 154587.64}),
+            self._tx(1000.0, '2026-08-01', source='sap-sbo'),
+        ])
+        self.assertEqual(stats['totalSinIva'], 6275.0 + 152776.95)
+        self.assertEqual(stats['monthly'], [{'month': '2026-09', 'value': 159051.95}, {'month': '2026-08', 'value': 0.0}])
+        self.assertEqual(stats['totalConIva'], 161862.64)
