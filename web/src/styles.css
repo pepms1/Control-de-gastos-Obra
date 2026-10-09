@@ -295,8 +295,9 @@ body.theme-dark .theme-toggle:hover { background: var(--gray-150); }
   font-size: 16px;
 }
 
-/* Mobile bottom nav */
+/* Móvil: barra superior + menú de hamburguesa (solo ≤680px) */
 .mobile-bottom-nav { display: none; }
+.mobile-topbar, .mobile-drawer, .mobile-drawer-overlay { display: none; }
 
 /* New nav elements */
 .nav-logo-box {
@@ -1104,7 +1105,12 @@ body.theme-dark .settings-menu-button.active {
   .budgets-table { min-width: 980px; }
   .budgets-table-nested { min-width: 860px; }
 
-  .nav { gap: 8px; padding: 8px 12px; flex-wrap: wrap; }
+  .nav { display: none; }
+  .app-content { padding-bottom: 16px; }
+  /* Que ninguna tarjeta/rejilla ensanche la página más que la pantalla (había scroll horizontal en el dashboard) */
+  .grid, .grid > *, .card, .dashboard-shell, .dashboard-kpi-grid > *, .dashboard-summary-grid > * { min-width: 0; max-width: 100%; }
+  .dashboard-primary-switch { max-width: 100%; }
+  .dashboard-primary-switch button { padding-left: 14px; padding-right: 14px; }
   .nav-header { width: 100%; }
   .nav-logo { width: 30px; height: 30px; }
   .nav-title { font-size: 14px; }
@@ -1128,47 +1134,107 @@ body.theme-dark .settings-menu-button.active {
   .dashboard-summary-grid { grid-template-columns: 1fr; }
 .date-filter-inline { min-width: 100%; max-width: none; }
 
-  .mobile-bottom-nav {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 5px;
-    position: fixed;
-    left: 8px;
-    right: 8px;
-    bottom: 8px;
-    z-index: 1200;
-    background: rgba(255, 255, 255, .98);
-    border: 1px solid var(--gray-200);
-    border-radius: var(--radius-lg);
-    padding: 6px;
-    box-shadow: var(--shadow-lg);
-  }
-  body.theme-dark .mobile-bottom-nav {
-    background: rgba(15, 23, 42, .98);
-    border-color: var(--gray-200);
-  }
-  .mobile-bottom-nav button {
-    min-height: 40px;
-    padding: 6px 4px;
-    border-radius: var(--radius-sm);
-    font-size: 13px;
-    font-weight: 600;
-    background: transparent;
-    color: var(--gray-500);
-    box-shadow: none;
-    transform: none;
-  }
-  .mobile-bottom-nav button:hover { transform: none; box-shadow: none; }
-  .mobile-bottom-nav button.active {
-    background: var(--primary-soft);
-    color: var(--primary);
-    font-weight: 700;
-  }
-
   .settings-sidebar {
     position: static;
     top: auto;
   }
+}
+
+
+/* ── Móvil: barra superior + menú de hamburguesa ─────── */
+@media (max-width: 680px) {
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    height: 52px;
+    padding: 0 12px;
+    background: rgba(255, 255, 255, .97);
+    border-bottom: 1px solid var(--gray-150);
+    box-shadow: var(--shadow-sm);
+    backdrop-filter: blur(10px);
+  }
+  body.theme-dark .mobile-topbar { background: rgba(15, 23, 42, .97); border-bottom-color: var(--gray-200); }
+  .mobile-topbar-title { flex: 1; font-size: 16px; font-weight: 700; color: var(--primary-dark); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-topbar-avatar { flex-shrink: 0; }
+  .mobile-hamburger {
+    position: relative;
+    display: inline-flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 5px;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    box-shadow: none;
+    transform: none;
+  }
+  .mobile-hamburger:hover { transform: none; box-shadow: none; background: var(--gray-100); }
+  .mobile-hamburger > span:not(.mobile-hamburger-dot) { display: block; width: 22px; height: 2px; border-radius: 2px; background: var(--gray-700); }
+  .mobile-hamburger-dot { position: absolute; top: 8px; right: 8px; width: 10px; height: 10px; border-radius: 50%; background: #dc2626; }
+
+  .mobile-drawer-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 1290;
+    background: rgba(15, 23, 42, .5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s ease;
+  }
+  .mobile-drawer-overlay.open { opacity: 1; pointer-events: auto; }
+  .mobile-drawer {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1300;
+    width: min(84vw, 320px);
+    padding: 14px 14px calc(14px + env(safe-area-inset-bottom));
+    overflow-y: auto;
+    background: var(--white, #fff);
+    box-shadow: var(--shadow-lg);
+    transform: translateX(-102%);
+    transition: transform .22s ease;
+    visibility: hidden;
+  }
+  .mobile-drawer.open { transform: translateX(0); visibility: visible; }
+  body.theme-dark .mobile-drawer { background: #0f172a; }
+  .mobile-drawer-header { display: flex; align-items: center; gap: 10px; }
+  .mobile-drawer-close { min-width: 40px; min-height: 40px; padding: 0; }
+  .mobile-drawer-label { font-size: 12px; font-weight: 600; color: var(--gray-500); margin-bottom: -4px; }
+  .mobile-drawer .nav-select { width: 100%; max-width: none; min-height: 44px; }
+  .mobile-drawer-items { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .mobile-drawer-items button {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 48px;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    font-weight: 600;
+    text-align: left;
+    background: transparent;
+    color: var(--gray-700);
+    box-shadow: none;
+    transform: none;
+  }
+  .mobile-drawer-items button:hover { transform: none; box-shadow: none; background: var(--gray-100); }
+  .mobile-drawer-items button.active { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
+  .mobile-drawer-user { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 12px; border-top: 1px solid var(--gray-150); }
+  .mobile-drawer-logout { min-height: 44px; width: 100%; }
 }
 
 @media (min-width: 860px) {
@@ -1275,7 +1341,7 @@ body.theme-dark .type-btn { color: var(--gray-500); }
 
 /* Aviso: estimaciones enviadas por autorizar -> «Estimaciones» parpadea hasta atenderlas */
 .nav-tabs-pill button.nav-flash,
-.mobile-bottom-nav button.nav-flash {
+.mobile-drawer-items button.nav-flash {
   position: relative;
   animation: nav-flash-pulse 1.3s ease-in-out infinite;
 }
@@ -1301,7 +1367,7 @@ body.theme-dark .type-btn { color: var(--gray-500); }
 }
 @media (prefers-reduced-motion: reduce) {
   .nav-tabs-pill button.nav-flash,
-  .mobile-bottom-nav button.nav-flash {
+  .mobile-drawer-items button.nav-flash {
     animation: none;
     background: #fde68a;
     color: #92400e;

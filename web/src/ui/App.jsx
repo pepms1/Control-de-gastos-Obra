@@ -374,6 +374,26 @@ function Nav({
     ['settings', 'Ajustes', canSeeSettings],
   ];
 
+  const [menuOpen, setMenuOpen] = useState(false);
+  const pendingTotal = (Number(pendingEstimations) || 0) + (Number(pendingBudgets) || 0);
+  const currentLabel = (items.find(([key]) => key === tab) || [])[1] || 'Control de Gastos';
+  function selectTab(key) {
+    setTab(key);
+    setMenuOpen(false);
+  }
+  // El menú se cierra con Esc y mientras está abierto no se desplaza la página de atrás.
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const onKey = (event) => { if (event.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('keydown', onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [menuOpen]);
+
   const initials = (displayName || username || '?')
     .split(' ')
     .map((w) => w[0] || '')
@@ -456,23 +476,86 @@ function Nav({
         </div>
       </div>
 
-      <div className="mobile-bottom-nav">
-        {items.filter(([, , show]) => show).map(([key, label]) => {
-          const pendingCount = key === 'estimaciones' ? pendingEstimations : key === 'budgets' ? pendingBudgets : 0;
-          const flashing = pendingCount > 0;
-          return (
-            <button
-              key={key}
-              type="button"
-              className={[tab === key ? 'active' : '', flashing ? 'nav-flash' : ''].filter(Boolean).join(' ')}
-              onClick={() => setTab(key)}
-            >
-              {label}
-              {flashing && <span className="nav-badge" aria-label={`${pendingCount} por autorizar`}>{pendingCount}</span>}
-            </button>
-          );
-        })}
+      {/* Móvil: barra superior con menú de hamburguesa (el menú de abajo tapaba los botones de guardar) */}
+      <div className="mobile-topbar">
+        <button
+          type="button"
+          className={['mobile-hamburger', pendingTotal > 0 ? 'nav-flash' : ''].filter(Boolean).join(' ')}
+          aria-label="Abrir menú"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(true)}
+        >
+          <span /><span /><span />
+          {pendingTotal > 0 && <span className="mobile-hamburger-dot" aria-label={`${pendingTotal} por autorizar`} />}
+        </button>
+        <div className="mobile-topbar-title">{currentLabel}</div>
+        <div className="nav-avatar mobile-topbar-avatar">{initials}</div>
       </div>
+
+      <div className={`mobile-drawer-overlay${menuOpen ? ' open' : ''}`} onClick={() => setMenuOpen(false)} aria-hidden={!menuOpen} />
+      <aside className={`mobile-drawer${menuOpen ? ' open' : ''}`} aria-hidden={!menuOpen} aria-label="Menú">
+        <div className="mobile-drawer-header">
+          <div className="nav-logo-box">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.9">
+              <line x1="12" y1="1" x2="12" y2="23" />
+              <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+            </svg>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div className="nav-title">Control de Gastos</div>
+            <div className="nav-subtitle">Grupo MDI</div>
+          </div>
+          <button type="button" className="secondary mobile-drawer-close" aria-label="Cerrar menú" onClick={() => setMenuOpen(false)}>✕</button>
+        </div>
+
+        <label className="mobile-drawer-label" htmlFor="mobile-project-select">Obra</label>
+        <select
+          id="mobile-project-select"
+          className="nav-select"
+          value={selectedProjectId}
+          onChange={(e) => onProjectChange(e.target.value)}
+          disabled={!projects.length}
+        >
+          {!projects.length && <option value="">Sin proyectos</option>}
+          {projects.map((project) => (
+            <option key={project._id} value={project._id}>
+              {getProjectDisplayName(project)}
+            </option>
+          ))}
+        </select>
+
+        <nav className="mobile-drawer-items">
+          {items.filter(([, , show]) => show).map(([key, label]) => {
+            const pendingCount = key === 'estimaciones' ? pendingEstimations : key === 'budgets' ? pendingBudgets : 0;
+            const flashing = pendingCount > 0;
+            return (
+              <button
+                key={key}
+                type="button"
+                className={[tab === key ? 'active' : '', flashing ? 'nav-flash' : ''].filter(Boolean).join(' ')}
+                onClick={() => selectTab(key)}
+              >
+                {label}
+                {flashing && <span className="nav-badge" aria-label={`${pendingCount} por autorizar`}>{pendingCount}</span>}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="mobile-drawer-user">
+          <div className="nav-avatar">{initials}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="nav-user-name">{displayName || username}</div>
+            <div className="nav-user-role">{role}</div>
+          </div>
+          <button className="secondary theme-toggle" type="button" onClick={onToggleTheme} title={isDarkMode ? 'Modo día' : 'Modo noche'}>
+            {isDarkMode ? '☀️' : '🌙'}
+          </button>
+        </div>
+        <button className="secondary mobile-drawer-logout" type="button" onClick={() => { setMenuOpen(false); onLogout(); }}>
+          Salir
+        </button>
+      </aside>
     </>
   );
 }
