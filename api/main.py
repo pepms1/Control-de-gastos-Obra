@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Response, Depends, UploadFile, File, Query, Request as FastAPIRequest, Security, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pymongo import MongoClient, UpdateOne, ReturnDocument
+from pymongo import MongoClient, UpdateOne, ReturnDocument, monitoring
 from pymongo.errors import BulkWriteError, OperationFailure, DuplicateKeyError
 from bson import ObjectId
 from datetime import date, datetime, timedelta, timezone
@@ -57,13 +57,15 @@ class RequestTimingMiddleware:
             return
         started = time.perf_counter()
         status_holder = {"status": None}
+        db_stats = {"n": 0, "ms": 0.0}
+        _REQUEST_DB_STATS.set(db_stats)
 
         async def send_with_timing(message):
             if message.get("type") == "http.response.start":
                 status_holder["status"] = message.get("status")
                 elapsed = (time.perf_counter() - started) * 1000
                 headers = list(message.get("headers") or [])
-                headers.append((b"server-timing", f"app;dur={elapsed:.0f}".encode()))
+                headers.append((b"server-timing", f"app;dur={elapsed:.0f}, db;dur={db_stats['ms']:.0f};desc=\"{db_stats['n']} consultas\"".encode()))
                 message = {**message, "headers": headers}
             await send(message)
 
@@ -73,7 +75,8 @@ class RequestTimingMiddleware:
             elapsed_ms = (time.perf_counter() - started) * 1000
             if elapsed_ms >= SLOW_REQUEST_LOG_MS:
                 logging.getLogger("perf").warning(
-                    "[perf] SLOW %s %s -> %s en %.0f ms", scope.get("method"), scope.get("path"), status_holder["status"], elapsed_ms
+                    "[perf] SLOW %s %s -> %s en %.0f ms (Mongo: %d consultas, %.0f ms)",
+                    scope.get("method"), scope.get("path"), status_holder["status"], elapsed_ms, db_stats["n"], db_stats["ms"],
                 )
 
 
@@ -99,7 +102,29 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "12"))
 
-client = MongoClient(MONGO_URL)
+_REQUEST_DB_STATS: contextvars.ContextVar = contextvars.ContextVar("request_db_stats", default=None)
+
+
+class _DbRoundtripListener(monitoring.CommandListener):
+    """Cuenta los viajes a Mongo y su tiempo en cada petición (se muestra en el log `[perf] SLOW`)."""
+
+    def started(self, event):
+        pass
+
+    def succeeded(self, event):
+        stats = _REQUEST_DB_STATS.get()
+        if stats is not None:
+            stats["n"] += 1
+            stats["ms"] += event.duration_micros / 1000
+
+    def failed(self, event):
+        stats = _REQUEST_DB_STATS.get()
+        if stats is not None:
+            stats["n"] += 1
+            stats["ms"] += event.duration_micros / 1000
+
+
+client = MongoClient(MONGO_URL, event_listeners=[_DbRoundtripListener()])
 db = client[DB_NAME]
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 logger = logging.getLogger(__name__)
@@ -10428,6 +10453,13 @@ def is_latest_estimation(estimation: dict) -> bool:
 
 
 def compute_previous_cumulative_quantities(estimation_budget_id: str, exclude_estimation_id: str | None = None) -> dict[str, float]:
+    return _memoized(
+        ("previous-quantities", estimation_budget_id, exclude_estimation_id or ""),
+        lambda: _compute_previous_cumulative_quantities(estimation_budget_id, exclude_estimation_id),
+    )
+
+
+def _compute_previous_cumulative_quantities(estimation_budget_id: str, exclude_estimation_id: str | None = None) -> dict[str, float]:
     query: dict = {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
     if exclude_estimation_id:
         query["_id"] = {"$ne": oid(exclude_estimation_id)}
@@ -10485,7 +10517,7 @@ def get_effective_opening_prior_paid(estimation_budget: dict, exclude_estimation
     query: dict = {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}}
     if exclude_estimation_id:
         query["_id"] = {"$ne": oid(exclude_estimation_id)}
-    if db.estimations.count_documents(query) > 0:
+    if _memoized(("estimations-count", json.dumps(query, default=str, sort_keys=True)), lambda: db.estimations.count_documents(query)) > 0:
         return 0.0, "none"
 
     paid_amount = compute_estimation_budget_paid_amount(
@@ -10828,11 +10860,10 @@ def validate_concepto_shrink_allowed(existing_line_items: list[dict], new_line_i
 def _count_active_estimation_budgets_for_supplier(project_id: str, supplier_key: str) -> int:
     if not project_id or not supplier_key:
         return 0
-    rows = db.estimationBudgets.find(
-        {"projectId": project_id, "supplierKey": supplier_key, "isActive": True},
-        {"_id": 1},
+    return _memoized(
+        ("active-budget-count", project_id, supplier_key),
+        lambda: len(list(db.estimationBudgets.find({"projectId": project_id, "supplierKey": supplier_key, "isActive": True}, {"_id": 1}))),
     )
-    return len(list(rows))
 
 
 # Mirrors compute_budget_metrics' paidAmount logic for the legacy Presupuestos
@@ -10888,6 +10919,23 @@ def _compute_supplier_paid_amount(project_id: str, supplier_key: str) -> float:
 
 
 def compute_estimation_budget_paid_amount(
+    project_id: str,
+    supplier_key: str,
+    estimation_budget_id: str,
+    estimation_budget_is_active: bool = True,
+    excluded_transaction_ids=None,
+) -> float:
+    # Dentro de una lectura el resultado no cambia: se calcula una vez por presupuesto.
+    excluded_key = tuple(sorted(_normalize_transaction_id_values(excluded_transaction_ids or [])))
+    return _memoized(
+        ("budget-paid", project_id, supplier_key, estimation_budget_id, bool(estimation_budget_is_active), excluded_key),
+        lambda: _compute_estimation_budget_paid_amount(
+            project_id, supplier_key, estimation_budget_id, estimation_budget_is_active, excluded_transaction_ids
+        ),
+    )
+
+
+def _compute_estimation_budget_paid_amount(
     project_id: str,
     supplier_key: str,
     estimation_budget_id: str,
