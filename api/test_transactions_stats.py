@@ -85,3 +85,28 @@ class SapSubtotalFallbackTests(TransactionsStatsTests):
         self.assertEqual(stats['totalSinIva'], 6275.0 + 152776.95)
         self.assertEqual(stats['monthly'], [{'month': '2026-09', 'value': 159051.95}, {'month': '2026-08', 'value': 0.0}])
         self.assertEqual(stats['totalConIva'], 161862.64)
+
+
+class AggregationWiringTests(TransactionsStatsTests):
+    """El dashboard usa los mismos totales (agregación) que Buscar y la serie mensual sale del mismo cálculo."""
+
+    def test_dashboard_totals_come_from_the_search_totals_aggregation(self):
+        pipelines = []
+
+        class AggCollection(phase1.FakeCollection):
+            def aggregate(self, pipeline):
+                pipelines.append(pipeline)
+                if any(stage.get('$group', {}).get('_id') is None for stage in pipeline if '$group' in stage):
+                    return iter([{'expensesGross': 1160.0, 'expensesTax': 160.0, 'expensesWithoutTax': 1000.0, 'incomeGross': 0.0, 'net': -1000.0}])
+                return iter([{'_id': '2026-09', 'value': 700.0}, {'_id': '2026-08', 'value': 300.0}, {'_id': '', 'value': 5.0}])
+
+        fake_db = SimpleNamespace(transactions=AggCollection([]), projects=phase1.FakeCollection([{'_id': ObjectId(self.project_id)}]))
+        with patch.object(main, 'db', fake_db), patch.object(main, 'with_legacy_project_filter', side_effect=lambda q, _p: q), patch.object(
+            main, 'build_transactions_query', return_value={}
+        ):
+            stats = main.transactions_stats(type='EXPENSE', projectId=self.project_id, project=None, user={'username': 'agg', 'role': 'SUPERADMIN'})
+        self.assertEqual(stats['totalSinIva'], 1000.0)
+        self.assertEqual(stats['totalConIva'], 1160.0)
+        self.assertEqual(stats['monthly'], [{'month': '2026-09', 'value': 700.0}, {'month': '2026-08', 'value': 300.0}])
+        monthly_pipeline = next(p for p in pipelines if any('dateMonth' in stage.get('$project', {}) for stage in p))
+        self.assertIn('montoSinIva', monthly_pipeline[1]['$project'])  # reutiliza el cálculo de los totales
