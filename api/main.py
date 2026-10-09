@@ -888,7 +888,8 @@ def resolve_project_id(project_id: str | None = None) -> str:
     if using_default:
         requested_project_id = (os.getenv("DEFAULT_PROJECT_ID") or "").strip()
         if not requested_project_id:
-            raise HTTPException(status_code=500, detail="DEFAULT_PROJECT_ID env var is required")
+            # Sin obra en la petición y sin obra por defecto: es un error de quien llama, no del servidor.
+            raise HTTPException(status_code=400, detail="Missing projectId (select a project)")
         if is_default_project_id_literal(requested_project_id):
             raise HTTPException(status_code=500, detail="DEFAULT_PROJECT_ID must be a valid ObjectId")
 

@@ -120,7 +120,34 @@ export function clearSession() {
   localStorage.removeItem(USER_UI_PREFS_KEY);
 }
 
+// Consultas del dashboard que necesitan una obra: sin obra elegida el servidor solo respondería un error.
+const PROJECT_REQUIRED_PATHS = ['/stats/spend-by-category', '/api/expenses/summary-by-supplier', '/transactions'];
+const inflightGetRequests = new Map();
+
+// Evita pedir dos veces lo mismo al mismo tiempo (p. ej. dos componentes que cargan igual al abrir la app):
+// las lecturas idénticas en vuelo comparten una sola petición al servidor.
 async function request(baseUrl, path, opts = {}) {
+  const method = String(opts.method || 'GET').toUpperCase();
+  if (method !== 'GET' || opts.signal || opts.body) return requestOnce(baseUrl, path, opts);
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const cleanPath = withProjectId(normalizedPath, opts);
+  const pathname = cleanPath.split('?')[0] || '';
+  if (PROJECT_REQUIRED_PATHS.includes(pathname) && !getSelectedProjectId() && !/[?&]projectId=/.test(cleanPath) && !/[?&]allProjects=/.test(cleanPath)) {
+    const error = new Error('Selecciona una obra');
+    error.status = 400;
+    throw error;
+  }
+  const key = `${baseUrl}|${cleanPath}|${getSelectedProjectId() || ''}|${getSession().token || ''}|${JSON.stringify(opts.headers || {})}`;
+  let shared = inflightGetRequests.get(key);
+  if (!shared) {
+    shared = requestOnce(baseUrl, path, opts).finally(() => inflightGetRequests.delete(key));
+    inflightGetRequests.set(key, shared);
+  }
+  const data = await shared;
+  return data && typeof data === 'object' && typeof structuredClone === 'function' ? structuredClone(data) : data;
+}
+
+async function requestOnce(baseUrl, path, opts = {}) {
   const { token } = getSession();
   const normalizedPath = path.startsWith('/') ? path : `/${path}`;
   const cleanPath = withProjectId(normalizedPath, opts);
