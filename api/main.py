@@ -9293,9 +9293,48 @@ def _memoized(key, compute):
     return memo[key]
 
 
+_EXPENSE_CACHE: dict = {}
+_EXPENSE_CACHE_LOCK = threading.Lock()
+
+
+def _expense_cache_ttl() -> float:
+    try:
+        return max(float(os.getenv("EXPENSE_CACHE_TTL_SECONDS", "30")), 0.0)
+    except ValueError:
+        return 30.0
+
+
+def _ttl_cached(key: tuple, compute):
+    """Caché corta entre peticiones de lo que sale de leer TODOS los egresos de la obra (los pagos solo cambian
+    al importar o editar movimientos): con pocos presupuestos, lo que más tardaba era releerlos en cada pantalla.
+    Con TTL 0 (pruebas) no guarda nada. La entrada recuerda su `db` para no mezclar bases distintas."""
+    ttl = _expense_cache_ttl()
+    if ttl <= 0:
+        return compute()
+    now = time.monotonic()
+    with _EXPENSE_CACHE_LOCK:
+        entry = _EXPENSE_CACHE.get(key)
+        if entry and entry[0] is db and now - entry[1] < ttl:
+            return entry[2]
+    value = compute()
+    with _EXPENSE_CACHE_LOCK:
+        if len(_EXPENSE_CACHE) > 200:
+            _EXPENSE_CACHE.clear()
+        _EXPENSE_CACHE[key] = (db, now, value)
+    return value
+
+
+def invalidate_expense_cache() -> None:
+    with _EXPENSE_CACHE_LOCK:
+        _EXPENSE_CACHE.clear()
+
+
 def _load_project_expense_movements(project_id: str) -> list[dict]:
-    """Egresos del proyecto con los campos para ubicar al proveedor (una lectura por petición)."""
-    return _memoized(("expense-movements", project_id), lambda: _read_project_expense_movements(project_id))
+    """Egresos del proyecto con los campos para ubicar al proveedor (una lectura por petición y caché corta)."""
+    return _memoized(
+        ("expense-movements", project_id),
+        lambda: _ttl_cached(("expense-movements", project_id), lambda: _read_project_expense_movements(project_id)),
+    )
 
 
 def _read_project_expense_movements(project_id: str) -> list[dict]:
@@ -9330,29 +9369,15 @@ def compute_expense_totals_by_supplier_bucket(project_id: str, *, include_tax: b
 
 
 def _compute_expense_totals_by_supplier_bucket(project_id: str, *, include_tax: bool = True) -> dict[str, float]:
-    tx_query = with_legacy_project_filter(build_transactions_query(type_value="EXPENSE"), project_id)
-    movements = list(
-        db.transactions.find(
-            tx_query,
-            {
-                "_id": 1,
-                "amount": 1,
-                "tax": 1,
-                "supplierId": 1,
-                "supplier_id": 1,
-                "vendor_id": 1,
-                "supplierName": 1,
-                "supplierCardCode": 1,
-                "businessPartner": 1,
-                "proveedorNombre": 1,
-                "beneficiario": 1,
-                "sap.cardCode": 1,
-                "sap.businessPartner": 1,
-            },
-        )
+    return _ttl_cached(
+        ("expense-totals", project_id, bool(include_tax)),
+        lambda: _compute_expense_totals_by_supplier_bucket_uncached(project_id, include_tax=include_tax),
     )
 
-    trusted_id_to_supplier_key = _build_trusted_id_supplier_key_map(movements)
+
+def _compute_expense_totals_by_supplier_bucket_uncached(project_id: str, *, include_tax: bool = True) -> dict[str, float]:
+    movements = _load_project_expense_movements(project_id)
+    trusted_id_to_supplier_key = _ttl_cached(("trusted-map", project_id), lambda: _build_trusted_id_supplier_key_map(movements))
     totals: dict[str, float] = {}
     for tx in movements:
         bucket_key = _build_supplier_summary_bucket_key(tx, trusted_id_to_supplier_key)
@@ -15153,6 +15178,7 @@ def update_transaction(transaction_id: str, payload: dict, request: FastAPIReque
             raise HTTPException(status_code=400, detail="EXPENSE requires category_id and vendor_id")
 
     db.transactions.update_one(transaction_filter, {"$set": updates})
+    invalidate_expense_cache()
 
     category_id = updates.get("category_id")
     existing_category_id = tx.get("category_id") or tx.get("categoryId") or tx.get("categoryManualCode")
@@ -15325,6 +15351,7 @@ def cancel_transaction_admin(transaction_id: str, payload: dict, user: dict = De
     }
 
     db.transactions.update_one({"_id": tx["_id"]}, {"$set": update_fields})
+    invalidate_expense_cache()
     refreshed = db.transactions.find_one({"_id": tx["_id"]})
     upsert_transaction_cancellation_override(refreshed, user, reason=reason, notes=notes)
     return serialize_transaction_with_supplier(db.transactions.find_one({"_id": tx["_id"]}))
@@ -15363,6 +15390,7 @@ def restore_transaction_admin(transaction_id: str, payload: dict, user: dict = D
     )
     refreshed = db.transactions.find_one({"_id": tx["_id"]})
     deactivate_transaction_cancellation_override(refreshed, user, notes=notes)
+    invalidate_expense_cache()
     return serialize_transaction_with_supplier(db.transactions.find_one({"_id": tx["_id"]}))
 
 

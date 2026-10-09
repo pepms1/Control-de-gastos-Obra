@@ -656,3 +656,23 @@ class DashboardCacheTests(unittest.TestCase):
             with self.assertRaises(HTTPException):
                 endpoint(projectId='boom', user=user)
         self.assertEqual(calls.count('boom'), 2)
+
+
+class ExpenseCacheTests(phase1.EstimationsPhase1Tests):
+    """La lectura de egresos se comparte entre peticiones durante unos segundos y se puede invalidar."""
+
+    def test_second_call_reuses_the_expenses_and_invalidation_forces_a_new_read(self):
+        txs = [self._acero_transaction(100), self._acero_transaction(150)]
+        fake_db = self._fake_db(transactions=txs)
+        with patch.dict(os.environ, {'EXPENSE_CACHE_TTL_SECONDS': '30'}), patch.object(main, 'db', fake_db), patch.object(
+            main, 'with_legacy_project_filter', side_effect=lambda q, _p: q
+        ), patch.object(main, 'build_transactions_query', return_value={}):
+            main.invalidate_expense_cache()
+            first = main.compute_expense_totals_by_supplier_bucket(self.project_id)
+            fake_db.transactions.docs.append(self._acero_transaction(50))
+            second = main.compute_expense_totals_by_supplier_bucket(self.project_id)
+            self.assertEqual(first, second)  # sigue en caché
+            main.invalidate_expense_cache()
+            third = main.compute_expense_totals_by_supplier_bucket(self.project_id)
+            self.assertNotEqual(first, third)  # tras invalidar se vuelve a leer
+            main.invalidate_expense_cache()
