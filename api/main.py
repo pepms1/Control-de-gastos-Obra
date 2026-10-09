@@ -4689,7 +4689,7 @@ def build_transactions_query(
     return q
 
 
-def build_transaction_totals(match_query: dict, search_query: str | None = None):
+def build_transaction_totals(match_query: dict, search_query: str | None = None, monthly_out: dict | None = None):
     aggregate_match = dict(match_query)
     cleaned_search = (search_query or "").strip()
     use_text_search = False
@@ -4948,6 +4948,33 @@ def build_transaction_totals(match_query: dict, search_query: str | None = None)
             }
         },
     ]
+
+    if monthly_out is not None:
+        # Egresos por mes con EXACTAMENTE el mismo cálculo de montoSinIva que los totales (así coinciden con Buscar).
+        try:
+            import copy
+
+            project_stage = copy.deepcopy(pipeline[1])
+            project_stage["$project"]["dateMonth"] = {"$substrCP": [{"$toString": {"$ifNull": ["$date", ""]}}, 0, 7]}
+            monthly_pipeline = [
+                pipeline[0],
+                project_stage,
+                {
+                    "$match": {
+                        "typeNormalized": "EXPENSE",
+                        "excludeFromExpenseViewsNormalized": False,
+                        "financialKindNormalized": {"$ne": "contribution_withdrawal"},
+                    }
+                },
+                {"$group": {"_id": "$dateMonth", "value": {"$sum": "$montoSinIva"}}},
+            ]
+            monthly_out["rows"] = [
+                {"month": row["_id"], "value": round(float(row.get("value") or 0), 2)}
+                for row in db.transactions.aggregate(monthly_pipeline)
+                if isinstance(row.get("_id"), str) and len(row["_id"]) == 7
+            ]
+        except OperationFailure:
+            monthly_out.pop("rows", None)
 
     try:
         rows = list(db.transactions.aggregate(pipeline))
@@ -15501,6 +15528,21 @@ def transactions_stats(
     type_value = (type or "EXPENSE").strip().upper()
     match = with_legacy_project_filter(build_transactions_query(type_value=type_value), project_id)
     started = time.perf_counter()
+    if type_value == "EXPENSE":
+        # Mismo cálculo que los totales de Buscar (agregación de Mongo), para que ambas pantallas coincidan.
+        monthly_info: dict = {}
+        try:
+            totals = build_transaction_totals(match, monthly_out=monthly_info)
+        except Exception:  # noqa: BLE001 - si falla la agregación se usa el cálculo en Python de abajo
+            totals, monthly_info = None, {}
+        if totals is not None and "rows" in monthly_info:
+            logging.getLogger("perf").info("[perf] transactions_stats agregación=%.0f ms", (time.perf_counter() - started) * 1000)
+            return {
+                "count": None,
+                "totalSinIva": float(totals.get("expensesWithoutTax") or 0),
+                "totalConIva": float(totals.get("expensesGross") or 0),
+                "monthly": sorted(monthly_info["rows"], key=lambda item: item["month"], reverse=True),
+            }
     cursor = db.transactions.find(
         match,
         {
