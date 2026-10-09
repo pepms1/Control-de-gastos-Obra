@@ -707,6 +707,7 @@ body.theme-dark .dashboard-tabs button.secondary:hover:not(:disabled) { backgrou
 
 /* KPI grid */
 .dashboard-summary { display: grid; gap: var(--space-4); }
+.dashboard-kpi-grid--three { grid-template-columns: repeat(3, 1fr); }
 .dashboard-kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1131,7 +1132,10 @@ body.theme-dark .settings-menu-button.active {
   .nav-user-actions.open { display: flex; }
   .nav-user { text-align: left; }
 
-  .dashboard-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* Una tarjeta por renglón: cifras como $28,802,759.79 no caben en media pantalla */
+  .dashboard-kpi-grid, .dashboard-kpi-grid.dashboard-kpi-grid--three { grid-template-columns: minmax(0, 1fr); }
+  .dashboard-kpi-card strong { font-size: clamp(20px, 7vw, 26px); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .dashboard-kpi-card span { overflow-wrap: anywhere; }
   .dashboard-summary-grid { grid-template-columns: 1fr; }
 .date-filter-inline { min-width: 100%; max-width: none; }
 
