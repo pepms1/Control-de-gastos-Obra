@@ -1013,8 +1013,60 @@ function Settings({ isAdmin, isSuperAdmin, cats, vendors, projects, allProjects,
     }
   }, [isSuperAdmin, section]);
 
+  // Móvil: las secciones de Ajustes se eligen en una hoja inferior en lugar de una lista larga arriba del contenido.
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const currentSectionLabel = settingsSections.find((item) => item.key === section)?.label || 'Ajustes';
+  useEffect(() => {
+    if (!sheetOpen) return undefined;
+    const onKey = (event) => { if (event.key === 'Escape') setSheetOpen(false); };
+    document.addEventListener('keydown', onKey);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [sheetOpen]);
+
   return (
     <div className="settings-layout">
+      <div className="settings-mobile-picker">
+        <button type="button" className="settings-mobile-trigger" onClick={() => setSheetOpen(true)} aria-haspopup="dialog" aria-expanded={sheetOpen}>
+          <span className="settings-mobile-trigger-text">
+            <span className="settings-mobile-trigger-hint">Ajustes</span>
+            <strong>{currentSectionLabel}</strong>
+          </span>
+          <span aria-hidden="true">▾</span>
+        </button>
+      </div>
+      <div className={`settings-sheet-overlay${sheetOpen ? ' open' : ''}`} onClick={() => setSheetOpen(false)} aria-hidden={!sheetOpen} />
+      <div className={`settings-sheet${sheetOpen ? ' open' : ''}`} role="dialog" aria-label="Secciones de Ajustes" aria-hidden={!sheetOpen}>
+        <div className="settings-sheet-handle" />
+        <div className="settings-sheet-header">
+          <strong>Ajustes</strong>
+          <button type="button" className="secondary" aria-label="Cerrar" onClick={() => setSheetOpen(false)}>✕</button>
+        </div>
+        {visibleCategories.map((category) => (
+          <div key={category.title} className="settings-sidebar-category">
+            <div className="settings-sidebar-category-title">{category.title}</div>
+            <div className="settings-sheet-items">
+              {category.items.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={`settings-menu-button ${section === item.key ? 'active' : ''}`}
+                  onClick={() => { setSection(item.key); setSheetOpen(false); }}
+                  disabled={item.disabled}
+                  title={item.disabledTitle}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
       <aside className="card settings-sidebar">
         <div className="settings-sidebar-header">
           <h3>Ajustes</h3>
