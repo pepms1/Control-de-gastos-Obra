@@ -43,19 +43,41 @@ app.add_middleware(
 SLOW_REQUEST_LOG_MS = float(os.getenv("SLOW_REQUEST_LOG_MS", "700"))
 
 
-@app.middleware("http")
-async def log_slow_requests(request, call_next):
-    """Mide cada petición: la deja en el header Server-Timing (visible en la pestaña Network del navegador) y
-    registra en el log las que tardan más de SLOW_REQUEST_LOG_MS para encontrar cuellos de botella."""
-    started = time.perf_counter()
-    response = await call_next(request)
-    elapsed_ms = (time.perf_counter() - started) * 1000
-    response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.0f}"
-    if elapsed_ms >= SLOW_REQUEST_LOG_MS:
-        logging.getLogger("perf").warning(
-            "[perf] SLOW %s %s -> %s en %.0f ms", request.method, request.url.path, response.status_code, elapsed_ms
-        )
-    return response
+class RequestTimingMiddleware:
+    """Mide cada petición: header Server-Timing (visible en la pestaña Network del navegador) y log `[perf] SLOW`
+    de las que tardan más de SLOW_REQUEST_LOG_MS. Es ASGI puro (no BaseHTTPMiddleware): si el navegador cancela la
+    petición no se convierte en un 500 y no se cambia el cuerpo ni el flujo de la respuesta."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        started = time.perf_counter()
+        status_holder = {"status": None}
+
+        async def send_with_timing(message):
+            if message.get("type") == "http.response.start":
+                status_holder["status"] = message.get("status")
+                elapsed = (time.perf_counter() - started) * 1000
+                headers = list(message.get("headers") or [])
+                headers.append((b"server-timing", f"app;dur={elapsed:.0f}".encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_timing)
+        finally:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            if elapsed_ms >= SLOW_REQUEST_LOG_MS:
+                logging.getLogger("perf").warning(
+                    "[perf] SLOW %s %s -> %s en %.0f ms", scope.get("method"), scope.get("path"), status_holder["status"], elapsed_ms
+                )
+
+
+app.add_middleware(RequestTimingMiddleware)
 
 
 MONGO_URL = os.getenv("MONGO_URL")
