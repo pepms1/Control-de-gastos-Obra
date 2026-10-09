@@ -2933,9 +2933,32 @@ function DashboardSection({ dashboardType, onDashboardTypeChange, isAdmin, selec
 }
 
 /* ================= DASHBOARD ================= */
+const MONTH_ABBR_DASHBOARD = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
 async function fetchExpenseStats() {
+  // Una sola petición ligera; si el servidor aún no la tiene, se usa el método anterior (página por página).
+  try {
+    const stats = await api.transactionsStats({ type: 'EXPENSE' });
+    if (stats && Array.isArray(stats.monthly)) {
+      return {
+        totalSinIva: Number(stats.totalSinIva) || 0,
+        totalConIva: Number(stats.totalConIva) || 0,
+        monthlyData: stats.monthly.map(({ month, value }) => ({
+          month,
+          label: MONTH_ABBR_DASHBOARD[parseInt(month.slice(5, 7), 10) - 1] + ' \'' + month.slice(2, 4),
+          value: Number(value) || 0,
+        })),
+      };
+    }
+  } catch (error) {
+    if (error?.status && error.status !== 404 && error.status !== 405) throw error;
+  }
+  return fetchExpenseStatsPaged();
+}
+
+async function fetchExpenseStatsPaged() {
   const PAGE_LIMIT = 500;
-  const MONTH_ABBR = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+  const MONTH_ABBR = MONTH_ABBR_DASHBOARD;
   let page = 1;
   let totalCount = 0;
   let totalSinIva = 0;
@@ -3298,6 +3321,18 @@ function summarizeTransactionsBySupplier(transactions, includeIva = false) {
 }
 
 async function fetchTransactionsTotalByType(type, includeIva = false) {
+  try {
+    const stats = await api.transactionsStats({ type });
+    if (stats && typeof stats === 'object' && 'totalSinIva' in stats) {
+      return Number((includeIva ? stats.totalConIva : stats.totalSinIva) || 0);
+    }
+  } catch (error) {
+    if (error?.status && error.status !== 404 && error.status !== 405) throw error;
+  }
+  return fetchTransactionsTotalByTypePaged(type, includeIva);
+}
+
+async function fetchTransactionsTotalByTypePaged(type, includeIva = false) {
   const PAGE_LIMIT = 500;
   let page = 1;
   let totalCount = 0;
