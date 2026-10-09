@@ -277,6 +277,9 @@ export function SearchTransactionsV2({
   const initialType = String(lockTypeTo || '').trim().toUpperCase() || 'EXPENSE';
   const [typeFilter, setTypeFilter] = useState(initialType);
   const [rows, setRows] = useState([]);
+  // Totales del servidor sobre TODOS los movimientos del filtro (la tabla solo trae los primeros 500).
+  const [serverTotals, setServerTotals] = useState(null);
+  const [serverTotalCount, setServerTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
@@ -366,9 +369,13 @@ export function SearchTransactionsV2({
     api.transactions(transactionParams).then((data) => {
       if (!isMounted) return;
       setRows(Array.isArray(data?.items) ? data.items : []);
+      setServerTotals(data?.totals && typeof data.totals === 'object' ? data.totals : null);
+      setServerTotalCount(Number(data?.totalCount) || 0);
     }).catch((err) => {
       if (!isMounted) return;
       setRows([]);
+      setServerTotals(null);
+      setServerTotalCount(0);
       setError(err?.message || 'No se pudo cargar la búsqueda V2');
     }).finally(() => {
       if (isMounted) setLoading(false);
@@ -544,13 +551,20 @@ export function SearchTransactionsV2({
       return row?.type === typeFilter;
     }), [rows, query, categoryMap, supplierFilter, category2Filter, typeFilter]);
 
+  // En egresos, sin filtros de proveedor/categoría hechos en pantalla, los KPI suman TODA la base del filtro
+  // (igual que el Dashboard); con esos filtros se suman solo los renglones visibles.
+  const useServerTotals = typeFilter === 'EXPENSE' && supplierFilter === 'ALL' && category2Filter === 'ALL' && Boolean(serverTotals);
   const totalWithoutTax = useMemo(
-    () => visibleRows.reduce((acc, row) => acc + (getAmountWithoutTax(row) || 0), 0),
-    [visibleRows],
+    () => (useServerTotals
+      ? Number(serverTotals.expensesWithoutTax) || 0
+      : visibleRows.reduce((acc, row) => acc + (getAmountWithoutTax(row) || 0), 0)),
+    [visibleRows, useServerTotals, serverTotals],
   );
   const totalWithTax = useMemo(
-    () => visibleRows.reduce((acc, row) => acc + (getAmountWithTax(row) || 0), 0),
-    [visibleRows],
+    () => (useServerTotals
+      ? Number(serverTotals.expensesGross) || 0
+      : visibleRows.reduce((acc, row) => acc + (getAmountWithTax(row) || 0), 0)),
+    [visibleRows, useServerTotals, serverTotals],
   );
   const totalIva = totalWithTax - totalWithoutTax;
   const uniqueProjectsCount = useMemo(
@@ -628,7 +642,9 @@ export function SearchTransactionsV2({
     {
       label: 'Total sin IVA filtrado',
       value: formatCurrency(totalWithoutTax),
-      sub: `${visibleRows.length} registro${visibleRows.length !== 1 ? 's' : ''}`,
+      sub: useServerTotals
+        ? `${serverTotalCount} registro${serverTotalCount !== 1 ? 's' : ''} en total`
+        : `${visibleRows.length} registro${visibleRows.length !== 1 ? 's' : ''}`,
       icon: (
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4z"/>
@@ -747,7 +763,7 @@ export function SearchTransactionsV2({
           <span className="status-total">Total sin IVA filtrado: {formatCurrency(totalWithoutTax)}</span>
           <span style={{ color: 'var(--gray-300)' }}>·</span>
           <span className="status-count">
-            {loading ? 'Buscando…' : `${visibleRows.length} resultado${visibleRows.length !== 1 ? 's' : ''} visible${visibleRows.length !== 1 ? 's' : ''}`}
+            {loading ? 'Buscando…' : `${visibleRows.length} resultado${visibleRows.length !== 1 ? 's' : ''} visible${visibleRows.length !== 1 ? 's' : ''}${useServerTotals && serverTotalCount > visibleRows.length ? ` de ${serverTotalCount} (los totales suman todos)` : ''}`}
           </span>
         </div>
 
