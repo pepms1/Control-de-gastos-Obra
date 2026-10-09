@@ -3233,7 +3233,7 @@ function Dashboard({ isAdmin, selectedProjectId, areaM2, estimatedBudget, refres
       ) : (
         <>
           {/* KPI bar — 3 cards */}
-          <div className="dashboard-kpi-grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+          <div className="dashboard-kpi-grid dashboard-kpi-grid--three">
             {dashboardTotals.map((item) => (
               <div key={item.label} className="dashboard-kpi-card">
                 <span>{item.label}</span>
