@@ -366,6 +366,12 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // Totales del dashboard (con/sin IVA y por mes) en una sola lectura ligera del servidor.
+  transactionsStats: (params = {}) => {
+    const qs = new URLSearchParams(params).toString();
+    return backendReq(`/api/transactions/stats${qs ? `?${qs}` : ''}`);
+  },
+
   spendByCategory: (params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return req(`/stats/spend-by-category${qs ? `?${qs}` : ''}`);

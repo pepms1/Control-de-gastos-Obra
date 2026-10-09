@@ -15481,6 +15481,63 @@ def delete_transaction(transaction_id: str, request: FastAPIRequest, _: dict = D
 # curl -G "http://localhost:8000/api/transactions" --data-urlencode "projectId=<PENSYLVANIA_PROJECT_OBJECT_ID>" -H "Authorization: Bearer <TOKEN>"  # puede responder 200 con items=[] si no hay import
 # curl -G "http://localhost:8000/api/movimientos" -H "Authorization: Bearer <TOKEN>"  # usa DEFAULT_PROJECT_ID si no se envía projectId
 # curl -G "http://localhost:8000/api/expenses/summary-by-supplier" --data-urlencode "projectId=<PROJECT_OBJECT_ID>" -H "Authorization: Bearer <TOKEN>"
+@app.get("/api/transactions/stats")
+@dashboard_cached
+def transactions_stats(
+    type: str = "EXPENSE",
+    projectId: str | None = None,
+    project: str | None = None,
+    user: dict = Depends(require_authenticated),
+):
+    """Totales del dashboard (con y sin IVA y por mes) en UNA sola lectura ligera, en lugar de bajar todos los
+    movimientos página por página. Mismos criterios que el listado: sin cancelados y sin lo excluido de las vistas
+    de egresos."""
+    project_id = resolve_project_id(projectId or project)
+    if not can_access_project(user, project_id):
+        if is_viewer(user):
+            return {"count": 0, "totalSinIva": 0.0, "totalConIva": 0.0, "monthly": []}
+        raise HTTPException(status_code=403, detail="Project access denied")
+
+    type_value = (type or "EXPENSE").strip().upper()
+    match = with_legacy_project_filter(build_transactions_query(type_value=type_value), project_id)
+    started = time.perf_counter()
+    cursor = db.transactions.find(
+        match,
+        {
+            "amount": 1, "date": 1, "tax": 1, "source": 1, "subtotal": 1, "montoSinIva": 1, "iva": 1, "montoIva": 1,
+            "totalFactura": 1, "sap.taxBreakdownSameCurrency": 1, "sap.invoiceSubtotal": 1, "sap.invoiceIva": 1,
+            "sap.invoiceTotal": 1, "financialKind": 1, "excludeFromExpenseViews": 1,
+        },
+    )
+    count = 0
+    total_sin_iva = 0.0
+    total_con_iva = 0.0
+    by_month: dict[str, float] = {}
+    for tx in cursor:
+        count += 1
+        if type_value == "EXPENSE" and (
+            bool(tx.get("excludeFromExpenseViews"))
+            or (normalize_non_empty_string(tx.get("financialKind")) or "expense") in EXPENSE_VIEW_EXCLUDED_FINANCIAL_KINDS
+        ):
+            continue
+        subtotal, _iva, _total = resolve_transaction_tax_components(tx)
+        amount = parse_optional_decimal(tx.get("amount")) or 0
+        sign = -1 if amount < 0 else 1
+        subtotal_value = float(sign * subtotal) if subtotal is not None else 0.0
+        total_sin_iva += subtotal_value
+        total_con_iva += float(amount)
+        month = str(tx.get("date") or "")[:7]
+        if len(month) == 7:
+            by_month[month] = by_month.get(month, 0.0) + subtotal_value
+    logging.getLogger("perf").info("[perf] transactions_stats lectura+calculo=%.0f ms docs=%d", (time.perf_counter() - started) * 1000, count)
+    return {
+        "count": count,
+        "totalSinIva": round(total_sin_iva, 2),
+        "totalConIva": round(total_con_iva, 2),
+        "monthly": [{"month": month, "value": round(value, 2)} for month, value in sorted(by_month.items(), reverse=True)],
+    }
+
+
 @app.get("/transactions")
 @app.get("/api/transactions")
 @app.get("/api/movimientos")
