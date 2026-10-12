@@ -676,3 +676,54 @@ class ExpenseCacheTests(phase1.EstimationsPhase1Tests):
             third = main.compute_expense_totals_by_supplier_bucket(self.project_id)
             self.assertNotEqual(first, third)  # tras invalidar se vuelve a leer
             main.invalidate_expense_cache()
+
+
+class AuthorizationCarryoverTests(phase1.EstimationsPhase1Tests):
+    """El monto a liberar es acumulado: lo autorizado de menos una semana no se pierde en la siguiente."""
+
+    def _setup(self):
+        fake_db = self._fake_db()
+        budget = self._create_budget(fake_db, advanceAmortizationEnabled=False, advanceAmount=0, retentionPct=0)
+        ids = [item['id'] for item in budget['lineItems']]
+        return fake_db, budget, ids
+
+    def test_authorizing_less_one_week_is_carried_to_the_next_estimation(self):
+        fake_db, budget, ids = self._setup()
+        with patch.object(main, 'db', fake_db):
+            first = main.create_estimation(budget['id'], {'periodStart': '2026-01-01', 'periodEnd': '2026-01-01', 'lineItems': [{'conceptoId': ids[0], 'periodQuantity': 10}]}, user=SUPERADMIN)
+            main.submit_estimation(budget['id'], first['id'], user=SUPERADMIN)
+            approved = main.approve_estimation(budget['id'], first['id'], {'authorizedAmount': 100, 'authorizationNote': 'x'}, user=SUPERADMIN)
+            self.assertEqual(approved['totalToPay'], 600.0)
+            second = main.create_estimation(budget['id'], {'periodStart': '2026-01-08', 'periodEnd': '2026-01-08', 'lineItems': [{'conceptoId': ids[0], 'periodQuantity': 10}]}, user=SUPERADMIN)
+        # esta semana avanza lo mismo (600) + lo que se dejó de autorizar (500)
+        self.assertEqual(second['carryoverApplied'], 500.0)
+        self.assertEqual(second['totalToPay'], 1100.0)
+
+    def test_authorizing_exactly_what_was_calculated_carries_nothing(self):
+        fake_db, budget, ids = self._setup()
+        with patch.object(main, 'db', fake_db):
+            first = main.create_estimation(budget['id'], {'periodStart': '2026-01-01', 'periodEnd': '2026-01-01', 'lineItems': [{'conceptoId': ids[0], 'periodQuantity': 10}]}, user=SUPERADMIN)
+            main.submit_estimation(budget['id'], first['id'], user=SUPERADMIN)
+            main.approve_estimation(budget['id'], first['id'], {}, user=SUPERADMIN)
+            second = main.create_estimation(budget['id'], {'periodStart': '2026-01-08', 'periodEnd': '2026-01-08', 'lineItems': [{'conceptoId': ids[0], 'periodQuantity': 10}]}, user=SUPERADMIN)
+        self.assertEqual(second['carryoverApplied'], 0.0)
+        self.assertEqual(second['totalToPay'], 600.0)
+
+    def test_authorizing_more_than_calculated_reduces_the_next_one(self):
+        fake_db, budget, ids = self._setup()
+        with patch.object(main, 'db', fake_db):
+            first = main.create_estimation(budget['id'], {'periodStart': '2026-01-01', 'periodEnd': '2026-01-01', 'lineItems': [{'conceptoId': ids[0], 'periodQuantity': 10}]}, user=SUPERADMIN)
+            main.submit_estimation(budget['id'], first['id'], user=SUPERADMIN)
+            main.approve_estimation(budget['id'], first['id'], {'authorizedAmount': 700, 'authorizationNote': 'extra'}, user=SUPERADMIN)
+            second = main.create_estimation(budget['id'], {'periodStart': '2026-01-08', 'periodEnd': '2026-01-08', 'lineItems': [{'conceptoId': ids[0], 'periodQuantity': 10}]}, user=SUPERADMIN)
+        self.assertEqual(second['carryoverApplied'], -100.0)
+        self.assertEqual(second['totalToPay'], 500.0)
+
+    def test_the_budget_exposes_the_carryover_for_the_form_preview(self):
+        fake_db, budget, ids = self._setup()
+        with patch.object(main, 'db', fake_db):
+            first = main.create_estimation(budget['id'], {'periodStart': '2026-01-01', 'periodEnd': '2026-01-01', 'lineItems': [{'conceptoId': ids[0], 'periodQuantity': 10}]}, user=SUPERADMIN)
+            main.submit_estimation(budget['id'], first['id'], user=SUPERADMIN)
+            main.approve_estimation(budget['id'], first['id'], {'authorizedAmount': 100, 'authorizationNote': 'x'}, user=SUPERADMIN)
+            detail = main.get_estimation_budget(budget['id'], user=SUPERADMIN)
+        self.assertEqual(detail['authorizationCarryover'], 500.0)

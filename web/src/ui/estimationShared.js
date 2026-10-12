@@ -416,6 +416,7 @@ ${sheetSectionHtml(part, budget)}`;
   ${Number(batch.advanceAmortizationAmount) > 0 ? `<div>amortización de anticipos − <strong>${money(batch.advanceAmortizationAmount)}</strong></div>` : ''}
   ${Number(batch.priorPaidApplied) > 0 ? `<div>pagos ya hechos aplicados a este avance (sin anticipos) − <strong>${money(batch.priorPaidApplied)}</strong></div>` : ''}
   ${Number(batch.advanceGivenAmount) > 0 ? `<div>anticipo a entregar + <strong>${money(batch.advanceGivenAmount)}</strong></div>` : ''}
+  ${Math.abs(Number(batch.carryoverApplied) || 0) >= 0.01 ? `<div>${Number(batch.carryoverApplied) > 0 ? 'por pagar de estimaciones anteriores +' : 'pagado de más en estimaciones anteriores −'} <strong>${money(Math.abs(Number(batch.carryoverApplied)))}</strong></div>` : ''}
   <div class="grand">Avance total (a pagar con esta estimación)${batch.ivaEnabled ? ' sin IVA' : ''} <strong>${money(batch.totalToPay)}</strong></div>
   ${batch.ivaEnabled ? `<div>IVA (${formatPct(batch.ivaPct || 16)}) + <strong>${money(batch.ivaAmount)}</strong></div><div class="grand">Total con IVA <strong>${money(batch.totalWithIva)}</strong></div>` : ''}
   ${paidToDate != null ? `<div class="paid">pagado total a la fecha al proveedor${batch.ivaEnabled ? ' sin IVA' : ''} (anticipos + pagos a cuenta) <strong>${money(paidToDate)}</strong></div>` : ''}</div></div>` : '';

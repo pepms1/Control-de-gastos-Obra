@@ -264,7 +264,7 @@ export function EstimacionesSection({ projects, selectedProjectId, isReviewer = 
     selectedBudgetIds.forEach((id) => {
       const result = blockResults[id];
       if (!result) return;
-      const netAfterBudget = result.preview.totalToPay - (result.preview.advanceGiven || 0);
+      const netAfterBudget = result.preview.totalToPay - (result.preview.advanceGiven || 0) - (result.preview.carryover || 0);
       const applied = Math.min(Math.max(netAfterBudget, 0), poolLeft);
       poolByBudget[id] = applied;
       poolLeft -= applied;
