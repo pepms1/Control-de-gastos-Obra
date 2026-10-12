@@ -10616,7 +10616,7 @@ def refresh_open_estimation_money(estimation: dict, estimation_budget: dict | No
     money = compute_estimation_money_fields(budget, estimation["lineItems"], exclude_estimation_id=str(estimation.get("_id")))
     # El anticipo que se entrega con esta estimación se suma al total a liberar.
     money["totalToPay"] = round(float(money["totalToPay"]) + float(estimation.get("advanceGivenAmount") or 0), 2)
-    keys = ("periodSubtotal", "retentionAmount", "advanceAmortizationAmount", "priorPaidApplied", "priorPoolApplied", "totalToPay")
+    keys = ("periodSubtotal", "retentionAmount", "advanceAmortizationAmount", "priorPaidApplied", "priorPoolApplied", "carryoverApplied", "totalToPay")
     same_groups = len(estimation.get("groupBreakdown") or []) == len(money["groupBreakdown"])
     if same_groups and all(abs(float(estimation.get(k) or 0) - float(money[k])) < 0.005 for k in keys):
         return estimation
@@ -10643,7 +10643,7 @@ def refresh_batch_money(parts: list[dict], budgets_by_id: dict[str, dict]) -> li
         )
         money["totalToPay"] = round(float(money["totalToPay"]) + float(part.get("advanceGivenAmount") or 0), 2)
         used += float(money.get("priorPoolApplied") or 0)
-        keys = ("periodSubtotal", "retentionAmount", "advanceAmortizationAmount", "priorPaidApplied", "priorPoolApplied", "totalToPay")
+        keys = ("periodSubtotal", "retentionAmount", "advanceAmortizationAmount", "priorPaidApplied", "priorPoolApplied", "carryoverApplied", "totalToPay")
         same_groups = len(part.get("groupBreakdown") or []) == len(money["groupBreakdown"])
         if same_groups and all(abs(float(part.get(k) or 0) - float(money[k])) < 0.005 for k in keys):
             result.append(part)
@@ -10783,6 +10783,23 @@ def compute_group_breakdown(
     return breakdown
 
 
+def compute_authorization_carryover(estimation_budget_id: str, exclude_estimation_id: str | None = None) -> float:
+    """Lo que las estimaciones APROBADAS anteriores de este presupuesto calcularon de más respecto a lo que se
+    autorizó (o de menos, si se autorizó más). La estimación se calcula en acumulado, como la hoja: lo ganado
+    hasta hoy menos lo ya autorizado; así el monto a liberar no cambia porque una semana se haya autorizado menos."""
+    if not estimation_budget_id:
+        return 0.0
+    query: dict = {"estimationBudgetId": estimation_budget_id, "isDeleted": {"$ne": True}, "workflowStatus": ESTIMATION_STATUS_APPROVED}
+    if exclude_estimation_id:
+        query["_id"] = {"$ne": oid(exclude_estimation_id)}
+    carry = 0.0
+    for row in db.estimations.find(query, {"totalToPay": 1, "carryoverApplied": 1, "authorizedAmount": 1}):
+        if row.get("authorizedAmount") is None:
+            continue
+        carry += float(row.get("totalToPay") or 0) - float(row.get("carryoverApplied") or 0) - float(row.get("authorizedAmount") or 0)
+    return round(carry, 2)
+
+
 def compute_estimation_money_fields(
     estimation_budget: dict,
     line_items: list[dict],
@@ -10826,8 +10843,10 @@ def compute_estimation_money_fields(
         pool_left = compute_supplier_prior_pool_remaining(project_id, supplier_key, exclude_ids, pool_extra_used)
         prior_pool_applied = round(min(max(net_before_prior_payments - prior_from_budget, 0), pool_left), 2)
     prior_paid_applied = round(prior_from_budget + prior_pool_applied, 2)
-    total_to_pay = round(net_before_prior_payments - prior_paid_applied, 2)
+    carryover = compute_authorization_carryover(str(estimation_budget.get("_id") or ""), exclude_estimation_id)
+    total_to_pay = round(net_before_prior_payments - prior_paid_applied + carryover, 2)
     return {
+        "carryoverApplied": carryover,
         "periodSubtotal": period_subtotal,
         "retentionPctSnapshot": retention_pct,
         "retentionAmount": retention_amount,
@@ -11290,6 +11309,10 @@ def serialize_estimation_budget(doc: dict, include_payments: bool = True) -> dic
     payload["openingMode"] = opening_mode
     payload["remainingOpeningPaidBalance"] = round(
         max(effective_prior - sum(float(r.get("priorPaidApplied") or 0) - float(r.get("priorPoolApplied") or 0) for r in rows), 0), 2
+    )
+    # Lo autorizado de menos (o de más) en estimaciones aprobadas anteriores: se arrastra a la siguiente.
+    payload["authorizationCarryover"] = _memoized(
+        ("carryover", estimation_budget_id), lambda: compute_authorization_carryover(estimation_budget_id)
     )
     payload["supplierUsesPriorPool"] = supplier_uses_prior_pool(project_id, supplier_key)
     payload["supplierPriorPoolRemaining"] = (
@@ -12720,6 +12743,7 @@ def _batch_header(parts: list[dict], budgets_by_id: dict[str, dict]) -> dict:
         "retentionAmount": total("retentionAmount"),
         "advanceAmortizationAmount": total("advanceAmortizationAmount"),
         "priorPaidApplied": total("priorPaidApplied"),
+        "carryoverApplied": total("carryoverApplied"),
         "advanceGivenAmount": total("advanceGivenAmount"),
         "totalToPay": total("totalToPay"),
         "createdBy": lead.get("createdBy"),

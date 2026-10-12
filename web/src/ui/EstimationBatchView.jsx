@@ -200,6 +200,7 @@ export function EstimationBatchView({
         <div><strong>Amortización anticipo:</strong> {formatCurrency(batch.advanceAmortizationAmount)}</div>
         {Number(batch.priorPaidApplied) > 0 && <div><strong>Pagos previos reconocidos:</strong> −{formatCurrency(batch.priorPaidApplied)}</div>}
         {Number(batch.advanceGivenAmount) > 0 && <div><strong>Anticipo entregado:</strong> +{formatCurrency(batch.advanceGivenAmount)}</div>}
+        {Math.abs(Number(batch.carryoverApplied) || 0) >= 0.01 && <div><strong>{Number(batch.carryoverApplied) > 0 ? 'Por pagar de estimaciones anteriores' : 'Pagado de más en estimaciones anteriores'}:</strong> {Number(batch.carryoverApplied) > 0 ? '+' : '−'}{formatCurrency(Math.abs(Number(batch.carryoverApplied)))}</div>}
         <div><strong>Total calculado (a liberar){batch.ivaEnabled ? ' sin IVA' : ''}:</strong> {formatCurrency(batch.totalToPay)}</div>
         {batch.ivaEnabled && <div><strong>IVA ({batch.ivaPct || 16}%):</strong> {formatCurrency(batch.ivaAmount)}</div>}
         {batch.ivaEnabled && <div><strong>Total con IVA:</strong> {formatCurrency(batch.totalWithIva)}</div>}

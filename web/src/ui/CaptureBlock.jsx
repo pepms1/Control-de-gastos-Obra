@@ -27,6 +27,8 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
   // La sección de anticipo va contraída salvo que esta estimación entregue anticipo.
   const [showAdvance, setShowAdvance] = useState(Boolean(Number(advance) > 0));
   const advanceAmount = Math.max(Number(advance) || 0, 0);
+  // Lo autorizado de menos (o de más) en estimaciones anteriores: el monto a liberar es acumulado.
+  const carryover = Number(budget.authorizationCarryover) || 0;
   const groupsEnabled = hasNamedGroups(budget);
 
   const preview = useMemo(() => {
@@ -51,11 +53,11 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
     onChange({
       budgetId: budget.id,
       payload,
-      preview: { ...preview, advanceGiven: advanceAmount, totalToPay: preview.totalToPay + advanceAmount },
+      preview: { ...preview, advanceGiven: advanceAmount, carryover, totalToPay: preview.totalToPay + advanceAmount + carryover },
       hasProgress,
       hasValue: hasProgress || advanceAmount > 0,
     });
-  }, [form, preview, advanceAmount]);
+  }, [form, preview, advanceAmount, carryover]);
 
   function setAdvanceFromPct(value) {
     setAdvancePct(value);
@@ -387,7 +389,8 @@ export function CaptureBlock({ budget, previousCumulative, savedPart = null, isR
         {preview.priorPaidApplied > 0 && <> · pagos previos −{formatCurrency(preview.priorPaidApplied)}</>}
         {poolApplied > 0 && <> · pagos al proveedor −{formatCurrency(poolApplied)}</>}
         {advanceAmount > 0 && <> · anticipo a entregar +{formatCurrency(advanceAmount)}</>}
-        {' '}= <strong>{formatCurrency(preview.totalToPay + advanceAmount - poolApplied)}</strong>
+        {Math.abs(carryover) >= 0.01 && <> · {carryover > 0 ? 'por pagar de estimaciones anteriores' : 'pagado de más en estimaciones anteriores'} {carryover > 0 ? '+' : '−'}{formatCurrency(Math.abs(carryover))}</>}
+        {' '}= <strong>{formatCurrency(preview.totalToPay + advanceAmount - poolApplied + carryover)}</strong>
       </div>
     </div>
   );
