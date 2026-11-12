@@ -975,6 +975,17 @@ body.theme-dark .login-error {
   background: linear-gradient(135deg, var(--primary-dark), var(--primary-mid));
 }
 
+/* Aviso de migración a Kesef (reemplaza al inicio de sesión) */
+.login-card .login-heading { text-align: center; }
+a.migration-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  color: #fff;
+  text-decoration: none;
+}
+
 /* ── Budgets ─────────────────────────────────────────── */
 .budgets-card { width: 100%; }
 .budgets-table-shell { width: 100%; }

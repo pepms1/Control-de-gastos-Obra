@@ -1,12 +1,13 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import App from './ui/App.jsx';
-import { renderRoute } from './ui/ImportAndAdminScreens.jsx';
+import MigrationNotice from './ui/MigrationNotice.jsx';
 import './styles.css';
 
-const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
-const routeView = renderRoute(pathname);
-
+// La aplicación se migró a Kesef (https://www.kesef.mx) y el backend está
+// apagado, así que todas las rutas muestran el aviso de migración. Para
+// reactivar la app, volver a renderizar <App /> y renderRoute(pathname).
 ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>{routeView || <App />}</React.StrictMode>
+  <React.StrictMode>
+    <MigrationNotice />
+  </React.StrictMode>
 );
